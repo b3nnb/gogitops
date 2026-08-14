@@ -1,0 +1,36 @@
+hostname: mini
+nebula_ip: 100.2.0.3  # TBD — need to assign
+lan_ip: 10.0.0.251
+
+labels:
+  - compute
+  - gpu
+  - llm-inference
+  - image-gen
+  - lora-training
+
+services:
+  - name: ollama
+    type: tcp
+    port: 11434
+  - name: comfyui
+    type: tcp
+    port: 8188
+  - name: exo
+    type: tcp
+    port: 52415
+  - name: nebula
+    type: process
+    pattern: nebula
+
+disk:
+  - mount: /
+    warn_pct: 85
+    crit_pct: 95
+
+agent:
+  update_url: https://releases.bennbot.com/gogitops/latest.json
+  check_interval: 5m
+  git_repo: git@github.com:bennbanks/gogitops.git
+  git_branch: main
+  git_pull_interval: 5m

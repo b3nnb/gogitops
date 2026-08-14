@@ -1,0 +1,12 @@
+name: exo
+description: "exo inference cluster — distributed LLM across GPU nodes"
+type: node-group
+
+members:
+  - label: gpu
+  - node: mini
+
+config:
+  min_members: 2
+  check_port: 52415
+  coordinator: friday

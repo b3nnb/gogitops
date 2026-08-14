@@ -1,0 +1,68 @@
+hostname: nas
+nebula_ip: 100.2.0.4
+lan_ip: 10.2.0.103
+
+labels:
+  - storage
+  - docker-host
+  - public-edge
+  - stack:honcho
+  - stack:media
+  - stack:n8n
+  - stack:nextcloud
+
+services:
+  - name: nebula
+    type: process
+    pattern: nebula
+  - name: docker
+    type: docker
+    check: daemon-alive
+    docker_binary: /share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker
+  - name: caddy-public
+    type: docker
+    check: container-alive
+    container: aio_caddy_dnclient
+  - name: honcho
+    type: docker
+    check: container-alive
+    container: honcho-api
+  - name: n8n
+    type: docker
+    check: container-alive
+    container: n8n-agent
+  - name: nextcloud
+    type: docker
+    check: container-alive
+    container: nextcloud-app
+  - name: sonarr
+    type: docker
+    check: container-alive
+    container: sonarr
+  - name: radarr
+    type: docker
+    check: container-alive
+    container: radarr
+  - name: sabnzbd
+    type: docker
+    check: container-alive
+    container: sabnzbd
+  - name: seerr
+    type: docker
+    check: container-alive
+    container: seerr
+
+disk:
+  - mount: /
+    warn_pct: 85
+    crit_pct: 95
+  - mount: /share/CACHEDEV1_DATA
+    warn_pct: 85
+    crit_pct: 95
+
+agent:
+  update_url: https://releases.bennbot.com/gogitops/latest.json
+  check_interval: 5m
+  git_repo: git@github.com:bennbanks/gogitops.git
+  git_branch: main
+  git_pull_interval: 5m

@@ -1,0 +1,12 @@
+name: infra
+description: "Core infrastructure — must-always-be-up nodes"
+type: node-group
+
+members:
+  - node: friday
+  - node: nas
+  - node: lighthouse
+
+config:
+  min_members: 2
+  alert_on_down: critical

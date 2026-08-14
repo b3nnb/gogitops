@@ -1,0 +1,25 @@
+hostname: lighthouse
+nebula_ip: 100.2.0.1
+lan_ip: null  # AWS public IP — fill in
+
+labels:
+  - infra
+  - nebula-lighthouse
+  - aws
+
+services:
+  - name: nebula-lighthouse
+    type: process
+    pattern: nebula-lighthoused
+
+disk:
+  - mount: /
+    warn_pct: 85
+    crit_pct: 95
+
+agent:
+  update_url: https://releases.bennbot.com/gogitops/latest.json
+  check_interval: 5m
+  git_repo: git@github.com:bennbanks/gogitops.git
+  git_branch: main
+  git_pull_interval: 5m

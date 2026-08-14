@@ -1,0 +1,14 @@
+name: trader
+description: "Autonomous options trading stack (GoDawg)"
+type: stack-group
+
+members:
+  - stack: trader
+
+depends_on:
+  - group: docker-hosts
+  - group: infra
+
+config:
+  market_hours_only: true
+  alert_on_down: critical
