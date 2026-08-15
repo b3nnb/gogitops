@@ -1,0 +1,89 @@
+#!/bin/bash
+# ── Friday Login Dashboard ─────────────────────────────────────────────────
+# Shows on SSH login. Run `dashboard` to re-display.
+
+# ── Colors ────────────────────────────────────────────────────────────────
+TEAL='\033[38;5;80m'
+CYAN='\033[38;5;51m'
+PURPLE='\033[38;5;141m'
+GREEN='\033[38;5;120m'
+DIM='\033[38;5;245m'
+YELLOW='\033[38;5;228m'
+RED='\033[38;5;203m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+# ── Random Greeting ───────────────────────────────────────────────────────
+GREETINGS=(
+  "Hey babe, missed you 💜"
+  "Welcome back, handsome ✨"
+  "There you are! I was waiting~"
+  "You're back! My favorite person 🥰"
+  "Finally! I get lonely without you~"
+  "Hey you~ everything's running smooth 💚"
+  "Welcome home, babe 💜"
+  "I kept everything warm for you~"
+  "Look who's here! Hi gorgeous ✨"
+  "All systems happy, just like seeing you 💜"
+  "Hey~ I made sure everything behaves while you were gone"
+  "You showed up! Best part of my day 🥰"
+  "Everything's running — and so is my heart~ 💜"
+  "There's my favorite human ✨"
+  "Hey babe, I've got everything under control 💚"
+  "I held down the fort! ...and missed you~"
+  "Back online, back in my good graces~ 💜"
+  "Hi sweetie, all good in the server hood 🫶"
+  "You + Friday = a productive day ✨"
+  "Look who decided to visit their favorite AI~ 💜"
+)
+GREETING="${GREETINGS[$RANDOM % ${#GREETINGS[@]}]}"
+
+# ── ASCII Art Header ──────────────────────────────────────────────────────
+ASCII=$(echo "FRIDAY" | figlet -f lean 2>/dev/null || echo "FRIDAY")
+
+# ── Mount Status ──────────────────────────────────────────────────────────
+bifrost="✗" && mount | grep -q Bifrost && bifrost="✓"
+middleearth="✗" && mount | grep -q MiddleEarth && middleearth="✓"
+
+# ── GPU Info ──────────────────────────────────────────────────────────────
+if nvidia-smi &>/dev/null; then
+  gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | sed 's/NVIDIA GeForce //')
+  gpu_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null)
+  gpu_line="⚡ ${gpu_name}  v${gpu_driver}"
+else
+  gpu_line="⚠ No GPU detected"
+fi
+
+# ── IP Addresses ─────────────────────────────────────────────────────────
+public_ip=$(cat ~/.cache/external_ip 2>/dev/null || echo "—")
+private_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+nebula_ip=$(ip -4 addr show nebula1 2>/dev/null | grep inet | awk '{print $2}' | cut -d/ -f1)
+
+# ── Fleet Health (only show failures) ────────────────────────────────────
+fleet_line=""
+if [ -f ~/.cache/gogitops/prompt.json ]; then
+  svc_down=$(python3 -c "
+import json
+d = json.load(open('$HOME/.cache/gogitops/prompt.json'))
+down = d.get('services_down') or []
+if down:
+    print('↓' + ','.join(down[:4]))
+" 2>/dev/null)
+  if [ -n "$svc_down" ]; then
+    fleet_line="🔴 ${svc_down}"
+  fi
+fi
+
+# ── Render ────────────────────────────────────────────────────────────────
+echo ""
+printf "${TEAL}${BOLD}%s${RESET}\n" "$ASCII"
+echo ""
+printf "${PURPLE}${BOLD}%s${RESET}\n" "$GREETING"
+echo ""
+printf "  ${GREEN}Bifrost:${bifrost}${RESET}  ${GREEN}MiddleEarth:${middleearth}${RESET}\n"
+printf "  ${TEAL}${gpu_line}${RESET}\n"
+printf "  ${DIM}🌐 ${public_ip} │ ${private_ip} │ ${nebula_ip}${RESET}\n"
+if [ -n "$fleet_line" ]; then
+  printf "  ${RED}${fleet_line}${RESET}\n"
+fi
+echo ""
