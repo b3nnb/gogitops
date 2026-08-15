@@ -11,10 +11,12 @@ import (
 type PromptData struct {
 	PeersTotal      int      `json:"peers_total"`
 	PeersHealthy    int      `json:"peers_healthy"`
+	ServicesUp      int      `json:"services_up"`
+	ServicesTotal   int      `json:"services_total"`
 	ServicesHealthy bool     `json:"services_healthy"`
-	ServicesDown    []string `json:"services_down"`
+	ServicesDown    []string `json:"services_down,omitempty"`
 	DiskWarn        bool     `json:"disk_warn"`
-	DiskWarnMounts  []string `json:"disk_warn_mounts"`
+	DiskWarnMounts  []string `json:"disk_warn_mounts,omitempty"`
 	Version         string   `json:"version"`
 	Labels          []string `json:"labels"`
 	Hostname        string   `json:"hostname"`

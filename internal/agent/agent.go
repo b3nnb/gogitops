@@ -123,6 +123,8 @@ func (a *Agent) cycle(first bool) {
 	cache := starship.PromptData{
 		PeersTotal:      peersTotal,
 		PeersHealthy:    peersHealthy,
+		ServicesUp:      len(result.Services) - len(downSvcs),
+		ServicesTotal:   len(a.node.Services),
 		ServicesHealthy: len(downSvcs) == 0,
 		ServicesDown:    downSvcs,
 		DiskWarn:        len(result.DiskWarns) > 0 || len(result.DiskCrits) > 0,
