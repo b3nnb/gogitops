@@ -1,13 +1,54 @@
 # Starship prompt config — gogitops fleet
 # Deploy: cp starship.toml ~/.config/starship.toml
+# Refresh IP: curl -s --max-time 3 ifconfig.me > ~/.cache/external_ip
 
 format = """
+$custom\
+$line_break\
 $directory\
 $git_branch\
 $git_status\
-$custom\
-$line_break\
 $character"""
+
+# ── Status line (above prompt) ──────────────────────────────────────────────
+
+[custom.bifrost]
+description = "Bifrost NAS mount status"
+command = "mount | grep -q Bifrost && echo '✓' || echo '✗'"
+when = "true"
+format = "Bifrost:[$output]($style) "
+style = "bold green"
+
+[custom.extip]
+description = "External IP (cached)"
+command = "cat ~/.cache/external_ip 2>/dev/null || echo '—'"
+when = "test -f ~/.cache/external_ip"
+format = "IP:[$output]($style) "
+style = "dim yellow"
+
+[custom.aws-profiles]
+description = "AWS CLI profiles"
+command = "grep -oP '\\[profile \\K[^]]+' ~/.aws/config 2>/dev/null | paste -sd',' - || echo 'none'"
+when = "test -f ~/.aws/config"
+format = "AWS:[$output]($style) "
+style = "dim yellow"
+
+[custom.gpu]
+description = "GPU name + VRAM"
+command = "nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | awk -F', ' '{gsub(\"NVIDIA GeForce \",\"\",$1); printf \"%s %s/%sMi\", $1, $2, $3}' || echo 'no gpu'"
+when = "which nvidia-smi 2>/dev/null"
+format = "[$output]($style) "
+style = "bold green"
+shell = ["bash", "--noprofile", "--norc"]
+
+[custom.gogitops]
+description = "Fleet node health"
+command = "python3 ~/.local/bin/gogitops_prompt.py ~/.cache/gogitops/prompt.json"
+when = "test -f ~/.cache/gogitops/prompt.json"
+format = "[$output]($style) "
+style = "bold cyan"
+
+# ── Prompt line ──────────────────────────────────────────────────────────────
 
 [directory]
 truncation_length = 3
@@ -21,42 +62,6 @@ symbol = " "
 [git_status]
 format = '([\[$all_status$ahead_behind\]]($style) )'
 style = "bold red"
-
-[custom.bifrost]
-description = "Bifrost NAS mount status"
-command = "mount | grep -q Bifrost && echo '✓' || echo '✗'"
-when = "true"
-format = "Bifrost:[$output]($style) "
-style = "bold green"
-
-[custom.extip]
-description = "External IP address"
-command = "curl -s --max-time 3 ifconfig.me 2>/dev/null || echo '—'"
-when = "true"
-format = "IP:[$output]($style) "
-style = "bold yellow"
-
-[custom.aws-profiles]
-description = "AWS CLI profiles"
-command = "grep -oP '\\[profile \\K[^]]+' ~/.aws/config 2>/dev/null | paste -sd',' - || echo 'none'"
-when = "test -f ~/.aws/config"
-format = "AWS:[$output]($style) "
-style = "bold yellow"
-
-[custom.gpu]
-description = "Show detected GPU"
-command = "nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | awk -F', ' '{printf \"%s %s/%sMi\", $1, $2, $3}' || echo 'no gpu'"
-when = "which nvidia-smi 2>/dev/null"
-format = "[$output]($style) "
-style = "bold green"
-shell = ["bash", "--noprofile", "--norc"]
-
-[custom.gogitops]
-description = "Show gogitops node health"
-command = "python3 ~/.local/bin/gogitops_prompt.py ~/.cache/gogitops/prompt.json"
-when = "test -f ~/.cache/gogitops/prompt.json"
-format = "[$output]($style) "
-style = "bold cyan"
 
 [cmd_duration]
 min_time = 5_000
