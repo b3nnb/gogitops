@@ -24,6 +24,15 @@ type PeerHealth struct {
 	PeersUnreach   []string          `json:"peers_unreachable,omitempty"`
 	LastGitPull    string            `json:"last_git_pull,omitempty"`
 	ConfigHash     string            `json:"config_hash,omitempty"`
+	System         SystemInfo        `json:"system"`
+}
+
+// SystemInfo is lightweight runtime system metadata
+type SystemInfo struct {
+	OS      string `json:"os"`
+	Arch    string `json:"arch"`
+	IP      string `json:"ip"`
+	HostID  string `json:"host_id"`
 }
 
 // Pinger manages peer health checks

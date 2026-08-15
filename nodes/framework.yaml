@@ -1,0 +1,24 @@
+hostname: framework
+nebula_ip: 100.2.0.5
+lan_ip: 10.0.0.229
+
+labels:
+  - compute
+  - laptop
+
+services:
+  - name: nebula
+    type: process
+    pattern: nebula
+
+disk:
+  - mount: /
+    warn_pct: 85
+    crit_pct: 95
+
+agent:
+  update_url: https://releases.bennbot.com/gogitops/latest.json
+  check_interval: 5m
+  git_repo: git@github.com:b3nnb/gogitops.git
+  git_branch: main
+  git_pull_interval: 5m

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -189,4 +190,37 @@ func diskUsage(mount string) (int, error) {
 	var pct int
 	fmt.Sscanf(strings.TrimSuffix(fields[4], "%"), "%d", &pct)
 	return pct, nil
+}
+
+// SysInfo is lightweight runtime system metadata
+type SysInfo struct {
+	OS     string `json:"os"`
+	Arch   string `json:"arch"`
+	IP     string `json:"ip"`
+	HostID string `json:"host_id"`
+}
+
+// CollectSysInfo gathers OS, arch, primary IP, and machine-id
+func CollectSysInfo() SysInfo {
+	info := SysInfo{
+		OS:   runtime.GOOS,
+		Arch: runtime.GOARCH,
+	}
+
+	// Get primary outbound IP (toward 8.8.8.8, no actual traffic sent)
+	conn, err := net.DialTimeout("udp", "8.8.8.8:80", 1*time.Second)
+	if err == nil {
+		addr := conn.LocalAddr().(*net.UDPAddr)
+		info.IP = addr.IP.String()
+		conn.Close()
+	}
+
+	// Host ID: read /etc/machine-id (Linux) or hostid (macOS/other)
+	if data, err := exec.Command("cat", "/etc/machine-id").Output(); err == nil {
+		info.HostID = strings.TrimSpace(string(data))
+	} else if data, err := exec.Command("hostid").Output(); err == nil {
+		info.HostID = strings.TrimSpace(string(data))
+	}
+
+	return info
 }

@@ -66,6 +66,8 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	unreachable := a.lastUnreachable
 	a.mu.RUnlock()
 
+	sys := health.CollectSysInfo()
+
 	h := mesh.PeerHealth{
 		Hostname:       a.node.Hostname,
 		AgentVersion:   Version,
@@ -76,6 +78,12 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		DiskWarns:      append(result.DiskWarns, result.DiskCrits...),
 		PeersReachable: reachable,
 		PeersUnreach:   unreachable,
+		System: mesh.SystemInfo{
+			OS:     sys.OS,
+			Arch:   sys.Arch,
+			IP:     sys.IP,
+			HostID: sys.HostID,
+		},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
