@@ -29,14 +29,21 @@ func main() {
 			cmdStatus(os.Args[2:])
 		case "version":
 			fmt.Printf("gogitops %s\n", version)
+		case "daemon", "run":
+			runDaemon(os.Args[2:])
 		default:
-			fmt.Fprintf(os.Stderr, "unknown command: %s\nusage: gogitops [status|version] or gogitops [daemon flags]\n", os.Args[1])
-			os.Exit(1)
+			if strings.HasPrefix(os.Args[1], "-") {
+				// legacy: bare flags means daemon mode
+				runDaemon(os.Args[1:])
+			} else {
+				fmt.Fprintf(os.Stderr, "unknown command: %s\nusage: gogitops [status|version|daemon]\n", os.Args[1])
+				os.Exit(1)
+			}
 		}
 		return
 	}
-
-	runDaemon()
+	fmt.Fprintf(os.Stderr, "usage: gogitops <command>\n\nCommands:\n  status   Show local agent health\n  daemon   Run the agent\n  version  Print version\n")
+	os.Exit(1)
 }
 
 // ── CLI subcommands ──────────────────────────────────────────────────────
@@ -126,7 +133,7 @@ type peerHealth struct {
 
 // ── Daemon mode ──────────────────────────────────────────────────────────
 
-func runDaemon() {
+func runDaemon(args []string) {
 	var (
 		repoDir   = flag.String("repo", "/home/benn/Documents/code/GoGitOps", "path to config repo")
 		hostFlag  = flag.String("hostname", "", "override hostname (defaults to system hostname; match a nodes/*.yaml name)")
@@ -135,7 +142,7 @@ func runDaemon() {
 		intervalS = flag.Int("interval", 60, "check interval in seconds")
 		webhook   = flag.String("webhook", "", "Discord webhook URL or nenv:<ns>/<key> (empty = no alerts)")
 	)
-	flag.Parse()
+	flag.CommandLine.Parse(args)
 
 	hostname := *hostFlag
 	if hostname == "" {
