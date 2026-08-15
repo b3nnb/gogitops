@@ -10,12 +10,28 @@ _Agent-controlled, GitOps-driven infrastructure mesh for Benn's homelab._
 
 ## Philosophy
 
-1. **No SPOF.** If any single device dies, the rest of the mesh stays operational and alerts.
-2. **Git is truth.** All config, labels, recipes, and peer lists live in a git repo. Agents pull on boot + periodically.
-3. **Labels, not hostnames.** Identity follows the role, not the hardware. Move a label to a new device → that device becomes the role.
-4. **Recipes, not SSH sessions.** Operational procedures are declarative YAML, not ad-hoc commands.
-5. **Self-updating.** Agents can update themselves and Nebula without human SSH.
-6. **Minimal telemetry.** No CPU/RAM/VPN metrics by default. Just: is it alive? are services up? is disk full? Add perf monitoring on-demand when debugging.
+1. **Works standalone.** GoGitOps runs with zero external dependencies — just the binary, a YAML config, and a git repo. No netenv, no dnclient, no DNS required.
+2. **Progressive enhancement.** Each integration (netenv, dnclient/Defined Networking, CoreDNS) adds features when available but is never required:
+   - **No netenv?** Secrets live in node YAML or env vars. No nenv: resolution.
+   - **No dnclient?** Self-hosted Nebula or direct IP mesh. No managed cert rotation.
+   - **No DNS?** Hardcoded IPs in config. Works fine for 7 devices.
+3. **No SPOF.** If any single device dies, the rest of the mesh stays operational and alerts.
+4. **Git is truth.** All config, labels, recipes, and peer lists live in a git repo. Agents pull on boot + periodically.
+5. **Labels, not hostnames.** Identity follows the role, not the hardware. Move a label to a new device → that device becomes the role.
+6. **Recipes, not SSH sessions.** Operational procedures are declarative YAML, not ad-hoc commands.
+7. **Self-updating.** Agents can update themselves and Nebula without human SSH.
+8. **Minimal telemetry.** No CPU/RAM/GPU metrics by default. Just: is it alive? are services up? is disk full? Add perf monitoring on-demand when debugging.
+
+### Integration Tiers
+
+| Tier | What it adds | Required? |
+|------|-------------|-----------|
+| **Core** | Health checks, peer pings, disk alerts, starship cache | ✅ Always works |
+| **+ NetEnv** | Secret resolution (`nenv:` prefix), no secrets in git, remote config values | Optional — falls back to env vars / inline values |
+| **+ dnclient** | Managed Nebula certs (auto-rotation), Defined Networking tag sync, cert expiry monitoring | Optional — falls back to self-hosted Nebula certs |
+| **+ CoreDNS** | DNS names instead of IPs, service discovery, migration-friendly readdressing | Optional — falls back to hardcoded IPs |
+
+When an integration is unavailable, the agent logs a warning and continues with its last cached or fallback value. No crash, no blocked startup.
 
 ---
 
@@ -898,6 +914,61 @@ error_symbol = '[✗](bold red)'
 ```
 
 This goes in the git repo alongside node configs. Agent deploys it on first setup and keeps it synced.
+
+---
+
+## NetEnv Integration
+
+NetEnv is the secrets and environment variable service (`10.2.0.102:7200`, CLI at `/usr/local/bin/nenv`). GoGitOps uses it for any value that shouldn't live in git (webhook URLs, API keys, credentials).
+
+### Reference syntax
+
+Any string value in node/stack/alert configs can use the `nenv:<namespace>/<key>` prefix:
+
+```yaml
+# alerts/routing.yaml
+channels:
+  - name: discord-benn
+    type: discord-webhook
+    url: nenv:ctl/ALERT_DISCORD_WEBHOOK
+
+# nodes/friday.yaml (future: API keys for extended checks)
+agent:
+  update_url: nenv:gogitops/UPDATE_URL
+```
+
+At runtime, the agent resolves `nenv:` references by calling `nenv get <namespace> <key>` via the REST API (`http://10.2.0.102:7200/api/secrets/<namespace>/<key>`) — not the CLI, which truncates display values. REST returns the full value.
+
+### Resolution rules
+
+1. **On boot:** Agent resolves all `nenv:` references and caches them in memory.
+2. **On git pull:** Re-resolve any changed references.
+3. **Fallback:** If netenv is unreachable, use the last cached value. Log a warning.
+4. **REST API preferred:** `nenv get` CLI truncates long values (known bug). Always use `GET /api/secrets/{namespace}/{key}` with `Authorization: Bearer` header.
+
+### GoGitOps secrets in NetEnv
+
+| Namespace | Key | Purpose |
+|-----------|-----|---------|
+| `gogitops` | `DISCORD_WEBHOOK` | Alert webhook URL |
+| `gogitops` | `UPDATE_URL` | Binary update check URL |
+| `gogitops` | `NEBULA_CA_CRT` | Current CA cert (for cert expiry monitoring) |
+| `gogitops` | `MESH_SECRET` | Shared mesh auth token (fallback if Nebula cert auth unavailable) |
+
+### NetEnv health as a service check
+
+On nodes where netenv runs (Friday), the agent checks it as a TCP service:
+
+```yaml
+# nodes/friday.yaml — already has stack:netenv label
+services:
+  - name: netenv
+    type: docker-compose
+    path: /home/benn/Documents/code/netenv
+    containers: [netenv-netenv-1, netenv-db-1]
+```
+
+On other nodes, the agent can query netenv remotely over LAN (`10.2.0.102:7200`) for secret resolution. If netenv is down, the agent falls back to cached values and alerts.
 
 ---
 

@@ -47,7 +47,11 @@ func CheckService(svc config.Service) Status {
 
 // checkSystemd checks if a systemd unit is active
 func checkSystemd(svc config.Service) Status {
-	out, err := exec.Command("systemctl", "is-active", svc.Unit).Output()
+	args := []string{"is-active", svc.Unit}
+	if svc.User {
+		args = []string{"--user", "is-active", svc.Unit}
+	}
+	out, err := exec.Command("systemctl", args...).Output()
 	if err != nil {
 		return Status{Name: svc.Name, Status: "down", Detail: err.Error()}
 	}

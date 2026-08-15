@@ -18,6 +18,7 @@ services:
   - name: hermes-gateway
     type: systemd
     unit: hermes-gateway.service
+    user: true
   - name: friday-voice
     type: systemd
     unit: friday-voice.service

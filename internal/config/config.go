@@ -25,6 +25,7 @@ type Service struct {
 	Name        string   `yaml:"name"`
 	Type        string   `yaml:"type"` // systemd | tcp | docker | docker-compose | process
 	Unit        string   `yaml:"unit,omitempty"`        // for systemd
+	User        bool     `yaml:"user,omitempty"`        // for systemd: user-level unit
 	Port        int      `yaml:"port,omitempty"`        // for tcp
 	Container   string   `yaml:"container,omitempty"`   // for docker
 	Containers  []string `yaml:"containers,omitempty"`  // for docker-compose

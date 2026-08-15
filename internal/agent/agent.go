@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/bennbanks/gogitops/internal/alert"
@@ -30,7 +31,9 @@ type Agent struct {
 	started  time.Time
 	webhook  string
 
-	// last state for change detection
+	mu               sync.RWMutex
+	lastReachable    []string
+	lastUnreachable  []string
 	lastServiceState map[string]string
 	lastPeerState    map[string]bool
 }
@@ -50,7 +53,7 @@ func New(node *config.NodeConfig, m *config.MeshConfig, webhook string) *Agent {
 }
 
 // HealthHandler serves GET /v1/health — the peer ping endpoint.
-// Only listens on the Nebula interface (enforced by bind address in main).
+// Uses cached peer state from the last cycle (non-blocking).
 func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	result := health.RunAllChecks(a.node)
 	svcMap := map[string]string{}
@@ -58,7 +61,10 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		svcMap[s.Name] = s.Status
 	}
 
-	reachable, unreachable := a.pinger.PingAll(a.node.Hostname)
+	a.mu.RLock()
+	reachable := a.lastReachable
+	unreachable := a.lastUnreachable
+	a.mu.RUnlock()
 
 	h := mesh.PeerHealth{
 		Hostname:       a.node.Hostname,
@@ -128,6 +134,9 @@ func (a *Agent) cycle(first bool) {
 	}
 
 	// 5. Store state for next cycle's change detection
+	a.mu.Lock()
+	a.lastReachable = reachable
+	a.lastUnreachable = unreachable
 	a.lastServiceState = map[string]string{}
 	for _, s := range result.Services {
 		a.lastServiceState[s.Name] = s.Status
@@ -136,6 +145,7 @@ func (a *Agent) cycle(first bool) {
 	for _, p := range reachable {
 		a.lastPeerState[p] = true
 	}
+	a.mu.Unlock()
 }
 
 // alertOnChange compares current state to last state and alerts on transitions
