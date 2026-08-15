@@ -1,0 +1,72 @@
+name: install-starship
+description: "Install Starship prompt with gogitops fleet integration"
+version: "1.0.0"
+labels: []  # all nodes
+
+steps:
+  # --- Detect platform ---
+  - name: detect-arch
+    description: "Detect CPU architecture for binary selection"
+    command: "uname -m"
+    parse: regex
+    pattern: "(.+)"
+
+  - name: detect-os
+    description: "Detect operating system"
+    command: "uname -s | tr '[:upper:]' '[:lower:]'"
+    parse: regex
+    pattern: "(.+)"
+
+  # --- Install starship binary ---
+  - name: install-starship
+    description: "Install starship via official installer"
+    command: "curl -sS https://starship.rs/install.sh | sh -s -- -y"
+    when: "! which starship 2>/dev/null"
+    on_failure: abort
+    retries: 2
+    retry_delay: 5s
+
+  # --- Deploy gogitops config files ---
+  - name: create-config-dirs
+    description: "Create ~/.config and ~/.local/bin if missing"
+    command: "mkdir -p ~/.config ~/.local/bin"
+
+  - name: drop-starship-config
+    description: "Copy starship.toml from gogitops repo"
+    command: "cp {{repo}}/configs/starship.toml ~/.config/starship.toml"
+    on_failure: abort
+
+  - name: drop-prompt-helper
+    description: "Copy gogitops_prompt.py helper script"
+    command: "cp {{repo}}/configs/gogitops_prompt.py ~/.local/bin/gogitops_prompt.py && chmod +x ~/.local/bin/gogitops_prompt.py"
+    on_failure: abort
+
+  # --- Initialize in shell ---
+  - name: init-bashrc
+    description: "Add starship init to .bashrc if not present"
+    command: 'grep -q "starship init bash" ~/.bashrc 2>/dev/null || echo ''eval "$(starship init bash)"'' >> ~/.bashrc'
+    os: linux
+    on_failure: continue
+
+  - name: init-zshrc
+    description: "Add starship init to .zshrc if not present"
+    command: 'grep -q "starship init zsh" ~/.zshrc 2>/dev/null || echo ''eval "$(starship init zsh)"'' >> ~/.zshrc'
+    os: darwin
+    on_failure: continue
+
+  # --- Verify ---
+  - name: verify-binary
+    description: "Confirm starship is installed and callable"
+    command: "starship --version"
+    expect_regex: "starship \\d+\\.\\d+"
+    on_failure: abort
+
+  - name: verify-config
+    description: "Confirm config file is in place"
+    command: "test -f ~/.config/starship.toml"
+    on_failure: abort
+
+  - name: verify-helper
+    description: "Confirm prompt helper is in place"
+    command: "test -f ~/.local/bin/gogitops_prompt.py"
+    on_failure: abort
