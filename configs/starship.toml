@@ -1,15 +1,11 @@
 # Starship prompt config — gogitops fleet
-# Install: cp starship.toml ~/.config/starship.toml
-# Deploy: gogitops recipes will copy this to each node
+# Deploy: cp starship.toml ~/.config/starship.toml
 
 format = """
 $directory\
 $git_branch\
 $git_status\
-$aws\
-$gcloud\
 $custom\
-$disk_usage\
 $line_break\
 $character"""
 
@@ -26,18 +22,27 @@ symbol = " "
 format = '([\[$all_status$ahead_behind\]]($style) )'
 style = "bold red"
 
-[aws]
-format = "on [$symbol($profile)]($style) "
-style = "bold yellow"
-symbol = " "
+[custom.bifrost]
+description = "Bifrost NAS mount status"
+command = "mount | grep -q Bifrost && echo '✓' || echo '✗'"
+when = "true"
+format = "Bifrost:[$output]($style) "
+style = "bold green"
 
-# Disk usage — show mount points with usage %
-[disk_usage]
-format = "[$path]($style) "
+[custom.extip]
+description = "External IP address"
+command = "curl -s --max-time 3 ifconfig.me 2>/dev/null || echo '—'"
+when = "true"
+format = "IP:[$output]($style) "
 style = "bold yellow"
-disabled = false
 
-# Custom: GPU detection
+[custom.aws-profiles]
+description = "AWS CLI profiles"
+command = "grep -oP '\\[profile \\K[^]]+' ~/.aws/config 2>/dev/null | paste -sd',' - || echo 'none'"
+when = "test -f ~/.aws/config"
+format = "AWS:[$output]($style) "
+style = "bold yellow"
+
 [custom.gpu]
 description = "Show detected GPU"
 command = "nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | awk -F', ' '{printf \"%s %s/%sMi\", $1, $2, $3}' || echo 'no gpu'"
@@ -46,20 +51,12 @@ format = "[$output]($style) "
 style = "bold green"
 shell = ["bash", "--noprofile", "--norc"]
 
-# Custom: gogitops node health
 [custom.gogitops]
-description = "Show gogitops node health status"
-command = "cat ~/.cache/gogitops/prompt.json 2>/dev/null | python3 -c \"import sys,json; d=json.load(sys.stdin); host=d.get('hostname','?'); svcs=d.get('services_healthy',False); down=d.get('services_down',[]); neb=d.get('nebula_running',False); ok=svcs and len(down)==0; icon='🟢' if ok else '🔴'; out=f'{icon} {host}'; if down: out+=f' ↓{chr(44).join(down)}'; if not neb: out+=' nebula✗'; print(out)\" 2>/dev/null || echo '⚪ gogitops'"
+description = "Show gogitops node health"
+command = "python3 ~/.local/bin/gogitops_prompt.py ~/.cache/gogitops/prompt.json"
 when = "test -f ~/.cache/gogitops/prompt.json"
 format = "[$output]($style) "
 style = "bold cyan"
-shell = ["bash", "--noprofile", "--norc"]
-
-# Right prompt — gogitops + gpu on the right side
-rightformat = """
-$custom.gogitops\
-$custom.gpu\
-$cmd_duration"""
 
 [cmd_duration]
 min_time = 5_000
