@@ -1,0 +1,158 @@
+// Package dashboard provides a SQLite-backed rolling status store
+// for the GoGitOps status dashboard.
+package dashboard
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+// NodeCheck represents a single health check record for a node.
+type NodeCheck struct {
+	NodeName     string
+	DisplayIP    string
+	Healthy      bool
+	ServicesUp   int
+	ServicesTotal int
+	Version      string
+	CheckedAt    time.Time
+	ResponseMs   int
+}
+
+// Store wraps a SQLite database for persisting node health checks.
+type Store struct {
+	db *sql.DB
+}
+
+// NewStore opens (or creates) a SQLite database at dbPath and ensures
+// the schema is ready. It also runs a cleanup of rows older than 24h.
+func NewStore(dbPath string) (*Store, error) {
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+
+	// Enable WAL mode and reasonable pragmas
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set WAL mode: %w", err)
+	}
+
+	// Create schema
+	schema := `
+CREATE TABLE IF NOT EXISTS node_status (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	node_name TEXT NOT NULL,
+	display_ip TEXT NOT NULL,
+	healthy BOOLEAN,
+	services_up INTEGER,
+	services_total INTEGER,
+	version TEXT,
+	checked_at TIMESTAMPTZ NOT NULL,
+	response_time_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_node_checked
+	ON node_status (node_name, checked_at DESC);
+`
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create schema: %w", err)
+	}
+
+	s := &Store{db: db}
+	if err := s.cleanup(context.Background()); err != nil {
+		// Non-fatal: log but don't fail startup
+		fmt.Printf("warning: initial cleanup failed: %v\n", err)
+	}
+
+	return s, nil
+}
+
+// Close closes the underlying database connection.
+func (s *Store) Close() error {
+	return s.db.Close()
+}
+
+// cleanup deletes rows older than 24 hours.
+func (s *Store) cleanup(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx,
+		"DELETE FROM node_status WHERE checked_at < ?",
+		time.Now().Add(-24*time.Hour),
+	)
+	return err
+}
+
+// RecordCheck inserts a new health check result and prunes old data.
+func (s *Store) RecordCheck(ctx context.Context, nodeName, displayIP string, healthy bool, servicesUp, servicesTotal int, version string, responseMs int) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO node_status (node_name, display_ip, healthy, services_up, services_total, version, checked_at, response_time_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		nodeName, displayIP, healthy, servicesUp, servicesTotal, version, time.Now().UTC(), responseMs,
+	)
+	if err != nil {
+		return fmt.Errorf("insert check: %w", err)
+	}
+
+	// Best-effort cleanup on each write
+	_ = s.cleanup(ctx)
+	return nil
+}
+
+// GetLatestChecks returns the most recent check for each node.
+func (s *Store) GetLatestChecks(ctx context.Context) ([]NodeCheck, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT node_name, display_ip, healthy, services_up, services_total, version, checked_at, response_time_ms
+		 FROM node_status
+		 WHERE id IN (
+		   SELECT MAX(id) FROM node_status GROUP BY node_name
+		 )
+		 ORDER BY node_name`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query latest checks: %w", err)
+	}
+	defer rows.Close()
+
+	var checks []NodeCheck
+	for rows.Next() {
+		var c NodeCheck
+		var checkedAt string
+		if err := rows.Scan(&c.NodeName, &c.DisplayIP, &c.Healthy, &c.ServicesUp, &c.ServicesTotal, &c.Version, &checkedAt, &c.ResponseMs); err != nil {
+			return nil, fmt.Errorf("scan row: %w", err)
+		}
+		c.CheckedAt, _ = time.Parse(time.RFC3339, checkedAt)
+		if c.CheckedAt.IsZero() {
+			c.CheckedAt, _ = time.Parse("2006-01-02 15:04:05Z07:00", checkedAt)
+		}
+		checks = append(checks, c)
+	}
+	return checks, rows.Err()
+}
+
+// Get24hSummary returns the uptime percentage for a given node over the last 24 hours.
+func (s *Store) Get24hSummary(ctx context.Context, nodeName string) (float64, error) {
+	var total, healthy sql.NullInt64
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*), SUM(CASE WHEN healthy = 1 THEN 1 ELSE 0 END)
+		 FROM node_status
+		 WHERE node_name = ? AND checked_at >= ?`,
+		nodeName, time.Now().Add(-24*time.Hour).UTC(),
+	).Scan(&total, &healthy)
+
+	if err != nil {
+		return 0, fmt.Errorf("query 24h summary: %w", err)
+	}
+	if !total.Valid || total.Int64 == 0 {
+		return 0, nil // no data → 0%
+	}
+	h := healthy.Int64
+	if !healthy.Valid {
+		h = 0
+	}
+	return (float64(h) / float64(total.Int64)) * 100.0, nil
+}

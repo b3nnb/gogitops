@@ -20,6 +20,18 @@ type NodeConfig struct {
 	Agent    AgentConfig `yaml:"agent"`
 }
 
+// Address returns the best host:port to reach this node.
+// Prefers LAN IP (local subnet), falls back to Nebula IP.
+func (n NodeConfig) Address() string {
+	host := ""
+	if n.LanIP != "" && n.LanIP != "null" {
+		host = n.LanIP
+	} else if n.NebulaIP != "" && n.NebulaIP != "null" {
+		host = n.NebulaIP
+	}
+	return host
+}
+
 // Service is a single service check definition
 type Service struct {
 	Name        string   `yaml:"name"`
@@ -63,6 +75,26 @@ type Peer struct {
 	LanIP    string   `yaml:"lan_ip"`
 	Port     int      `yaml:"port"`
 	Labels   []string `yaml:"labels"`
+}
+
+// Address returns the best host:port to reach this peer.
+// Prefers LAN IP when set (local subnet), falls back to Nebula IP.
+// Returns empty string if no reachable address exists.
+func (p Peer) Address() string {
+	host := ""
+	if p.LanIP != "" && p.LanIP != "null" {
+		host = p.LanIP
+	} else if p.NebulaIP != "" && p.NebulaIP != "null" {
+		host = p.NebulaIP
+	}
+	if host == "" {
+		return ""
+	}
+	port := p.Port
+	if port == 0 {
+		port = 7780
+	}
+	return fmt.Sprintf("%s:%d", host, port)
 }
 
 // GroupConfig is a named collection (groups/*.yaml)

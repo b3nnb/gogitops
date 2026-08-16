@@ -75,12 +75,14 @@ func (p *Pinger) PingAll(selfHostname string) (reachable []string, unreachable [
 	return reachable, unreachable
 }
 
-// PingPeer checks a single peer's health endpoint
+// PingPeer checks a single peer's health endpoint.
+// Uses LAN IP preferentially, falls back to Nebula IP.
 func (p *Pinger) PingPeer(peer config.Peer) bool {
-	if peer.NebulaIP == "" || peer.NebulaIP == "null" {
+	addr := peer.Address()
+	if addr == "" {
 		return false
 	}
-	url := fmt.Sprintf("http://%s:%d/v1/health", peer.NebulaIP, peer.Port)
+	url := fmt.Sprintf("http://%s/v1/health", addr)
 	resp, err := p.client.Get(url)
 	if err != nil {
 		return false
@@ -89,12 +91,14 @@ func (p *Pinger) PingPeer(peer config.Peer) bool {
 	return resp.StatusCode == 200
 }
 
-// FetchPeerHealth gets the full health payload from a peer
+// FetchPeerHealth gets the full health payload from a peer.
+// Uses LAN IP preferentially, falls back to Nebula IP.
 func (p *Pinger) FetchPeerHealth(peer config.Peer) (*PeerHealth, error) {
-	if peer.NebulaIP == "" || peer.NebulaIP == "null" {
-		return nil, fmt.Errorf("peer %s has no nebula IP", peer.Hostname)
+	addr := peer.Address()
+	if addr == "" {
+		return nil, fmt.Errorf("peer %s has no reachable address (neither lan_ip nor nebula_ip set)", peer.Hostname)
 	}
-	url := fmt.Sprintf("http://%s:%d/v1/health", peer.NebulaIP, peer.Port)
+	url := fmt.Sprintf("http://%s/v1/health", addr)
 	resp, err := p.client.Get(url)
 	if err != nil {
 		return nil, err
