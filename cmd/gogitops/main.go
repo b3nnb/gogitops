@@ -16,6 +16,7 @@ import (
 
 	"github.com/bennbanks/gogitops/internal/agent"
 	"github.com/bennbanks/gogitops/internal/config"
+	"github.com/bennbanks/gogitops/internal/dashboard"
 )
 
 var (
@@ -31,6 +32,8 @@ func main() {
 			fmt.Printf("gogitops %s\n", version)
 		case "daemon", "run":
 			runDaemon(os.Args[2:])
+		case "dashboard":
+			runDashboard(os.Args[2:])
 		default:
 			if strings.HasPrefix(os.Args[1], "-") {
 				// legacy: bare flags means daemon mode
@@ -42,7 +45,7 @@ func main() {
 		}
 		return
 	}
-	fmt.Fprintf(os.Stderr, "usage: gogitops <command>\n\nCommands:\n  status   Show local agent health\n  daemon   Run the agent\n  version  Print version\n")
+	fmt.Fprintf(os.Stderr, "usage: gogitops <command>\n\nCommands:\n  status     Show local agent health\n  daemon     Run the agent\n  dashboard  Fleet status dashboard\n  version    Print version\n")
 	os.Exit(1)
 }
 
@@ -217,4 +220,107 @@ func resolveWebhook(url string) string {
 		log.Printf("warning: failed to resolve nenv:%s — using raw value", ref)
 	}
 	return url
+}
+
+// ── Dashboard ───────────────────────────────────────────────────────────
+
+func runDashboard(args []string) {
+	fs := flag.NewFlagSet("dashboard", flag.ExitOnError)
+	port := fs.Int("port", 7781, "HTTP port for the dashboard")
+	dbPath := fs.String("db", "", "path to SQLite status database (default: $XDG_CACHE_HOME/gogitops/status.db)")
+	repoDir := fs.String("repo", "/home/benn/Documents/code/GoGitOps", "path to config repo (reads mesh.yaml for auto-discovery)")
+	nodesFlag := fs.String("nodes", "", "override: comma-separated name=address pairs (e.g. friday=10.2.0.102:7780). Skips mesh.yaml.")
+	fs.Parse(args)
+
+	// Resolve DB path
+	if *dbPath == "" {
+		cacheDir := os.Getenv("XDG_CACHE_HOME")
+		if cacheDir == "" {
+			home, _ := os.UserHomeDir()
+			cacheDir = home + "/.cache"
+		}
+		*dbPath = cacheDir + "/gogitops/status.db"
+	}
+
+	// Build node list
+	var nodes []dashboard.NodeConfig
+
+	if *nodesFlag != "" {
+		// Manual override
+		for _, pair := range strings.Split(*nodesFlag, ",") {
+			pair = strings.TrimSpace(pair)
+			if pair == "" {
+				continue
+			}
+			parts := strings.SplitN(pair, "=", 2)
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				log.Fatalf("invalid --nodes entry %q (expected name=address)", pair)
+			}
+			name := parts[0]
+			addr := parts[1]
+			if !strings.Contains(addr, ":") {
+				addr = addr + ":7780"
+			}
+			displayIP := addr
+			if idx := strings.LastIndex(addr, ":"); idx >= 0 {
+				displayIP = addr[:idx]
+			}
+			nodes = append(nodes, dashboard.NodeConfig{
+				Name:      name,
+				Address:   addr,
+				DisplayIP: displayIP,
+			})
+		}
+	} else {
+		// Auto-discover from mesh.yaml
+		mesh, err := config.LoadMesh(*repoDir)
+		if err != nil {
+			log.Fatalf("failed to load mesh.yaml: %v\n(hint: use --nodes to manually specify peers)", err)
+		}
+		for _, peer := range mesh.Peers {
+			addr := peer.Address()
+			if addr == "" {
+				continue // skip peers with no reachable address
+			}
+			// DisplayIP: show both IPs if available, otherwise just the one used
+			displayIP := peer.LanIP
+			if displayIP == "" || displayIP == "null" {
+				displayIP = peer.NebulaIP
+			} else if peer.NebulaIP != "" && peer.NebulaIP != "null" {
+				// Show LAN as primary, Nebula as secondary
+				displayIP = peer.LanIP + " (lan) / " + peer.NebulaIP + " (neb)"
+			}
+			nodes = append(nodes, dashboard.NodeConfig{
+				Name:      peer.Hostname,
+				Address:   addr,
+				DisplayIP: displayIP,
+			})
+		}
+		if len(nodes) == 0 {
+			log.Printf("warning: mesh.yaml has no peers with reachable addresses")
+		}
+	}
+
+	// Open store
+	store, err := dashboard.NewStore(*dbPath)
+	if err != nil {
+		log.Fatalf("failed to open status database: %v", err)
+	}
+	defer store.Close()
+
+	// Create handler
+	h := dashboard.NewHandler(store, nodes)
+
+	http.Handle("/", h)
+	http.Handle("/index.html", h)
+	http.Handle("/api/status", h)
+
+	listenAddr := fmt.Sprintf(":%d", *port)
+	fmt.Printf("gogitops dashboard on :%d — monitoring %d nodes\n", *port, len(nodes))
+	for _, n := range nodes {
+		fmt.Printf("  %s → %s (display: %s)\n", n.Name, n.Address, n.DisplayIP)
+	}
+	if err := http.ListenAndServe(listenAddr, nil); err != nil {
+		log.Fatalf("dashboard server failed: %v", err)
+	}
 }

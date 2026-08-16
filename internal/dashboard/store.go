@@ -63,6 +63,11 @@ CREATE INDEX IF NOT EXISTS idx_node_checked
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
+	// Migrate old nebula_ip column → display_ip if needed
+	if _, err := db.Exec(`ALTER TABLE node_status RENAME COLUMN nebula_ip TO display_ip`); err != nil {
+		// Already migrated or column doesn't exist — safe to ignore
+	}
+
 	s := &Store{db: db}
 	if err := s.cleanup(context.Background()); err != nil {
 		// Non-fatal: log but don't fail startup
