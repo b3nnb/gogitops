@@ -124,6 +124,8 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
     font-size: 12px;
     color: var(--text-dim);
   }
+  .refresh-info a { color: var(--accent); text-decoration: none; }
+  .refresh-info a:hover { text-decoration: underline; }
   /* Drill-down panel */
   .drilldown {
     display: none;
@@ -203,6 +205,134 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   .service-list .svc-status.down { color: var(--red); }
   .service-list .svc-status.error { color: var(--red); }
   .loading { color: var(--text-dim); font-style: italic; }
+
+  /* Deploy panel */
+  .deploy-panel {
+    margin-top: 24px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .deploy-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .deploy-header:hover { background: rgba(79,142,247,0.04); }
+  .deploy-header h2 {
+    font-size: 16px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .deploy-header .chevron {
+    font-size: 12px;
+    color: var(--text-dim);
+    transition: transform 0.2s;
+  }
+  .deploy-header.open .chevron { transform: rotate(90deg); }
+  .deploy-body {
+    display: none;
+    padding: 0 20px 20px 20px;
+  }
+  .deploy-body.open { display: block; }
+  .deploy-body p {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+    line-height: 1.5;
+  }
+  .deploy-form {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .deploy-form label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-dim);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .deploy-form input, .deploy-form select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: var(--text);
+    font-size: 14px;
+    font-family: "SF Mono", "Fira Code", monospace;
+    outline: none;
+  }
+  .deploy-form input:focus, .deploy-form select:focus {
+    border-color: var(--accent);
+  }
+  .deploy-form select { cursor: pointer; }
+  .code-block {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    position: relative;
+  }
+  .code-block .code-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  .code-block pre {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 0;
+  }
+  .copy-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-dim);
+    font-size: 11px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .copy-btn:hover { color: var(--text); border-color: var(--accent); }
+  .copy-btn.copied { color: var(--green); border-color: var(--green); }
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab-bar button {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-dim);
+    font-size: 13px;
+    padding: 8px 16px;
+    cursor: pointer;
+  }
+  .tab-bar button:hover { color: var(--text); }
+  .tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
 </style>
 </head>
 <body>
@@ -217,7 +347,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
 {{if .Empty}}
   <div class="empty">
     <h2>No nodes configured</h2>
-    <p>Start the dashboard with <code>--nodes name=ip,name=ip</code> to monitor your fleet.</p>
+    <p>Deploy an agent below — it will register automatically.</p>
   </div>
 {{else}}
   <table>
@@ -248,7 +378,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
     {{end}}
     </tbody>
   </table>
-  <p class="refresh-info">Auto-refresh: page reloads on each visit &middot; <a href="/api/status" style="color:var(--accent)">JSON API</a> &middot; click a row to drill down</p>
+  <p class="refresh-info">click a row to drill down &middot; <a href="/api/status">JSON API</a></p>
 
   <!-- Drill-down panel -->
   <div class="drilldown" id="drilldown">
@@ -259,9 +389,81 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
     <div class="service-list" id="dd-services"></div>
   </div>
 {{end}}
+
+  <!-- Deploy Agent panel -->
+  <div class="deploy-panel">
+    <div class="deploy-header" id="deployToggle" onclick="toggleDeploy()">
+      <h2>🚀 Deploy Agent</h2>
+      <span class="chevron">▶</span>
+    </div>
+    <div class="deploy-body" id="deployBody">
+      <p>Generate the daemon command for a new node. The agent will register with this dashboard on startup — no manual config needed.</p>
+
+      <div class="deploy-form">
+        <label>Hostname
+          <input type="text" id="deployHostname" placeholder="e.g. nas" oninput="updateDeploy()">
+        </label>
+        <label>Bind
+          <input type="text" id="deployBind" value="0.0.0.0" oninput="updateDeploy()">
+        </label>
+        <label>Port
+          <input type="text" id="deployPort" value="7780" oninput="updateDeploy()">
+        </label>
+        <label>OS/Arch
+          <select id="deployArch" onchange="updateDeploy()">
+            <option value="linux/amd64">Linux amd64</option>
+            <option value="linux/arm64">Linux arm64</option>
+            <option value="darwin/arm64">macOS arm64</option>
+            <option value="darwin/amd64">macOS amd64</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="tab-bar">
+        <button class="active" onclick="switchTab('cmd', this)">Daemon Command</button>
+        <button onclick="switchTab('install', this)">One-Liner Install</button>
+        <button onclick="switchTab('systemd', this)">Systemd Unit</button>
+        <button onclick="switchTab('launchd', this)">LaunchAgent (macOS)</button>
+      </div>
+
+      <div class="tab-content active" id="tab-cmd">
+        <div class="code-block">
+          <div class="code-label">Run on the target node</div>
+          <button class="copy-btn" onclick="copyCode('cmdCode', this)">copy</button>
+          <pre id="cmdCode"></pre>
+        </div>
+      </div>
+
+      <div class="tab-content" id="tab-install">
+        <div class="code-block">
+          <div class="code-label">Download + run in one shot</div>
+          <button class="copy-btn" onclick="copyCode('installCode', this)">copy</button>
+          <pre id="installCode"></pre>
+        </div>
+      </div>
+
+      <div class="tab-content" id="tab-systemd">
+        <div class="code-block">
+          <div class="code-label">/etc/systemd/system/gogitops.service</div>
+          <button class="copy-btn" onclick="copyCode('systemdCode', this)">copy</button>
+          <pre id="systemdCode"></pre>
+        </div>
+      </div>
+
+      <div class="tab-content" id="tab-launchd">
+        <div class="code-block">
+          <div class="code-label">~/Library/LaunchAgents/com.benn.gogitops.plist</div>
+          <button class="copy-btn" onclick="copyCode('launchdCode', this)">copy</button>
+          <pre id="launchdCode"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
+var DASH_URL = '{{.DashURL}}';
+
 function drillDown(name) {
   var panel = document.getElementById('drilldown');
   var grid = document.getElementById('dd-grid');
@@ -352,6 +554,71 @@ function metricCard(label, value, cls) {
 function closeDrillDown() {
   document.getElementById('drilldown').classList.remove('active');
 }
+
+/* Deploy Agent */
+function toggleDeploy() {
+  var header = document.getElementById('deployToggle');
+  var body = document.getElementById('deployBody');
+  var isOpen = body.classList.contains('open');
+  if (isOpen) {
+    body.classList.remove('open');
+    header.classList.remove('open');
+  } else {
+    body.classList.add('open');
+    header.classList.add('open');
+    updateDeploy();
+  }
+}
+
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-content').forEach(function(el) { el.classList.remove('active'); });
+  document.querySelectorAll('.tab-bar button').forEach(function(el) { el.classList.remove('active'); });
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+}
+
+function updateDeploy() {
+  var host = document.getElementById('deployHostname').value || '<hostname>';
+  var bind = document.getElementById('deployBind').value || '0.0.0.0';
+  var port = document.getElementById('deployPort').value || '7780';
+  var arch = document.getElementById('deployArch').value;
+
+  var cmd = 'gogitops daemon \\\n  -hostname ' + host + ' \\\n  -bind ' + bind + ' \\\n  -port ' + port + ' \\\n  -interval 60 \\\n  -dashboard ' + DASH_URL;
+  document.getElementById('cmdCode').textContent = cmd;
+
+  // One-liner install: download from releases + run
+  var goos = arch.split('/')[0];
+  var goarch = arch.split('/')[1];
+  var ext = goos === 'darwin' ? 'darwin-' + goarch : goos + '-' + goarch;
+  var installCmd = 'curl -sL ' + DASH_URL + '/api/binary/' + goos + '/' + goarch + ' -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\n' + cmd;
+  if (goos === 'darwin') {
+    installCmd = '# macOS: download binary, ad-hoc sign, then run\ncurl -sL ' + DASH_URL + '/api/binary/' + goos + '/' + goarch + ' -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\ncodesign --force --sign - /usr/local/bin/gogitops && \\\n' + cmd;
+  }
+  document.getElementById('installCode').textContent = installCmd;
+
+  // Systemd unit
+  var systemd = '[Unit]\nDescription=GoGitOps Agent\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/gogitops daemon \\\n  -hostname ' + host + ' \\\n  -bind ' + bind + ' \\\n  -port ' + port + ' \\\n  -interval 60 \\\n  -dashboard ' + DASH_URL + '\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target';
+  document.getElementById('systemdCode').textContent = systemd;
+
+  // LaunchAgent
+  var launchd = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n    <key>Label</key>\n    <string>com.benn.gogitops</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>/usr/local/bin/gogitops</string>\n        <string>daemon</string>\n        <string>-hostname</string>\n        <string>' + host + '</string>\n        <string>-bind</string>\n        <string>' + bind + '</string>\n        <string>-port</string>\n        <string>' + port + '</string>\n        <string>-interval</string>\n        <string>60</string>\n        <string>-dashboard</string>\n        <string>' + DASH_URL + '</string>\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n    <key>KeepAlive</key>\n    <true/>\n    <key>StandardOutPath</key>\n    <string>/tmp/gogitops.log</string>\n    <key>StandardErrorPath</key>\n    <string>/tmp/gogitops.err</string>\n</dict>\n</plist>';
+  document.getElementById('launchdCode').textContent = launchd;
+}
+
+function copyCode(id, btn) {
+  var text = document.getElementById(id).textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    btn.textContent = 'copied!';
+    btn.classList.add('copied');
+    setTimeout(function() {
+      btn.textContent = 'copy';
+      btn.classList.remove('copied');
+    }, 2000);
+  });
+}
+
+// Init deploy on load
+updateDeploy();
 </script>
 
 </body>

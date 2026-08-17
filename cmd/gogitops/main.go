@@ -280,6 +280,8 @@ func runDashboard(args []string) {
 	dbPath := fs.String("db", "", "path to SQLite status database (default: $XDG_CACHE_HOME/gogitops/status.db)")
 	repoDir := fs.String("repo", "/home/benn/Documents/code/GoGitOps", "path to config repo (reads mesh.yaml for auto-discovery)")
 	nodesFlag := fs.String("nodes", "", "override: comma-separated name=address pairs (e.g. friday=10.2.0.102:7780). Skips mesh.yaml.")
+	binDir := fs.String("binaries", "", "path to directory with pre-built binaries (e.g. gogitops-linux-amd64, gogitops-darwin-arm64). Enables /api/binary/ downloads.")
+	dashHost := fs.String("host", "10.2.0.102", "external hostname/IP for the dashboard (used in deploy commands and agent registration)")
 	fs.Parse(args)
 
 	// Resolve DB path
@@ -359,8 +361,8 @@ func runDashboard(args []string) {
 	defer store.Close()
 
 	// Create handler
-	dashURL := fmt.Sprintf("http://10.2.0.102:%d", *port) // TODO: auto-detect
-	h := dashboard.NewHandler(store, nodes, dashURL)
+	dashURL := fmt.Sprintf("http://%s:%d", *dashHost, *port)
+	h := dashboard.NewHandler(store, nodes, dashURL, *binDir)
 
 	http.Handle("/", h)
 	http.Handle("/index.html", h)

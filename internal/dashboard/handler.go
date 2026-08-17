@@ -53,19 +53,21 @@ type apiNodeStatus struct {
 
 // Handler serves the dashboard HTML and the API endpoints.
 type Handler struct {
-	store    *Store
-	nodes    []NodeConfig
-	mu       sync.Mutex
-	cache    []liveResult // last live check results for /api/status
-	dashURL  string       // the dashboard's own external URL (told to registering agents)
+	store     *Store
+	nodes     []NodeConfig
+	mu        sync.Mutex
+	cache     []liveResult // last live check results for /api/status
+	dashURL   string       // the dashboard's own external URL (told to registering agents)
+	binDir    string       // directory containing pre-built binaries for /api/binary/
 }
 
 // NewHandler creates a new dashboard handler.
-func NewHandler(store *Store, nodes []NodeConfig, dashURL string) *Handler {
+func NewHandler(store *Store, nodes []NodeConfig, dashURL, binDir string) *Handler {
 	return &Handler{
 		store:   store,
 		nodes:   nodes,
 		dashURL: dashURL,
+		binDir:  binDir,
 	}
 }
 
@@ -76,6 +78,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAPI(w, r)
 	case r.URL.Path == "/api/register" && r.Method == "POST":
 		h.handleRegister(w, r)
+	case strings.HasPrefix(r.URL.Path, "/api/binary/"):
+		h.handleBinary(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/node/"):
 		name := strings.TrimPrefix(r.URL.Path, "/api/node/")
 		h.handleNodeAPI(w, r, name)
@@ -189,9 +193,10 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"Rows":  rows,
-		"Empty": len(allNodes) == 0,
-		"Now":   time.Now().Format("15:04:05 MST"),
+		"Rows":    rows,
+		"Empty":   len(allNodes) == 0,
+		"Now":     time.Now().Format("15:04:05 MST"),
+		"DashURL": h.dashURL,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -388,6 +393,23 @@ func (h *Handler) handleNodeAPI(w http.ResponseWriter, r *http.Request, name str
 	// Proxy the agent's full health response
 	w.Header().Set("Content-Type", "application/json")
 	io.Copy(w, resp.Body)
+}
+
+// handleBinary serves pre-built binaries for /api/binary/<os>/<arch>.
+// Expects files named like "gogitops-linux-amd64", "gogitops-darwin-arm64" in h.binDir.
+func (h *Handler) handleBinary(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/binary/"), "/")
+	if len(parts) != 2 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "expected /api/binary/<os>/<arch>"})
+		return
+	}
+	goos, goarch := parts[0], parts[1]
+	filename := "gogitops-" + goos + "-" + goarch
+	path := h.binDir + "/" + filename
+
+	http.ServeFile(w, r, path)
 }
 
 // registrationRequest is the payload for POST /api/register.
