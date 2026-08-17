@@ -144,6 +144,7 @@ func runDaemon(args []string) {
 		port      = flag.Int("port", 7780, "health API port")
 		intervalS = flag.Int("interval", 60, "check interval in seconds")
 		webhook   = flag.String("webhook", "", "Discord webhook URL or nenv:<ns>/<key> (empty = no alerts)")
+		dashFlag  = flag.String("dashboard", "", "dashboard URL to register with (e.g. http://10.2.0.102:7781)")
 	)
 	flag.CommandLine.Parse(args)
 
@@ -195,6 +196,11 @@ func runDaemon(args []string) {
 		}
 	}()
 
+	// Self-register with the dashboard if configured
+	if *dashFlag != "" {
+		go registerWithDashboard(*dashFlag, hostname, bind, *port, node)
+	}
+
 	// Run main loop
 	interval := time.Duration(*intervalS) * time.Second
 	a.Run(interval)
@@ -220,6 +226,50 @@ func resolveWebhook(url string) string {
 		log.Printf("warning: failed to resolve nenv:%s — using raw value", ref)
 	}
 	return url
+}
+
+// registerWithDashboard sends a POST /api/register to the dashboard.
+// Retries periodically so the dashboard doesn't need to be up first.
+func registerWithDashboard(dashURL, hostname, bindAddr string, port int, node *config.NodeConfig) {
+	// Build the address the dashboard can reach us at
+	address := bindAddr
+	if address == "0.0.0.0" {
+		// Use the node's best IP
+		address = node.Address()
+		if address == "" {
+			address = "127.0.0.1"
+		}
+	}
+	address = fmt.Sprintf("%s:%d", address, port)
+
+	// Build display IP
+	displayIP := node.LanIP
+	if displayIP != "" && displayIP != "null" && node.NebulaIP != "" && node.NebulaIP != "null" {
+		displayIP = node.LanIP + " (lan) / " + node.NebulaIP + " (neb)"
+	} else if displayIP == "" || displayIP == "null" {
+		displayIP = node.NebulaIP
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"hostname":   hostname,
+		"address":    address,
+		"display_ip": displayIP,
+	})
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	for {
+		url := strings.TrimRight(dashURL, "/") + "/api/register"
+		resp, err := client.Post(url, "application/json", strings.NewReader(string(payload)))
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				log.Printf("registered with dashboard at %s", dashURL)
+				return
+			}
+		}
+		log.Printf("dashboard registration failed (will retry): %v", err)
+		time.Sleep(30 * time.Second)
+	}
 }
 
 // ── Dashboard ───────────────────────────────────────────────────────────
@@ -309,7 +359,8 @@ func runDashboard(args []string) {
 	defer store.Close()
 
 	// Create handler
-	h := dashboard.NewHandler(store, nodes)
+	dashURL := fmt.Sprintf("http://10.2.0.102:%d", *port) // TODO: auto-detect
+	h := dashboard.NewHandler(store, nodes, dashURL)
 
 	http.Handle("/", h)
 	http.Handle("/index.html", h)

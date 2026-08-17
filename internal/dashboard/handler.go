@@ -51,19 +51,21 @@ type apiNodeStatus struct {
 	Uptime24h    float64 `json:"uptime_24h_pct"`
 }
 
-// Handler serves the dashboard HTML and the /api/status JSON endpoint.
+// Handler serves the dashboard HTML and the API endpoints.
 type Handler struct {
-	store *Store
-	nodes []NodeConfig
-	mu    sync.Mutex
-	cache []liveResult // last live check results for /api/status
+	store    *Store
+	nodes    []NodeConfig
+	mu       sync.Mutex
+	cache    []liveResult // last live check results for /api/status
+	dashURL  string       // the dashboard's own external URL (told to registering agents)
 }
 
 // NewHandler creates a new dashboard handler.
-func NewHandler(store *Store, nodes []NodeConfig) *Handler {
+func NewHandler(store *Store, nodes []NodeConfig, dashURL string) *Handler {
 	return &Handler{
-		store: store,
-		nodes: nodes,
+		store:   store,
+		nodes:   nodes,
+		dashURL: dashURL,
 	}
 }
 
@@ -72,6 +74,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/api/status":
 		h.handleAPI(w, r)
+	case r.URL.Path == "/api/register" && r.Method == "POST":
+		h.handleRegister(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/node/"):
 		name := strings.TrimPrefix(r.URL.Path, "/api/node/")
 		h.handleNodeAPI(w, r, name)
@@ -84,7 +88,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleAPI returns JSON status for all nodes.
 func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
-	results := h.checkAllNodes(r.Context())
+	results, _ := h.checkAllNodesMerged(r.Context())
 
 	statuses := make([]apiNodeStatus, 0, len(results))
 	for _, res := range results {
@@ -123,7 +127,7 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 // handleDashboard runs live checks, records them, then renders the HTML page.
 func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	results := h.checkAllNodes(r.Context())
+	results, allNodes := h.checkAllNodesMerged(r.Context())
 
 	// Build template data
 	type row struct {
@@ -143,6 +147,10 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]row, 0, len(results))
 	for i, res := range results {
+		addr := ""
+		if i < len(allNodes) {
+			addr = allNodes[i].Address
+		}
 		rw := row{
 			NodeName:    res.NodeName,
 			DisplayIP:   res.DisplayIP,
@@ -150,7 +158,7 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			ResponseMs:  res.ResponseMs,
 			Services:    formatServices(res.ServicesUp, res.ServicesTotal),
 			LastCheckin: formatRelTime(res.CheckedAt),
-			Address:     h.nodes[i].Address,
+			Address:     addr,
 		}
 
 		// Online status: can we reach the agent at all?
@@ -182,7 +190,7 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]interface{}{
 		"Rows":  rows,
-		"Empty": len(h.nodes) == 0,
+		"Empty": len(allNodes) == 0,
 		"Now":   time.Now().Format("15:04:05 MST"),
 	}
 
@@ -192,12 +200,34 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// checkAllNodes performs live health checks against all configured nodes.
-func (h *Handler) checkAllNodes(ctx context.Context) []liveResult {
-	var wg sync.WaitGroup
-	results := make([]liveResult, len(h.nodes))
+// checkAllNodesMerged performs live health checks against all configured + registered nodes.
+// Returns the results and the merged node list (for address lookups).
+func (h *Handler) checkAllNodesMerged(ctx context.Context) ([]liveResult, []NodeConfig) {
+	// Merge static nodes with self-registered nodes
+	allNodes := h.nodes
 
-	for i, nc := range h.nodes {
+	regNodes, err := h.store.GetRegisteredNodes(ctx)
+	if err == nil {
+		// Track which names are already in the static list
+		seen := map[string]bool{}
+		for _, n := range allNodes {
+			seen[n.Name] = true
+		}
+		for _, rn := range regNodes {
+			if !seen[rn.NodeName] {
+				allNodes = append(allNodes, NodeConfig{
+					Name:      rn.NodeName,
+					Address:   rn.Address,
+					DisplayIP: rn.DisplayIP,
+				})
+			}
+		}
+	}
+
+	var wg sync.WaitGroup
+	results := make([]liveResult, len(allNodes))
+
+	for i, nc := range allNodes {
 		wg.Add(1)
 		go func(idx int, cfg NodeConfig) {
 			defer wg.Done()
@@ -219,7 +249,7 @@ func (h *Handler) checkAllNodes(ctx context.Context) []liveResult {
 	h.cache = results
 	h.mu.Unlock()
 
-	return results
+	return results, allNodes
 }
 
 // checkNode performs a single health check against a node.
@@ -315,12 +345,23 @@ func formatUptime(pct float64) string {
 // handleNodeAPI returns the full health payload from a single node's agent.
 // This is the drill-down: fetches /v1/health from the agent directly.
 func (h *Handler) handleNodeAPI(w http.ResponseWriter, r *http.Request, name string) {
-	// Find the node's address
+	// Find the node's address — check static config then registered nodes
 	var addr string
 	for _, n := range h.nodes {
 		if n.Name == name {
 			addr = n.Address
 			break
+		}
+	}
+	if addr == "" {
+		regNodes, err := h.store.GetRegisteredNodes(r.Context())
+		if err == nil {
+			for _, rn := range regNodes {
+				if rn.NodeName == name {
+					addr = rn.Address
+					break
+				}
+			}
 		}
 	}
 	if addr == "" {
@@ -347,4 +388,62 @@ func (h *Handler) handleNodeAPI(w http.ResponseWriter, r *http.Request, name str
 	// Proxy the agent's full health response
 	w.Header().Set("Content-Type", "application/json")
 	io.Copy(w, resp.Body)
+}
+
+// registrationRequest is the payload for POST /api/register.
+// Agents send this on startup to announce themselves to the dashboard.
+type registrationRequest struct {
+	Hostname  string `json:"hostname"`
+	Address   string `json:"address"`   // e.g. "10.2.0.102:7780"
+	DisplayIP string `json:"display_ip"` // e.g. "10.2.0.102 (lan) / 10.200.0.2 (neb)"
+}
+
+// handleRegister accepts POST /api/register from agents.
+// The agent tells the dashboard its name and how to reach it.
+// The dashboard stores it and will start health-checking it.
+func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req registrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if req.Hostname == "" || req.Address == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "hostname and address required"})
+		return
+	}
+
+	// Default port if not specified
+	if !strings.Contains(req.Address, ":") {
+		req.Address = req.Address + ":7780"
+	}
+
+	if req.DisplayIP == "" {
+		// Strip port for display
+		req.DisplayIP = req.Address
+		if idx := strings.LastIndex(req.Address, ":"); idx >= 0 {
+			req.DisplayIP = req.Address[:idx]
+		}
+	}
+
+	if err := h.store.RegisterNode(r.Context(), req.Hostname, req.Address, req.DisplayIP); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	log.Printf("node registered: %s → %s (%s)", req.Hostname, req.Address, req.DisplayIP)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "registered",
+		"hostname":  req.Hostname,
+		"address":   req.Address,
+		"dashboard": h.dashURL,
+	})
 }

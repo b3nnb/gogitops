@@ -57,6 +57,15 @@ CREATE TABLE IF NOT EXISTS node_status (
 );
 CREATE INDEX IF NOT EXISTS idx_node_checked
 	ON node_status (node_name, checked_at DESC);
+
+CREATE TABLE IF NOT EXISTS registered_nodes (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	node_name TEXT NOT NULL UNIQUE,
+	address TEXT NOT NULL,
+	display_ip TEXT NOT NULL,
+	registered_at TIMESTAMPTZ NOT NULL,
+	last_seen TIMESTAMPTZ NOT NULL
+);
 `
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -160,4 +169,64 @@ func (s *Store) Get24hSummary(ctx context.Context, nodeName string) (float64, er
 		h = 0
 	}
 	return (float64(h) / float64(total.Int64)) * 100.0, nil
+}
+
+// RegisterNode upserts a node into the registered_nodes table.
+// If the node already exists, it updates last_seen and address.
+func (s *Store) RegisterNode(ctx context.Context, nodeName, address, displayIP string) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO registered_nodes (node_name, address, display_ip, registered_at, last_seen)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(node_name) DO UPDATE SET
+		   address = excluded.address,
+		   display_ip = excluded.display_ip,
+		   last_seen = excluded.last_seen`,
+		nodeName, address, displayIP, now, now,
+	)
+	if err != nil {
+		return fmt.Errorf("register node: %w", err)
+	}
+	return nil
+}
+
+// RegisteredNode is a self-registered node entry.
+type RegisteredNode struct {
+	NodeName     string
+	Address      string
+	DisplayIP    string
+	RegisteredAt time.Time
+	LastSeen     time.Time
+}
+
+// GetRegisteredNodes returns all registered nodes.
+func (s *Store) GetRegisteredNodes(ctx context.Context) ([]RegisteredNode, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT node_name, address, display_ip, registered_at, last_seen
+		 FROM registered_nodes
+		 ORDER BY node_name`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query registered nodes: %w", err)
+	}
+	defer rows.Close()
+
+	var nodes []RegisteredNode
+	for rows.Next() {
+		var n RegisteredNode
+		var regAt, seenAt string
+		if err := rows.Scan(&n.NodeName, &n.Address, &n.DisplayIP, &regAt, &seenAt); err != nil {
+			return nil, fmt.Errorf("scan registered node: %w", err)
+		}
+		n.RegisteredAt, _ = time.Parse(time.RFC3339, regAt)
+		n.LastSeen, _ = time.Parse(time.RFC3339, seenAt)
+		if n.RegisteredAt.IsZero() {
+			n.RegisteredAt, _ = time.Parse("2006-01-02 15:04:05Z07:00", regAt)
+		}
+		if n.LastSeen.IsZero() {
+			n.LastSeen, _ = time.Parse("2006-01-02 15:04:05Z07:00", seenAt)
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
 }
