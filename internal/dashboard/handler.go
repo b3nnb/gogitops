@@ -4,6 +4,7 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -38,7 +39,9 @@ type liveResult struct {
 type apiNodeStatus struct {
 	NodeName     string  `json:"node_name"`
 	DisplayIP    string  `json:"ip"`
+	Online       bool    `json:"online"`
 	Healthy      bool    `json:"healthy"`
+	HealthStatus string  `json:"health_status"` // "healthy" | "degraded" | "down"
 	ServicesUp   int     `json:"services_up"`
 	ServicesTotal int    `json:"services_total"`
 	Version      string  `json:"version"`
@@ -64,12 +67,15 @@ func NewHandler(store *Store, nodes []NodeConfig) *Handler {
 	}
 }
 
-// ServeHTTP routes requests to either the dashboard page or the API endpoint.
+// ServeHTTP routes requests to either the dashboard page or the API endpoints.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {
-	case "/api/status":
+	switch {
+	case r.URL.Path == "/api/status":
 		h.handleAPI(w, r)
-	case "/", "/index.html":
+	case strings.HasPrefix(r.URL.Path, "/api/node/"):
+		name := strings.TrimPrefix(r.URL.Path, "/api/node/")
+		h.handleNodeAPI(w, r, name)
+	case r.URL.Path == "/" || r.URL.Path == "/index.html":
 		h.handleDashboard(w, r)
 	default:
 		http.NotFound(w, r)
@@ -83,10 +89,21 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 	statuses := make([]apiNodeStatus, 0, len(results))
 	for _, res := range results {
 		uptime, _ := h.store.Get24hSummary(r.Context(), res.NodeName)
+		online := res.Error == ""
+		healthStatus := "down"
+		if online {
+			if res.ServicesUp == res.ServicesTotal && res.ServicesTotal > 0 {
+				healthStatus = "healthy"
+			} else {
+				healthStatus = "degraded"
+			}
+		}
 		s := apiNodeStatus{
 			NodeName:     res.NodeName,
 			DisplayIP:    res.DisplayIP,
+			Online:       online,
 			Healthy:      res.Healthy,
+			HealthStatus: healthStatus,
 			ServicesUp:   res.ServicesUp,
 			ServicesTotal: res.ServicesTotal,
 			Version:      res.Version,
@@ -110,44 +127,51 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	// Build template data
 	type row struct {
-		NodeName    string
-		DisplayIP   string
-		Status      string // "healthy", "degraded", "down"
-		StatusEmoji string
-		Services    string // "12/12"
-		Version     string
-		LastCheckin string // relative time
-		Uptime24h   string // "99.8%"
-		ResponseMs  int
+		NodeName      string
+		DisplayIP     string
+		Online        bool
+		OnlineEmoji   string // 🟢 or 🔴
+		HealthStatus  string // "healthy", "degraded", "down"
+		HealthEmoji   string
+		Services      string // "12/12"
+		Version       string
+		LastCheckin   string // relative time
+		Uptime24h     string // "99.8%"
+		ResponseMs    int
+		Address       string // for drill-down link
 	}
 
 	rows := make([]row, 0, len(results))
-	for _, res := range results {
+	for i, res := range results {
 		rw := row{
-			NodeName:   res.NodeName,
-			DisplayIP:  res.DisplayIP,
-			Version:    res.Version,
-			ResponseMs: res.ResponseMs,
-			Services:   formatServices(res.ServicesUp, res.ServicesTotal),
+			NodeName:    res.NodeName,
+			DisplayIP:   res.DisplayIP,
+			Version:     res.Version,
+			ResponseMs:  res.ResponseMs,
+			Services:    formatServices(res.ServicesUp, res.ServicesTotal),
 			LastCheckin: formatRelTime(res.CheckedAt),
+			Address:     h.nodes[i].Address,
 		}
 
-		// Determine status
-		if res.Error != "" {
-			rw.Status = "down"
-			rw.StatusEmoji = "🔴"
-			// Check if there was a recent stale record
-			if time.Since(res.CheckedAt) < 15*time.Minute {
-				rw.Status = "degraded"
-				rw.StatusEmoji = "🟡"
-			}
+		// Online status: can we reach the agent at all?
+		online := res.Error == ""
+		rw.Online = online
+		if online {
+			rw.OnlineEmoji = "🟢"
 		} else {
-			rw.Status = "healthy"
-			rw.StatusEmoji = "🟢"
-			if res.ServicesUp < res.ServicesTotal {
-				rw.Status = "degraded"
-				rw.StatusEmoji = "🟡"
-			}
+			rw.OnlineEmoji = "🔴"
+		}
+
+		// Health status: service-level (only meaningful if online)
+		if !online {
+			rw.HealthStatus = "down"
+			rw.HealthEmoji = "⚫"
+		} else if res.ServicesUp == res.ServicesTotal && res.ServicesTotal > 0 {
+			rw.HealthStatus = "healthy"
+			rw.HealthEmoji = "💚"
+		} else {
+			rw.HealthStatus = "degraded"
+			rw.HealthEmoji = "🟡"
 		}
 
 		uptime, _ := h.store.Get24hSummary(r.Context(), res.NodeName)
@@ -286,4 +310,41 @@ func formatUptime(pct float64) string {
 		return "—"
 	}
 	return strconv.FormatFloat(pct, 'f', 1, 64) + "%"
+}
+
+// handleNodeAPI returns the full health payload from a single node's agent.
+// This is the drill-down: fetches /v1/health from the agent directly.
+func (h *Handler) handleNodeAPI(w http.ResponseWriter, r *http.Request, name string) {
+	// Find the node's address
+	var addr string
+	for _, n := range h.nodes {
+		if n.Name == name {
+			addr = n.Address
+			break
+		}
+	}
+	if addr == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "node not found"})
+		return
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	url := "http://" + addr + "/v1/health"
+	resp, err := client.Get(url)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"node_name": name,
+			"online":    false,
+			"error":     err.Error(),
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Proxy the agent's full health response
+	w.Header().Set("Content-Type", "application/json")
+	io.Copy(w, resp.Body)
 }
