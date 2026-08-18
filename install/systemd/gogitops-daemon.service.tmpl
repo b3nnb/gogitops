@@ -1,0 +1,13 @@
+[Unit]
+Description=GoGitOps Daemon — agent mesh health checker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/bin/gogitops daemon -repo %h/.config/gogitops -hostname __HOSTNAME__ -bind 0.0.0.0 -port 7780 -interval 60 -webhook nenv:gogitops/DISCORD_WEBHOOK
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

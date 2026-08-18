@@ -1,0 +1,146 @@
+# GoGitOps Recipe: test-recipe
+# 
+# Recipes are declarative YAML files that describe operational procedures.
+# This template shows every available field with comments explaining usage.
+# Remove what you don't need — minimal valid recipe is just name + steps.
+
+name: test-recipe
+description: "TODO: Human-readable description of what this recipe does"
+version: "1.0.0"
+
+# Which nodes can run this recipe. Empty = all nodes.
+# Use labels from nodes/*.yaml (e.g. [docker-host, gpu])
+labels: []
+
+# Optional parameters — passed via --var name=value or env
+# Referenced in steps as {{param_name}}
+params:
+  # - name: target_node
+  #   description: "Node to migrate to"
+  #   required: true
+  #   default: "mini"
+
+# Tag-based switching (for failover/migration recipes)
+# Tags are applied to nodes and queried by the recipe engine
+tags:
+  # - capable    # Node has all services installed (provisioned)
+  # - primary    # Node is currently active
+  # - standby    # Node is provisioned but inactive
+
+# Source node (for clone/migration recipes)
+# source_node: friday
+# source_ip: 10.2.0.102
+
+# IP address mapping (for configs that need per-node IPs)
+# ip_map:
+#   friday_lan: 10.2.0.102
+#   mini_lan: 10.0.0.251
+#   friday_nebula: 10.200.0.4
+#   mini_nebula: 10.200.0.3
+
+# Services to clone (for failover recipes)
+# services:
+#   - name: hermes-gateway
+#     type: systemd-user
+#     ports: [8642]
+#     config: ~/.hermes/config.yaml
+#     note: "Adjust Ollama base_url for target node"
+#   - name: caddy
+#     type: systemd
+#     config: /etc/caddy/Caddyfile
+#     ports: [80]
+
+# Docker compose stacks to clone
+# compose_stacks:
+#   - name: ctl
+#     path: /home/benn/Documents/code/Docker/ctl/
+#     ports: [3000, 8001, 5432]
+#   - name: netenv
+#     path: /home/benn/Documents/code/netenv/
+#     ports: [7200, 5432]
+
+# Standalone containers to clone
+# standalone_containers:
+#   - name: qdrant-hermes
+#     image: qdrant/qdrant:latest
+#     ports: [6333, 6334]
+
+# NAS mounts required on target node
+# nas_mounts:
+#   - mount: /media/benn/Bifrost
+#     share: //10.2.0.103/Bifrost
+
+# Files to sync from source to target
+# sync_files:
+#   - ~/.hermes/config.yaml
+#   - ~/.hermes/.env
+#   - ~/.hermes/skills/
+#   - /etc/caddy/Caddyfile
+
+# ── Steps ──────────────────────────────────────────────────────────────
+# Each step runs in order. Steps support:
+#   command: shell command to run
+#   action: built-in (mesh-query, service-check, git-commit, mesh-broadcast, wait-for-healthy)
+#   os/arch: filter by platform
+#   labels_required: node must have these labels
+#   expect/expect_regex: validate output
+#   parse + pattern: capture groups into {{1}}, {{2}}
+#   only_if / when: conditional execution
+#   retries / retry_delay: retry on failure
+#   on_failure: continue | abort (default: abort)
+#
+# Variables: {{param_name}}, {{hostname}}, {{os}}, {{arch}}, {{nebula_ip}}, {{repo}}
+
+steps:
+  # ── Example: Detect platform ──
+  - name: detect-arch
+    description: "Detect CPU architecture"
+    command: "uname -m"
+    parse: regex
+    pattern: "(.+)"
+
+  # ── Example: Install something (with retry) ──
+  # - name: install-package
+  #   description: "Install required package"
+  #   command: "apt-get install -y curl"
+  #   when: "! which curl 2>/dev/null"
+  #   retries: 2
+  #   retry_delay: 5s
+  #   on_failure: abort
+
+  # ── Example: Copy config with env var substitution ──
+  # - name: deploy-config
+  #   description: "Copy config file with IP substitution"
+  #   command: "sed 's/10.2.0.102/{{target_ip}}/g' {{repo}}/config.template > /etc/caddy/Caddyfile"
+  #   expect: ""  # empty stdout = success
+
+  # ── Example: Start service and wait ──
+  # - name: start-service
+  #   description: "Start the service"
+  #   command: "systemctl start caddy"
+  #   action: wait-for-healthy
+  #   retries: 3
+  #   retry_delay: 10s
+
+  # ── Example: Validate ──
+  # - name: verify-port
+  #   description: "Verify service is listening"
+  #   command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:80"
+  #   expect: "200"
+  #   on_failure: abort
+
+  # ── Example: Tag the node (for failover) ──
+  # - name: tag-primary
+  #   description: "Tag this node as primary"
+  #   action: git-commit
+  #   command: "echo 'friday-primary' >> {{repo}}/nodes/{{hostname}}.yaml"
+
+# ── Post-conditions ────────────────────────────────────────────────────
+# Checked after all steps complete. Recipe fails if any post-condition fails.
+# post_conditions:
+#   - name: health-check
+#     command: "curl -sf http://127.0.0.1:8642/health"
+#     expect: ""
+#   - name: port-check
+#     command: "ss -tlnp | grep 8642"
+#     expect: "8642"

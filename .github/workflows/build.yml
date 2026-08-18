@@ -1,4 +1,4 @@
-name: Build
+name: Build & Release Installer
 
 on:
   push:
@@ -17,35 +17,71 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
+            archive: tar.gz
           - goos: linux
             goarch: arm64
+            archive: tar.gz
           - goos: darwin
             goarch: arm64
-          - goos: windows
+            archive: tar.gz
+          - goos: darwin
             goarch: amd64
+            archive: tar.gz
 
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout netenv repo
+        uses: actions/checkout@v4
+        with:
+          repository: b3nnb/netenv
+          path: netenv-repo
+          token: ${{ secrets.GH_PAT || github.token }}
+
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.25'
 
-      - name: Build
+      - name: Build gogitops
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
         run: |
-          BINARY=gogitops
-          if [ "$GOOS" = "windows" ]; then BINARY=gogitops.exe; fi
           go build -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
-            -o dist/${BINARY} ./cmd/gogitops
+            -o dist/bin/gogitops ./cmd/gogitops
+
+      - name: Build nenv-agent
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          cd netenv-repo
+          go build -ldflags "-s -w" -o ../dist/bin/nenv-agent ./cmd/nenv-agent
+
+      - name: Stage install files
+        run: |
+          mkdir -p dist/config dist/systemd dist/ssh
+          cp install/install.sh dist/
+          cp install/systemd/*.tmpl dist/systemd/
+          cp mesh.yaml dist/config/
+          chmod +x dist/install.sh
+
+      - name: Create installer archive
+        id: archive
+        run: |
+          NAME=gogitops-installer-${{ matrix.goos }}-${{ matrix.goarch }}
+          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
+            tar czf $NAME.tar.gz -C dist .
+            echo "asset=$NAME.tar.gz" >> $GITHUB_OUTPUT
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gogitops-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/
+          name: gogitops-installer-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ steps.archive.outputs.asset }}
 
   release:
     needs: build
@@ -59,20 +95,35 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          for dir in dist/gogitops-*; do
-            name=$(basename "$dir")
-            if [ -f "$dir/gogitops.exe" ]; then
-              mv "$dir/gogitops.exe" "release/$name.exe"
-            else
-              mv "$dir/gogitops" "release/$name"
-            fi
-          done
+          find dist/ -name '*.tar.gz' -exec cp {} release/ \;
           ls -la release/
 
       - uses: softprops/action-gh-release@v2
         with:
           files: release/*
           generate_release_notes: true
+          body: |
+            ## Installer Package
+
+            Download the archive for your platform, extract, and run:
+
+            ```bash
+            tar xzf gogitops-installer-linux-amd64.tar.gz
+            bash install.sh [hostname] [nenv-server-url] [nenv-token]
+            ```
+
+            ### Contents
+            - `bin/gogitops` — mesh health checker daemon
+            - `bin/nenv-agent` — netenv check-in agent
+            - `config/mesh.yaml` — peer topology
+            - `systemd/*.service.tmpl` — systemd service templates
+            - `install.sh` — automated installer
+
+            ### Platforms
+            - linux-amd64 (Framework laptop, NAS)
+            - linux-arm64 (Raspberry Pi)
+            - darwin-arm64 (Mac Mini)
+            - darwin-amd64 (Intel Macs)
 
   deploy-nas:
     needs: release
@@ -86,22 +137,14 @@ jobs:
       - name: Prepare binaries
         run: |
           mkdir -p release
-          for dir in dist/gogitops-*; do
-            name=$(basename "$dir")
-            if [ -f "$dir/gogitops.exe" ]; then
-              mv "$dir/gogitops.exe" "release/$name.exe"
-            else
-              mv "$dir/gogitops" "release/$name"
-            fi
-          done
-          ls -la release/
+          find dist/ -name '*.tar.gz' -exec cp {} release/ \;
 
       - name: Install smbclient
         run: sudo apt-get update && sudo apt-get install -y smbclient
 
       - name: Copy to NAS via SMB
         run: |
-          for f in release/gogitops-*; do
+          for f in release/*.tar.gz; do
             basename=$(basename "$f")
             echo "Uploading $basename → Infra/releases/gogitops/"
             smbclient "//${{ secrets.NAS_IP }}/Bifrost" \
