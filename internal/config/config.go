@@ -48,6 +48,9 @@ type AgentConfig struct {
 	GitRepo          string `yaml:"git_repo"`
 	GitBranch        string `yaml:"git_branch"`
 	GitPullInterval  string `yaml:"git_pull_interval"`
+	NetEnvURL        string `yaml:"netenv_url"`
+	NetEnvToken      string `yaml:"netenv_token"`
+	NetEnvNS         string `yaml:"netenv_ns"`    // comma-separated namespaces to pull
 }
 
 // MeshConfig is the peer list (mesh.yaml)

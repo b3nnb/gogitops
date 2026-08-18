@@ -19,6 +19,7 @@ type PromptData struct {
 	Labels          []string `json:"labels"`
 	Hostname        string   `json:"hostname"`
 	NebulaRunning   bool     `json:"nebula_running"`
+	KeyVersion      int      `json:"key_version"`
 }
 
 // CachePath returns the OS-appropriate cache file location

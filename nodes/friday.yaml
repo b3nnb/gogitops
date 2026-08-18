@@ -70,3 +70,6 @@ agent:
   git_repo: git@github.com:bennbanks/gogitops.git
   git_branch: main
   git_pull_interval: 5m
+  netenv_url: http://10.2.0.102:7200
+  netenv_token: nenv:global/GOGITOPS_NETENV_TOKEN
+  netenv_ns: global

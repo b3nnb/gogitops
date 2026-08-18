@@ -22,13 +22,15 @@ var (
 
 func main() {
 	var (
-		repoDir   = flag.String("repo", "/home/benn/Documents/code/GoGitOps", "path to config repo")
-		hostFlag  = flag.String("hostname", "", "override hostname (defaults to system hostname; match a nodes/*.yaml name)")
-		bindAddr  = flag.String("bind", "", "bind address for health API (default: node's nebula IP)")
-		port      = flag.Int("port", 7780, "health API port")
-		intervalS = flag.Int("interval", 60, "check interval in seconds")
-		webhook   = flag.String("webhook", "", "Discord webhook URL or nenv:<ns>/<key> (empty = no alerts)")
-		showVer   = flag.Bool("version", false, "print version and exit")
+		repoDir    = flag.String("repo", "/home/benn/Documents/code/GoGitOps", "path to config repo")
+		hostFlag   = flag.String("hostname", "", "override hostname (defaults to system hostname; match a nodes/*.yaml name)")
+		bindAddr   = flag.String("bind", "", "bind address for health API (default: node's nebula IP)")
+		port       = flag.Int("port", 7780, "health API port")
+		intervalS  = flag.Int("interval", 60, "check interval in seconds")
+		webhook    = flag.String("webhook", "", "Discord webhook URL or nenv:<ns>/<key> (empty = no alerts)")
+		netenvURL  = flag.String("netenv", "", "netenv server URL (overrides agent config)")
+		netenvToken = flag.String("netenv-token", "", "netenv API token (overrides agent config)")
+		showVer    = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
 
@@ -56,6 +58,14 @@ func main() {
 	if err != nil {
 		log.Printf("warning: failed to load mesh config: %v — running without peer pings", err)
 		meshCfg = &config.MeshConfig{}
+	}
+
+	// Apply netenv flag overrides
+	if *netenvURL != "" {
+		node.Agent.NetEnvURL = *netenvURL
+	}
+	if *netenvToken != "" {
+		node.Agent.NetEnvToken = *netenvToken
 	}
 
 	// Determine bind address — default to Nebula IP so agent is invisible to LAN

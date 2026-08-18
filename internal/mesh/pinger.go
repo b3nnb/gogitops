@@ -24,6 +24,7 @@ type PeerHealth struct {
 	PeersUnreach   []string          `json:"peers_unreachable,omitempty"`
 	LastGitPull    string            `json:"last_git_pull,omitempty"`
 	ConfigHash     string            `json:"config_hash,omitempty"`
+	KeyVersion     int               `json:"key_version"`
 }
 
 // Pinger manages peer health checks

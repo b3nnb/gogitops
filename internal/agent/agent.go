@@ -15,6 +15,7 @@ import (
 	"github.com/bennbanks/gogitops/internal/config"
 	"github.com/bennbanks/gogitops/internal/health"
 	"github.com/bennbanks/gogitops/internal/mesh"
+	"github.com/bennbanks/gogitops/internal/netenv"
 	"github.com/bennbanks/gogitops/internal/starship"
 )
 
@@ -33,10 +34,36 @@ type Agent struct {
 	// last state for change detection
 	lastServiceState map[string]string
 	lastPeerState    map[string]bool
+
+	// netenv client for key rotation sync
+	netenvClient   *netenv.Client
+	localKeyVersion int // last known active key version from netenv
 }
 
 // New creates an agent from config
 func New(node *config.NodeConfig, m *config.MeshConfig, webhook string) *Agent {
+	var nvc *netenv.Client
+	if node.Agent.NetEnvURL != "" && node.Agent.NetEnvToken != "" {
+		nvc = netenv.NewClient(node.Agent.NetEnvURL, node.Agent.NetEnvToken, node.Hostname)
+		log.Printf("netenv client configured: %s", node.Agent.NetEnvURL)
+	}
+
+	// Resolve nenv: references (webhook URL, netenv token itself)
+	if nvc != nil {
+		if len(webhook) > 5 && webhook[:5] == "nenv:" {
+			if resolved, err := nvc.ResolveReference(webhook); err == nil {
+				webhook = resolved
+			} else {
+				log.Printf("warning: failed to resolve webhook reference %q: %v", webhook, err)
+			}
+		}
+		if len(node.Agent.NetEnvToken) > 5 && node.Agent.NetEnvToken[:5] == "nenv:" {
+			// Bootstrap: need a temporary client with a bootstrap token to resolve the actual token
+			// For now, log a warning — the token should be set directly or via env var
+			log.Printf("warning: netenv_token is a nenv: reference — set the actual token value or use GOGITOPS_NETENV_TOKEN env var")
+		}
+	}
+
 	return &Agent{
 		node:     node,
 		mesh:     m,
@@ -46,6 +73,7 @@ func New(node *config.NodeConfig, m *config.MeshConfig, webhook string) *Agent {
 		webhook:  webhook,
 		lastServiceState: map[string]string{},
 		lastPeerState:    map[string]bool{},
+		netenvClient:     nvc,
 	}
 }
 
@@ -70,6 +98,7 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		DiskWarns:      append(result.DiskWarns, result.DiskCrits...),
 		PeersReachable: reachable,
 		PeersUnreach:   unreachable,
+		KeyVersion:     a.localKeyVersion,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -89,7 +118,7 @@ func (a *Agent) Run(interval time.Duration) {
 	}
 }
 
-// cycle runs one check cycle: services, peers, cache write, alerts
+// cycle runs one check cycle: services, peers, cache write, netenv sync, alerts
 func (a *Agent) cycle(first bool) {
 	// 1. Service checks
 	result := health.RunAllChecks(a.node)
@@ -117,17 +146,23 @@ func (a *Agent) cycle(first bool) {
 		Labels:          a.node.Labels,
 		Hostname:        a.node.Hostname,
 		NebulaRunning:   a.nebulaRunning(),
+		KeyVersion:      a.localKeyVersion,
 	}
 	if err := starship.WriteCache(cache); err != nil {
 		log.Printf("starship cache write failed: %v", err)
 	}
 
-	// 4. Alert on state CHANGES (not every cycle)
+	// 4. NetEnv key rotation sync
+	if a.netenvClient != nil {
+		a.syncNetEnvKeys()
+	}
+
+	// 5. Alert on state CHANGES (not every cycle)
 	if !first {
 		a.alertOnChange(result, reachable, unreachable)
 	}
 
-	// 5. Store state for next cycle's change detection
+	// 6. Store state for next cycle's change detection
 	a.lastServiceState = map[string]string{}
 	for _, s := range result.Services {
 		a.lastServiceState[s.Name] = s.Status
@@ -135,6 +170,33 @@ func (a *Agent) cycle(first bool) {
 	a.lastPeerState = map[string]bool{}
 	for _, p := range reachable {
 		a.lastPeerState[p] = true
+	}
+}
+
+// syncNetEnvKeys checks netenv for the active key version and reports local state.
+func (a *Agent) syncNetEnvKeys() {
+	// Get current key state from netenv
+	ks, err := a.netenvClient.GetKeys()
+	if err != nil {
+		log.Printf("netenv key sync failed: %v", err)
+		return
+	}
+
+	// Check if our local version matches
+	if a.localKeyVersion != ks.ActiveVersion {
+		log.Printf("netenv key rotation detected: v%d → v%d", a.localKeyVersion, ks.ActiveVersion)
+		a.localKeyVersion = ks.ActiveVersion
+	}
+
+	// Check-in to netenv with our current key version
+	if err := a.netenvClient.CheckIn(a.localKeyVersion); err != nil {
+		log.Printf("netenv check-in failed: %v", err)
+	}
+
+	// Also check rotation state
+	rs, err := a.netenvClient.GetRotationState()
+	if err == nil && rs.Overdue {
+		log.Printf("WARNING: netenv key rotation is overdue (next was %s)", rs.NextRotation)
 	}
 }
 
