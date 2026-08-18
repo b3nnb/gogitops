@@ -1,0 +1,10 @@
+#!/bin/bash
+set -e
+
+# Stop and disable services before removal
+if [ -n "${SUDO_USER:-}" ]; then
+    sudo -u "$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$(id -u "$SUDO_USER")" \
+        systemctl --user stop gogitops-daemon nenv-agent 2>/dev/null || true
+    sudo -u "$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$(id -u "$SUDO_USER")" \
+        systemctl --user disable gogitops-daemon nenv-agent 2>/dev/null || true
+fi

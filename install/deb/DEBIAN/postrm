@@ -1,0 +1,7 @@
+#!/bin/bash
+set -e
+
+# Purge config on remove
+if [ "$1" = "purge" ]; then
+    rm -rf /etc/gogitops
+fi

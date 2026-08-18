@@ -1,0 +1,12 @@
+Package: gogitops
+Version: __VERSION__
+Section: utils
+Priority: optional
+Architecture: __ARCH__
+Maintainer: Benn Banks <me@bennbanks.com>
+Description: GoGitOps agent mesh daemon
+ GoGitOps is a decentralized agent mesh for homelab fleet management.
+ It runs a health checker daemon that reports node status, runs recipes,
+ and integrates with netenv for secrets distribution.
+Depends: sshpass
+Homepage: https://github.com/b3nnb/gogitops

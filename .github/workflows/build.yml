@@ -1,4 +1,4 @@
-name: Build & Release Installer
+name: Build & Release
 
 on:
   push:
@@ -17,19 +17,21 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-            archive: tar.gz
+            deb_arch: amd64
+            package: deb
           - goos: linux
             goarch: arm64
-            archive: tar.gz
+            deb_arch: arm64
+            package: deb
           - goos: darwin
             goarch: arm64
-            archive: tar.gz
+            package: tarball
           - goos: darwin
             goarch: amd64
-            archive: tar.gz
+            package: tarball
           - goos: windows
             goarch: amd64
-            archive: zip
+            package: zip
 
     runs-on: ubuntu-latest
     steps:
@@ -40,7 +42,7 @@ jobs:
         with:
           repository: b3nnb/netenv
           path: netenv-repo
-          token: ${{ secrets.GH_PAT || github.token }}
+          token: ${{ secrets.GH_PAT }}
 
       - uses: actions/setup-go@v5
         with:
@@ -53,7 +55,7 @@ jobs:
           CGO_ENABLED: 0
         run: |
           BINARY=gogitops
-          if [ "${{ matrix.goos }}" = "windows" ]; then BINARY=gogitops.exe; fi
+          [ "${{ matrix.goos }}" = "windows" ] && BINARY=gogitops.exe
           go build -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
             -o "dist/bin/$BINARY" ./cmd/gogitops
 
@@ -64,34 +66,82 @@ jobs:
           CGO_ENABLED: 0
         run: |
           BINARY=nenv-agent
-          if [ "${{ matrix.goos }}" = "windows" ]; then BINARY=nenv-agent.exe; fi
+          [ "${{ matrix.goos }}" = "windows" ] && BINARY=nenv-agent.exe
           cd netenv-repo
           go build -ldflags "-s -w" -o "../dist/bin/$BINARY" ./cmd/nenv-agent
 
-      - name: Stage install files
+      # ── Linux: build .deb package ──────────────────────────────
+      - name: Build .deb package
+        if: matrix.package == 'deb'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # If not a tag, use 0.0.0+commit
+          [ "$VERSION" = "$GITHUB_REF_NAME" ] && VERSION="0.0.0+${GITHUB_SHA:0:8}"
+
+          # Build the deb tree
+          DEB_ROOT="gogitops_${VERSION}_${{ matrix.deb_arch }}"
+          mkdir -p "$DEB_ROOT/DEBIAN"
+          mkdir -p "$DEB_ROOT/usr/local/bin"
+          mkdir -p "$DEB_ROOT/usr/lib/systemd/user"
+          mkdir -p "$DEB_ROOT/etc/gogitops"
+          mkdir -p "$DEB_ROOT/etc/gogitops/ssh"
+
+          # Binaries
+          cp dist/bin/gogitops "$DEB_ROOT/usr/local/bin/"
+          cp dist/bin/nenv-agent "$DEB_ROOT/usr/local/bin/"
+          chmod 755 "$DEB_ROOT/usr/local/bin/gogitops" "$DEB_ROOT/usr/local/bin/nenv-agent"
+
+          # Config
+          cp mesh.yaml "$DEB_ROOT/etc/gogitops/"
+          cp install/ssh/friday-automation.pub "$DEB_ROOT/etc/gogitops/ssh/"
+
+          # Systemd
+          cp install/deb/systemd/gogitops-daemon.service "$DEB_ROOT/usr/lib/systemd/user/"
+          cp install/deb/systemd/nenv-agent.service "$DEB_ROOT/usr/lib/systemd/user/"
+
+          # Control files
+          sed "s/__VERSION__/$VERSION/; s/__ARCH__/${{ matrix.deb_arch }}/" \
+            install/deb/DEBIAN/control > "$DEB_ROOT/DEBIAN/control"
+          cp install/deb/DEBIAN/postinst "$DEB_ROOT/DEBIAN/postinst"
+          cp install/deb/DEBIAN/prerm "$DEB_ROOT/DEBIAN/prerm"
+          cp install/deb/DEBIAN/postrm "$DEB_ROOT/DEBIAN/postrm"
+          chmod 755 "$DEB_ROOT/DEBIAN/postinst" "$DEB_ROOT/DEBIAN/prerm" "$DEB_ROOT/DEBIAN/postrm"
+
+          # Build the .deb
+          dpkg-deb --build "$DEB_ROOT"
+          echo "DEB_FILE=${DEB_ROOT}.deb" >> $GITHUB_ENV
+
+      # ── macOS: build .tar.gz tarball ────────────────────────────
+      - name: Build macOS tarball
+        if: matrix.package == 'tarball'
         run: |
           mkdir -p dist/config dist/systemd dist/ssh
           cp install/install.sh dist/
           cp install/systemd/*.tmpl dist/systemd/
           cp mesh.yaml dist/config/
+          cp install/ssh/friday-automation.pub dist/ssh/
           chmod +x dist/install.sh
+          NAME=gogitops-installer-darwin-${{ matrix.goarch }}
+          tar czf $NAME.tar.gz -C dist .
+          echo "TARBALL=$NAME.tar.gz" >> $GITHUB_ENV
 
-      - name: Create installer archive
-        id: archive
+      # ── Windows: build .zip ─────────────────────────────────────
+      - name: Build Windows zip
+        if: matrix.package == 'zip'
         run: |
-          NAME=gogitops-installer-${{ matrix.goos }}-${{ matrix.goarch }}
-          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
-            tar czf $NAME.tar.gz -C dist .
-            echo "asset=$NAME.tar.gz" >> $GITHUB_OUTPUT
-          elif [ "${{ matrix.archive }}" = "zip" ]; then
-            cd dist && zip -r ../$NAME.zip . && cd ..
-            echo "asset=$NAME.zip" >> $GITHUB_OUTPUT
-          fi
+          mkdir -p dist/config
+          cp mesh.yaml dist/config/
+          NAME=gogitops-installer-windows-${{ matrix.goarch }}
+          cd dist && zip -r ../$NAME.zip . && cd ..
+          echo "ZIP_FILE=$NAME.zip" >> $GITHUB_ENV
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gogitops-installer-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: ${{ steps.archive.outputs.asset }}
+          name: gogitops-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            ${{ env.DEB_FILE }}
+            ${{ env.TARBALL }}
+            ${{ env.ZIP_FILE }}
 
   release:
     needs: build
@@ -105,7 +155,7 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          find dist/ \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/ \;
+          find dist/ \( -name '*.deb' -o -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/ \;
           ls -la release/
 
       - uses: softprops/action-gh-release@v2
@@ -113,51 +163,37 @@ jobs:
           files: release/*
           generate_release_notes: true
           body: |
-            ## Installer Package
+            ## Install
 
-            Download the archive for your platform, extract, and run:
-
+            **Linux (deb):**
             ```bash
-            tar xzf gogitops-installer-linux-amd64.tar.gz
-            bash install.sh [hostname] [nenv-server-url] [nenv-token]
+            sudo dpkg -i gogitops_*_amd64.deb
+            # Configure hostname in the systemd service:
+            sudo sed -i 's/__HOSTNAME__/your-hostname/' /usr/lib/systemd/user/gogitops-daemon.service
+            sudo sed -i 's/__NENV_SERVER__/http://10.2.0.102:7200/' /usr/lib/systemd/user/nenv-agent.service
+            sudo sed -i 's/__NENV_TOKEN__/your-token/' /usr/lib/systemd/user/nenv-agent.service
+            systemctl --user daemon-reload
+            systemctl --user enable --now gogitops-daemon nenv-agent
             ```
 
-            ### Contents
-            - `bin/gogitops` — mesh health checker daemon
-            - `bin/nenv-agent` — netenv check-in agent
-            - `config/mesh.yaml` — peer topology
-            - `systemd/*.service.tmpl` — systemd service templates
-            - `install.sh` — automated installer
+            **macOS:**
+            ```bash
+            tar xzf gogitops-installer-darwin-arm64.tar.gz
+            bash install.sh [hostname] [nenv-server] [nenv-token]
+            ```
 
-            ### Platforms
-            - linux-amd64 (Framework laptop, NAS)
-            - linux-arm64 (Raspberry Pi)
-            - darwin-arm64 (Mac Mini)
-            - darwin-amd64 (Intel Macs)
+            **Windows:**
+            Extract `gogitops-installer-windows-amd64.zip` and add binaries to PATH.
 
-  deploy-nas:
-    needs: release
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist/
+            ## Uninstall (Linux)
+            ```bash
+            sudo dpkg --remove gogitops
+            ```
 
-      - name: Prepare binaries
-        run: |
-          mkdir -p release
-          find dist/ \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/ \;
-
-      - name: Install smbclient
-        run: sudo apt-get update && sudo apt-get install -y smbclient
-
-      - name: Copy to NAS via SMB
-        run: |
-          for f in release/*; do
-            basename=$(basename "$f")
-            echo "Uploading $basename → Infra/releases/gogitops/"
-            smbclient "//${{ secrets.NAS_IP }}/Bifrost" \
-              -U "${{ secrets.NAS_USER }}%${{ secrets.NAS_PASS }}" \
-              -c "cd Infra/releases/gogitops; put $f $basename"
-          done
+            ## Contents
+            - `/usr/local/bin/gogitops` — mesh health checker daemon
+            - `/usr/local/bin/nenv-agent` — netenv check-in agent
+            - `/etc/gogitops/mesh.yaml` — peer topology
+            - `/usr/lib/systemd/user/gogitops-daemon.service` — systemd service
+            - `/usr/lib/systemd/user/nenv-agent.service` — systemd service
+            - `/etc/gogitops/ssh/friday-automation.pub` — SSH key for authorized_keys.d

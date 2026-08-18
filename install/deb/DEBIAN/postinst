@@ -1,0 +1,35 @@
+#!/bin/bash
+set -e
+
+# Fix non-interactive SSH shell hang
+BASHRC="/home/${SUDO_USER:-benn}/.bashrc"
+if ! head -5 "$BASHRC" 2>/dev/null | grep -q '!= \*i\*'; then
+    TMP=$(mktemp)
+    {
+        echo '# Return early for non-interactive shells (fixes SSH hang)'
+        echo '[[ $- != *i* ]] && return'
+        cat "$BASHRC" 2>/dev/null || true
+    } > "$TMP"
+    chown "${SUDO_USER:-benn}" "$TMP"
+    mv "$TMP" "$BASHRC"
+fi
+
+# Set up SSH authorized_keys.d
+USER_HOME="/home/${SUDO_USER:-benn}"
+mkdir -p "$USER_HOME/.ssh/authorized_keys.d"
+if [ -f /etc/gogitops/ssh/friday-automation.pub ]; then
+    cp /etc/gogitops/ssh/friday-automation.pub "$USER_HOME/.ssh/authorized_keys.d/"
+    chown -R "${SUDO_USER:-benn}" "$USER_HOME/.ssh/authorized_keys.d"
+    chmod 600 "$USER_HOME/.ssh/authorized_keys.d/friday-automation.pub"
+fi
+
+# Reload systemd for the installing user
+if [ -n "${SUDO_USER:-}" ]; then
+    sudo -u "$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$(id -u "$SUDO_USER")" \
+        systemctl --user daemon-reload 2>/dev/null || true
+fi
+
+echo ""
+echo "gogitops installed. To enable the daemon:"
+echo "  systemctl --user enable --now gogitops-daemon"
+echo "  systemctl --user enable --now nenv-agent"
