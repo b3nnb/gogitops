@@ -27,6 +27,9 @@ jobs:
           - goos: darwin
             goarch: amd64
             archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            archive: zip
 
     runs-on: ubuntu-latest
     steps:
@@ -49,8 +52,10 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
+          BINARY=gogitops
+          if [ "${{ matrix.goos }}" = "windows" ]; then BINARY=gogitops.exe; fi
           go build -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
-            -o dist/bin/gogitops ./cmd/gogitops
+            -o "dist/bin/$BINARY" ./cmd/gogitops
 
       - name: Build nenv-agent
         env:
@@ -58,8 +63,10 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
+          BINARY=nenv-agent
+          if [ "${{ matrix.goos }}" = "windows" ]; then BINARY=nenv-agent.exe; fi
           cd netenv-repo
-          go build -ldflags "-s -w" -o ../dist/bin/nenv-agent ./cmd/nenv-agent
+          go build -ldflags "-s -w" -o "../dist/bin/$BINARY" ./cmd/nenv-agent
 
       - name: Stage install files
         run: |
@@ -76,6 +83,9 @@ jobs:
           if [ "${{ matrix.archive }}" = "tar.gz" ]; then
             tar czf $NAME.tar.gz -C dist .
             echo "asset=$NAME.tar.gz" >> $GITHUB_OUTPUT
+          elif [ "${{ matrix.archive }}" = "zip" ]; then
+            cd dist && zip -r ../$NAME.zip . && cd ..
+            echo "asset=$NAME.zip" >> $GITHUB_OUTPUT
           fi
 
       - uses: actions/upload-artifact@v4
@@ -95,7 +105,7 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          find dist/ -name '*.tar.gz' -exec cp {} release/ \;
+          find dist/ \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/ \;
           ls -la release/
 
       - uses: softprops/action-gh-release@v2
@@ -137,14 +147,14 @@ jobs:
       - name: Prepare binaries
         run: |
           mkdir -p release
-          find dist/ -name '*.tar.gz' -exec cp {} release/ \;
+          find dist/ \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/ \;
 
       - name: Install smbclient
         run: sudo apt-get update && sudo apt-get install -y smbclient
 
       - name: Copy to NAS via SMB
         run: |
-          for f in release/*.tar.gz; do
+          for f in release/*; do
             basename=$(basename "$f")
             echo "Uploading $basename → Infra/releases/gogitops/"
             smbclient "//${{ secrets.NAS_IP }}/Bifrost" \
