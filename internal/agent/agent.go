@@ -15,7 +15,7 @@ import (
 	"github.com/bennbanks/gogitops/internal/config"
 	"github.com/bennbanks/gogitops/internal/health"
 	"github.com/bennbanks/gogitops/internal/mesh"
-	"github.com/bennbanks/gogitops/internal/netenv"
+	"github.com/b3nnb/bennkit/netenv"
 	"github.com/bennbanks/gogitops/internal/starship"
 )
 
