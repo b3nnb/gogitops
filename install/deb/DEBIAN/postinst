@@ -27,61 +27,83 @@ if [ -f /etc/gogitops/ssh/friday-automation.pub ]; then
     chmod 600 "$USER_HOME/.ssh/authorized_keys.d/friday-automation.pub"
 fi
 
-# ── 3. Determine hostname ─────────────────────────────────────
-HOSTNAME=$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -1)
-# Override from debconf if previously stored
-if command -v debconf-show &>/dev/null; then
-    STORED_HOSTNAME=$(debconf-show gogitops 2>/dev/null | grep 'hostname' | sed 's/.*: //')
-    [ -n "$STORED_HOSTNAME" ] && HOSTNAME="$STORED_HOSTNAME"
+# ── 3. Create gogitops config file ────────────────────────────
+CONFIG_FILE="/etc/gogitops/config.yaml"
+if [ ! -f "$CONFIG_FILE" ]; then
+    cat > "$CONFIG_FILE" << EOF
+# gogitops configuration
+webhook: ""
+bind: "0.0.0.0"
+port: 7780
+interval: 60
+EOF
+    chmod 644 "$CONFIG_FILE"
 fi
 
-# ── 4. Render systemd services ────────────────────────────────
-# Replace __HOSTNAME__ in service files
-sed -i "s/__HOSTNAME__/$HOSTNAME/g" /usr/lib/systemd/user/gogitops-daemon.service
-sed -i "s/__HOSTNAME__/$HOSTNAME/g" /usr/lib/systemd/user/nenv-agent.service
-
-# ── 5. Configure nenv-agent ───────────────────────────────────
-NENV_SERVER="http://10.2.0.102:7200"
-NENV_TOKEN=""
-
-# Try to get token from local nenv if available
-if command -v nenv &>/dev/null; then
-    NENV_TOKEN=$(nenv get gogitops AGENT_TOKEN 2>/dev/null || echo "")
+# ── 4. Ask for Discord webhook (interactive only) ─────────────
+if [ -t 0 ]; then
+    CURRENT_WEBHOOK=$(grep '^webhook:' "$CONFIG_FILE" 2>/dev/null | sed 's/webhook: *"\?\([^"]*\)"\?/\1/')
+    if [ -z "$CURRENT_WEBHOOK" ]; then
+        echo ""
+        echo "gogitops can send health alerts to Discord (optional)."
+        echo "Get a webhook: Discord → Server Settings → Integrations → Webhooks"
+        read -rp "Discord webhook URL (Enter to skip): " WEBHOOK_URL
+        if [ -n "$WEBHOOK_URL" ]; then
+            sed -i "s|^webhook: .*|webhook: \"$WEBHOOK_URL\"|" "$CONFIG_FILE"
+            echo "  ✓ Discord alerts configured"
+        fi
+    fi
 fi
 
-# If still no token, try fetching directly from the NetEnv server
-if [ -z "$NENV_TOKEN" ]; then
-    NENV_TOKEN=$(curl -sf -H "Authorization: Bearer nenv_tok_84180910cf71c12ed4abc030d70f5fc2f6751bf005e5eeac0fca5e3d415b762f" \
-        "$NENV_SERVER/v1/namespaces/gogitops/secrets/AGENT_TOKEN" 2>/dev/null | sed 's/.*"value"\s*:\s*"\([^"]*\)".*/\1/' || echo "")
+# ── 5. NetEnv integration (default: OFF) ──────────────────────
+# nenv-agent binary is always installed, but the service is NOT enabled
+# unless the user opts in. Three ways to opt in:
+#   a) Interactive: answer "y" to the prompt below
+#   b) Pre-seeded:  GOGITOPS_NETENV=1 sudo dpkg -i gogitops.deb
+#   c) Post-install: edit service + enable manually (instructions printed)
+
+NETENV_ENABLED=0
+NETENV_SERVER=""
+NETENV_TOKEN=""
+
+# Check env var pre-seed
+if [ "${GOGITOPS_NETENV:-0}" = "1" ]; then
+    NETENV_ENABLED=1
+    NETENV_SERVER="${GOGITOPS_NETENV_SERVER:-http://10.2.0.102:7200}"
+    NETENV_TOKEN="${GOGITOPS_NETENV_TOKEN:-}"
 fi
 
-# If still no token, check debconf
-if [ -z "$NENV_TOKEN" ] && command -v debconf-show &>/dev/null; then
-    NENV_TOKEN=$(debconf-show gogitops 2>/dev/null | grep 'nenv-token' | sed 's/.*: //')
-fi
-
-# If still no token, prompt (only if we have a TTY — i.e. not apt non-interactive)
-if [ -z "$NENV_TOKEN" ] && [ -t 0 ]; then
+# Interactive prompt
+if [ "$NETENV_ENABLED" = "0" ] && [ -t 0 ]; then
     echo ""
-    echo "gogitops needs a NetEnv agent token so nenv-agent can check in."
-    echo ""
-    echo "How to get one:"
-    echo "  1. On the NetEnv server host, run:  nenv token create --name <hostname>"
-    echo "  2. Or visit the NetEnv UI:  http://10.2.0.102:7200/ui  → Tokens tab"
-    echo ""
-    read -rp "Paste nenv token (or Enter to skip, configure later): " NENV_TOKEN
+    echo "NetEnv integration (secrets distribution) is available but OFF by default."
+    echo "Enable it if you have a NetEnv server running on your network."
+    read -rp "Enable NetEnv? [y/N]: " RESPONSE
+    case "$RESPONSE" in
+        y|Y|yes|YES)
+            NETENV_ENABLED=1
+            read -rp "NetEnv server URL [http://10.2.0.102:7200]: " INPUT_SERVER
+            NETENV_SERVER="${INPUT_SERVER:-http://10.2.0.102:7200}"
+            read -rp "NetEnv agent token: " NETENV_TOKEN
+            ;;
+    esac
 fi
 
-# Apply nenv config
-sed -i "s|__NENV_SERVER__|$NENV_SERVER|g" /usr/lib/systemd/user/nenv-agent.service
-if [ -n "$NENV_TOKEN" ]; then
-    sed -i "s|__NENV_TOKEN__|$NENV_TOKEN|g" /usr/lib/systemd/user/nenv-agent.service
+# Render nenv-agent service (always installed, only enabled if opted in)
+NENV_SERVICE="/usr/lib/systemd/user/nenv-agent.service"
+if [ "$NETENV_ENABLED" = "1" ]; then
+    sed -i "s|__NENV_SERVER__|$NETENV_SERVER|g" "$NENV_SERVICE"
+    if [ -n "$NETENV_TOKEN" ]; then
+        sed -i "s|__NENV_TOKEN__|$NETENV_TOKEN|g" "$NENV_SERVICE"
+    else
+        echo "  ⚠ No token provided. Edit $NENV_SERVICE to set __NENV_TOKEN__"
+        echo "    Then: systemctl --user daemon-reload && systemctl --user enable --now nenv-agent"
+        NETENV_ENABLED=0
+    fi
 else
-    # Mark the placeholder so it's obvious what needs fixing
-    echo "  ⚠ No nenv token configured."
-    echo "    Get one: nenv token create --name $(hostname)"
-    echo "    Then edit /usr/lib/systemd/user/nenv-agent.service to replace __NENV_TOKEN__"
-    echo "    And run: systemctl --user daemon-reload && systemctl --user enable --now nenv-agent"
+    # Render with placeholders replaced by comments so the file is valid but inert
+    sed -i "s|__NENV_SERVER__|# Configure server then uncomment: http://10.2.0.102:7200|" "$NENV_SERVICE"
+    sed -i "s|__NENV_TOKEN__|# Configure token then uncomment: your-token-here|" "$NENV_SERVICE"
 fi
 
 # ── 6. Reload systemd ─────────────────────────────────────────
@@ -89,24 +111,39 @@ if [ -n "$SUDO_USER" ]; then
     sudo -u "$SUDO_USER" $XDG systemctl --user daemon-reload 2>/dev/null || true
 fi
 
-# ── 7. Enable and start services ──────────────────────────────
+# ── 7. Enable and start gogitops daemon (always) ──────────────
 if [ -n "$SUDO_USER" ]; then
-    # gogitops daemon
     if sudo -u "$SUDO_USER" $XDG systemctl --user enable --now gogitops-daemon.service 2>/dev/null; then
-        echo "  ✓ gogitops-daemon enabled and started (hostname: $HOSTNAME)"
+        echo "  ✓ gogitops-daemon enabled and started"
+        echo "  → Node will self-register to the mesh on first check-in"
     else
-        echo "  ⚠ gogitops-daemon failed to start. Check: systemctl --user status gogitops-daemon"
+        echo "  ⚠ gogitops-daemon failed to start"
+        echo "    Check: systemctl --user status gogitops-daemon"
     fi
 
-    # nenv-agent (only if token was configured)
-    if [ -n "$NENV_TOKEN" ]; then
+    # nenv-agent (only if opted in)
+    if [ "$NETENV_ENABLED" = "1" ]; then
         if sudo -u "$SUDO_USER" $XDG systemctl --user enable --now nenv-agent.service 2>/dev/null; then
-            echo "  ✓ nenv-agent enabled and started (server: $NENV_SERVER)"
+            echo "  ✓ nenv-agent enabled and started (server: $NETENV_SERVER)"
         else
-            echo "  ⚠ nenv-agent failed to start. Check: systemctl --user status nenv-agent"
+            echo "  ⚠ nenv-agent failed to start"
+            echo "    Check: systemctl --user status nenv-agent"
         fi
+    else
+        echo "  → nenv-agent installed but NOT enabled (standalone mode)"
+        echo "    To enable later: edit $NENV_SERVICE, then:"
+        echo "    systemctl --user daemon-reload && systemctl --user enable --now nenv-agent"
     fi
 fi
 
 echo ""
-echo "gogitops v0.2.1 installed and configured on $HOSTNAME"
+echo "=== gogitops installed ==="
+echo ""
+echo "Binary:   /usr/local/bin/gogitops"
+echo "Config:   /etc/gogitops/config.yaml"
+echo "Mesh:     /etc/gogitops/mesh.yaml (auto-updated on registration)"
+echo "Services: gogitops-daemon (running), nenv-agent (${NETENV_ENABLED})"
+echo ""
+echo "Commands:"
+echo "  gogitops status          — check local node health"
+echo "  gogitops mesh            — list mesh peers"

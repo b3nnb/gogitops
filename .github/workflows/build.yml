@@ -75,18 +75,15 @@ jobs:
         if: matrix.package == 'deb'
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          # If not a tag, use 0.0.0+commit
           [ "$VERSION" = "$GITHUB_REF_NAME" ] && VERSION="0.0.0+${GITHUB_SHA:0:8}"
 
-          # Build the deb tree
           DEB_ROOT="gogitops_${VERSION}_${{ matrix.deb_arch }}"
           mkdir -p "$DEB_ROOT/DEBIAN"
           mkdir -p "$DEB_ROOT/usr/local/bin"
           mkdir -p "$DEB_ROOT/usr/lib/systemd/user"
-          mkdir -p "$DEB_ROOT/etc/gogitops"
           mkdir -p "$DEB_ROOT/etc/gogitops/ssh"
 
-          # Binaries
+          # Binaries (gogitops + nenv-agent — nenv-agent dormant by default)
           cp dist/bin/gogitops "$DEB_ROOT/usr/local/bin/"
           cp dist/bin/nenv-agent "$DEB_ROOT/usr/local/bin/"
           chmod 755 "$DEB_ROOT/usr/local/bin/gogitops" "$DEB_ROOT/usr/local/bin/nenv-agent"
@@ -95,7 +92,7 @@ jobs:
           cp mesh.yaml "$DEB_ROOT/etc/gogitops/"
           cp install/ssh/friday-automation.pub "$DEB_ROOT/etc/gogitops/ssh/"
 
-          # Systemd
+          # Systemd (both services — nenv-agent rendered inert by postinst if not opted in)
           cp install/deb/systemd/gogitops-daemon.service "$DEB_ROOT/usr/lib/systemd/user/"
           cp install/deb/systemd/nenv-agent.service "$DEB_ROOT/usr/lib/systemd/user/"
 
@@ -107,7 +104,6 @@ jobs:
           cp install/deb/DEBIAN/postrm "$DEB_ROOT/DEBIAN/postrm"
           chmod 755 "$DEB_ROOT/DEBIAN/postinst" "$DEB_ROOT/DEBIAN/prerm" "$DEB_ROOT/DEBIAN/postrm"
 
-          # Build the .deb
           dpkg-deb --build "$DEB_ROOT"
           echo "DEB_FILE=${DEB_ROOT}.deb" >> $GITHUB_ENV
 
@@ -165,35 +161,39 @@ jobs:
           body: |
             ## Install
 
-            **Linux (deb):**
+            **Linux (deb) — self-registering, no config required:**
             ```bash
+            curl -LO https://github.com/b3nnb/gogitops/releases/download/__TAG__/gogitops_*_amd64.deb
             sudo dpkg -i gogitops_*_amd64.deb
-            # Configure hostname in the systemd service:
-            sudo sed -i 's/__HOSTNAME__/your-hostname/' /usr/lib/systemd/user/gogitops-daemon.service
-            sudo sed -i 's/__NENV_SERVER__/http://10.2.0.102:7200/' /usr/lib/systemd/user/nenv-agent.service
-            sudo sed -i 's/__NENV_TOKEN__/your-token/' /usr/lib/systemd/user/nenv-agent.service
-            systemctl --user daemon-reload
-            systemctl --user enable --now gogitops-daemon nenv-agent
             ```
 
-            **macOS:**
+            The gogitops daemon starts immediately and self-registers to the mesh.
+            Optional: paste a Discord webhook URL when prompted.
+
+            ## NetEnv Integration (optional, OFF by default)
+
+            nenv-agent is included but dormant. Three ways to enable:
+
+            **Interactive:**
+            Answer "y" when the installer asks "Enable NetEnv?"
+
+            **Pre-seeded (non-interactive):**
             ```bash
-            tar xzf gogitops-installer-darwin-arm64.tar.gz
-            bash install.sh [hostname] [nenv-server] [nenv-token]
+            sudo GOGITOPS_NETENV=1 \
+                 GOGITOPS_NETENV_SERVER=http://your-server:7200 \
+                 GOGITOPS_NETENV_TOKEN=your-token \
+                 dpkg -i gogitops_*_amd64.deb
             ```
 
-            **Windows:**
-            Extract `gogitops-installer-windows-amd64.zip` and add binaries to PATH.
+            **Post-install:**
+            ```bash
+            sudo sed -i 's|# Configure server.*|http://your-server:7200|' /usr/lib/systemd/user/nenv-agent.service
+            sudo sed -i 's|# Configure token.*|your-token|' /usr/lib/systemd/user/nenv-agent.service
+            systemctl --user daemon-reload
+            systemctl --user enable --now nenv-agent
+            ```
 
-            ## Uninstall (Linux)
+            ## Uninstall
             ```bash
             sudo dpkg --remove gogitops
             ```
-
-            ## Contents
-            - `/usr/local/bin/gogitops` — mesh health checker daemon
-            - `/usr/local/bin/nenv-agent` — netenv check-in agent
-            - `/etc/gogitops/mesh.yaml` — peer topology
-            - `/usr/lib/systemd/user/gogitops-daemon.service` — systemd service
-            - `/usr/lib/systemd/user/nenv-agent.service` — systemd service
-            - `/etc/gogitops/ssh/friday-automation.pub` — SSH key for authorized_keys.d
