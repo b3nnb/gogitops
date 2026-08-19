@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/nenv-agent --server __NENV_SERVER__ --token __NENV_TOKEN__ --hostname __HOSTNAME__ --interval 60s
+ExecStart=/usr/local/bin/nenv-agent --server __NENV_SERVER__ --token __NENV_TOKEN__ --interval 60s
 Restart=on-failure
 RestartSec=10
 
