@@ -88,9 +88,8 @@ jobs:
           cp dist/bin/nenv-agent "$DEB_ROOT/usr/local/bin/"
           chmod 755 "$DEB_ROOT/usr/local/bin/gogitops" "$DEB_ROOT/usr/local/bin/nenv-agent"
 
-          # Config
-          cp mesh.yaml "$DEB_ROOT/etc/gogitops/"
-          cp install/ssh/friday-automation.pub "$DEB_ROOT/etc/gogitops/ssh/"
+          # Config (clean template — no hardcoded fleet IPs or SSH keys)
+          cp mesh.yaml.template "$DEB_ROOT/etc/gogitops/mesh.yaml"
 
           # Systemd (both services — nenv-agent rendered inert by postinst if not opted in)
           cp install/deb/systemd/gogitops-daemon.service "$DEB_ROOT/usr/lib/systemd/user/"

@@ -1,0 +1,13 @@
+# gogitops mesh configuration
+# This file is auto-updated as nodes join the mesh.
+# You generally don't need to edit it — nodes self-register on first run.
+#
+# Format:
+# peers:
+#   - hostname: my-server
+#     nebula_ip: 10.200.0.10    # VPN/mesh IP (optional)
+#     lan_ip: 192.168.1.50      # Local network IP (optional)
+#     port: 7780                # Health API port (default: 7780)
+#     labels: [compute, docker-host]
+#
+peers: []

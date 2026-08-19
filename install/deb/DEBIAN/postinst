@@ -1,14 +1,23 @@
 #!/bin/bash
 set -e
 
-USER="${SUDO_USER:-benn}"
-USER_HOME="/home/$USER"
+# Detect the actual user (not hardcoded)
+USER="${SUDO_USER:-$(logname 2>/dev/null || echo $USER)}"
+[ "$USER" = "root" ] && USER="benn"
+USER_HOME=$(getent passwd "$USER" | cut -d: -f6)
+[ -z "$USER_HOME" ] && USER_HOME="/home/$USER"
 USER_UID=$(id -u "$USER" 2>/dev/null || echo 1000)
-XDG="XDG_RUNTIME_DIR=/run/user/$USER_UID"
+
+# Ensure XDG runtime dir exists for systemctl --user
+XDG_DIR="/run/user/$USER_UID"
+mkdir -p "$XDG_DIR" 2>/dev/null || true
+chown "$USER" "$XDG_DIR" 2>/dev/null || true
+chmod 700 "$XDG_DIR" 2>/dev/null || true
+XDG="XDG_RUNTIME_DIR=$XDG_DIR"
 
 # ── 1. Fix non-interactive SSH shell hang ─────────────────────
 BASHRC="$USER_HOME/.bashrc"
-if ! head -5 "$BASHRC" 2>/dev/null | grep -q '!= \*i\*'; then
+if [ -f "$BASHRC" ] && ! head -5 "$BASHRC" 2>/dev/null | grep -q '!= \*i\*'; then
     TMP=$(mktemp)
     {
         echo '# Return early for non-interactive shells (fixes SSH hang)'
@@ -19,15 +28,16 @@ if ! head -5 "$BASHRC" 2>/dev/null | grep -q '!= \*i\*'; then
     mv "$TMP" "$BASHRC"
 fi
 
-# ── 2. Set up SSH authorized_keys.d ───────────────────────────
-mkdir -p "$USER_HOME/.ssh/authorized_keys.d"
+# ── 2. SSH authorized_keys.d (only if key exists) ─────────────
 if [ -f /etc/gogitops/ssh/friday-automation.pub ]; then
+    mkdir -p "$USER_HOME/.ssh/authorized_keys.d"
     cp /etc/gogitops/ssh/friday-automation.pub "$USER_HOME/.ssh/authorized_keys.d/"
     chown -R "$USER" "$USER_HOME/.ssh/authorized_keys.d"
+    chmod 700 "$USER_HOME/.ssh"
     chmod 600 "$USER_HOME/.ssh/authorized_keys.d/friday-automation.pub"
 fi
 
-# ── 3. Create gogitops config file (no prompts) ───────────────
+# ── 3. Create gogitops config file ────────────────────────────
 CONFIG_FILE="/etc/gogitops/config.yaml"
 if [ ! -f "$CONFIG_FILE" ]; then
     WEBHOOK_VAL="${GOGITOPS_WEBHOOK:-}"
@@ -42,65 +52,59 @@ EOF
     chmod 644 "$CONFIG_FILE"
 fi
 
-# ── 4. NetEnv integration (default: OFF, no prompts) ─────────
-# To enable: sudo GOGITOPS_NETENV=1 GOGITOPS_NETENV_SERVER=... GOGITOPS_NETENV_TOKEN=... dpkg -i
-# Or post-install: edit /usr/lib/systemd/user/nenv-agent.service + enable manually
-
+# ── 4. NetEnv integration (default: OFF) ──────────────────────
 NETENV_ENABLED=0
 NETENV_SERVER=""
 NETENV_TOKEN=""
 
 if [ "${GOGITOPS_NETENV:-0}" = "1" ]; then
     NETENV_ENABLED=1
-    NETENV_SERVER="${GOGITOPS_NETENV_SERVER:-http://10.2.0.102:7200}"
+    NETENV_SERVER="${GOGITOPS_NETENV_SERVER:-http://localhost:7200}"
     NETENV_TOKEN="${GOGITOPS_NETENV_TOKEN:-}"
 fi
 
-# Render nenv-agent service (always installed, only enabled if opted in)
 NENV_SERVICE="/usr/lib/systemd/user/nenv-agent.service"
 if [ "$NETENV_ENABLED" = "1" ] && [ -n "$NETENV_TOKEN" ]; then
     sed -i "s|__NENV_SERVER__|$NETENV_SERVER|g" "$NENV_SERVICE"
     sed -i "s|__NENV_TOKEN__|$NETENV_TOKEN|g" "$NENV_SERVICE"
 elif [ "$NETENV_ENABLED" = "1" ]; then
-    # Enabled but no token — can't start
     NETENV_ENABLED=0
     sed -i "s|__NENV_SERVER__|$NETENV_SERVER|g" "$NENV_SERVICE"
     echo "  ⚠ NetEnv enabled but no token. Edit $NENV_SERVICE to set __NENV_TOKEN__"
 else
-    # Dormant — comment out placeholders so file is valid but inert
-    sed -i "s|__NENV_SERVER__|# Set server URL here: http://10.2.0.102:7200|" "$NENV_SERVICE"
+    sed -i "s|__NENV_SERVER__|# Set server URL here: http://localhost:7200|" "$NENV_SERVICE"
     sed -i "s|__NENV_TOKEN__|# Set token here: your-token|" "$NENV_SERVICE"
 fi
 
-# ── 5. Reload systemd ─────────────────────────────────────────
-if [ -n "$SUDO_USER" ]; then
-    sudo -u "$SUDO_USER" $XDG systemctl --user daemon-reload 2>/dev/null || true
+# ── 5. Enable lingering so user services run without login ────
+# Critical: without this, systemctl --user services don't start on boot
+loginctl enable-linger "$USER" 2>/dev/null || true
+
+# ── 6. Reload systemd ─────────────────────────────────────────
+sudo -u "$USER" $XDG systemctl --user daemon-reload 2>/dev/null || true
+
+# ── 7. Enable and start services ──────────────────────────────
+# gogitops daemon — always
+if sudo -u "$USER" $XDG systemctl --user enable --now gogitops-daemon.service 2>/dev/null; then
+    echo "  ✓ gogitops-daemon enabled and started"
+    echo "  → Node will self-register to the mesh on first check-in"
+else
+    echo "  ⚠ gogitops-daemon failed to start"
+    echo "    Check: systemctl --user status gogitops-daemon"
 fi
 
-# ── 6. Enable and start services ──────────────────────────────
-if [ -n "$SUDO_USER" ]; then
-    # gogitops daemon — always enabled
-    if sudo -u "$SUDO_USER" $XDG systemctl --user enable --now gogitops-daemon.service 2>/dev/null; then
-        echo "  ✓ gogitops-daemon enabled and started"
-        echo "  → Node will self-register to the mesh on first check-in"
+# nenv-agent — only if opted in
+if [ "$NETENV_ENABLED" = "1" ]; then
+    if sudo -u "$USER" $XDG systemctl --user enable --now nenv-agent.service 2>/dev/null; then
+        echo "  ✓ nenv-agent enabled and started (server: $NETENV_SERVER)"
     else
-        echo "  ⚠ gogitops-daemon failed to start"
-        echo "    Check: systemctl --user status gogitops-daemon"
+        echo "  ⚠ nenv-agent failed to start"
+        echo "    Check: systemctl --user status nenv-agent"
     fi
-
-    # nenv-agent — only if opted in
-    if [ "$NETENV_ENABLED" = "1" ]; then
-        if sudo -u "$SUDO_USER" $XDG systemctl --user enable --now nenv-agent.service 2>/dev/null; then
-            echo "  ✓ nenv-agent enabled and started (server: $NETENV_SERVER)"
-        else
-            echo "  ⚠ nenv-agent failed to start"
-            echo "    Check: systemctl --user status nenv-agent"
-        fi
-    else
-        echo "  → nenv-agent installed but dormant (standalone mode)"
-        echo "    To enable: edit $NENV_SERVICE, then:"
-        echo "    systemctl --user daemon-reload && systemctl --user enable --now nenv-agent"
-    fi
+else
+    echo "  → nenv-agent installed but dormant (standalone mode)"
+    echo "    To enable: edit $NENV_SERVICE, then:"
+    echo "    systemctl --user daemon-reload && systemctl --user enable --now nenv-agent"
 fi
 
 echo ""
@@ -109,7 +113,7 @@ echo ""
 echo "Binary:   /usr/local/bin/gogitops"
 echo "Config:   /etc/gogitops/config.yaml"
 echo "Mesh:     /etc/gogitops/mesh.yaml (auto-updated on registration)"
-echo "Services: gogitops-daemon (running), nenv-agent (${NETENV_ENABLED})"
+echo "Services: gogitops-daemon (running), nenv-agent (dormant)"
 echo ""
 echo "Commands:"
 echo "  gogitops status          — check local node health"
