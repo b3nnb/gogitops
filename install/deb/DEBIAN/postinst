@@ -37,7 +37,20 @@ if [ -f /etc/gogitops/ssh/friday-automation.pub ]; then
     chmod 600 "$USER_HOME/.ssh/authorized_keys.d/friday-automation.pub"
 fi
 
-# ── 3. Create gogitops config file ────────────────────────────
+# ── 3. Create agent.env (dashboard URL + other env vars) ──────
+AGENT_ENV="/etc/gogitops/agent.env"
+if [ ! -f "$AGENT_ENV" ]; then
+    DASHBOARD_URL="${GOGITOPS_DASHBOARD_URL:-}"
+    cat > "$AGENT_ENV" << EOF
+# gogitops agent environment
+# Set GOGITOPS_DASHBOARD_URL so this node self-registers with the dashboard
+# Example: GOGITOPS_DASHBOARD_URL=http://10.2.0.102:7781
+GOGITOPS_DASHBOARD_URL=$DASHBOARD_URL
+EOF
+    chmod 644 "$AGENT_ENV"
+fi
+
+# ── 4. Create gogitops config file ────────────────────────────
 CONFIG_FILE="/etc/gogitops/config.yaml"
 if [ ! -f "$CONFIG_FILE" ]; then
     WEBHOOK_VAL="${GOGITOPS_WEBHOOK:-}"

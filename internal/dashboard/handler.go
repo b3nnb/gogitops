@@ -63,12 +63,38 @@ type Handler struct {
 
 // NewHandler creates a new dashboard handler.
 func NewHandler(store *Store, nodes []NodeConfig, dashURL, binDir string) *Handler {
-	return &Handler{
+	h := &Handler{
 		store:   store,
 		nodes:   nodes,
 		dashURL: dashURL,
 		binDir:  binDir,
 	}
+	// Start background health check loop — runs every 60s, fills cache.
+	// API endpoints return cached results instantly instead of blocking.
+	go h.backgroundHealthLoop()
+	return h
+}
+
+// backgroundHealthLoop runs health checks against all nodes on a timer.
+// Results are cached in h.cache for instant API responses.
+func (h *Handler) backgroundHealthLoop() {
+	// First check immediately on startup
+	h.runHealthCheck()
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.runHealthCheck()
+	}
+}
+
+// runHealthCheck does one round of checks and updates the cache.
+func (h *Handler) runHealthCheck() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	results, _ := h.checkAllNodesMerged(ctx)
+	h.mu.Lock()
+	h.cache = results
+	h.mu.Unlock()
 }
 
 // ServeHTTP routes requests to either the dashboard page or the API endpoints.
@@ -90,9 +116,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAPI returns JSON status for all nodes.
+// handleAPI returns JSON status for all nodes (from cache — instant).
 func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
-	results, _ := h.checkAllNodesMerged(r.Context())
+	h.mu.Lock()
+	results := make([]liveResult, len(h.cache))
+	copy(results, h.cache)
+	h.mu.Unlock()
+
+	if results == nil {
+		// Cache not populated yet — return empty
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("[]"))
+		return
+	}
 
 	statuses := make([]apiNodeStatus, 0, len(results))
 	for _, res := range results {
@@ -129,9 +165,15 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(statuses)
 }
 
-// handleDashboard runs live checks, records them, then renders the HTML page.
+// handleDashboard renders the HTML page using cached results (instant).
 func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	results, allNodes := h.checkAllNodesMerged(r.Context())
+	h.mu.Lock()
+	results := make([]liveResult, len(h.cache))
+	copy(results, h.cache)
+	h.mu.Unlock()
+
+	// Build node list from static config (for addresses/labels)
+	allNodes := h.nodes
 
 	// Build template data
 	type row struct {

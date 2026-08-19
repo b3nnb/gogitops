@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/gogitops daemon -repo /etc/gogitops -bind 0.0.0.0 -port 7780 -interval 60
+EnvironmentFile=-/etc/gogitops/agent.env
+ExecStart=/usr/local/bin/gogitops daemon -repo /etc/gogitops -bind 0.0.0.0 -port 7780 -interval 60 -dashboard ${GOGITOPS_DASHBOARD_URL}
 Restart=on-failure
 RestartSec=10
 
