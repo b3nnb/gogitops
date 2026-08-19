@@ -81,21 +81,53 @@ func printHelp() {
     fleet      Show all agents in the fleet (compact view)
     info       Show detailed attributes for a node (tags, groups, config)
     config     Show agent configuration (repo, git, labels, groups, recipes)
-    logs       Show recent agent activity log
-    watch      Live monitoring — auto-refreshing status view
+    logs       Show recent agent activity log (-n N for count)
+    watch      Live monitoring — auto-refreshing status (Ctrl+C to exit)
     git-pull   Force a git pull on the agent's config repo
     restart    Restart the agent daemon
     daemon     Run the agent daemon
-    dashboard  Fleet status dashboard (web UI)
+    dashboard  Fleet status dashboard (web UI on :7781)
     recipe     Recipe management (new, list, validate)
     version    Print version
 
   FLAGS
 
-    -addr      Agent address for status/info (default: 127.0.0.1:7780)
-    -repo      Path to git config repo (default: current dir)
-    -port      Port for daemon/dashboard
-    -hostname  Override hostname
+    -addr <host:port>     Agent address (default: 127.0.0.1:7780)
+    -repo <path>          Path to git config repo (default: .)
+    -port <N>             Port for daemon/dashboard
+    -hostname <name>      Override detected hostname
+    -interval <seconds>   Check cycle interval (default: 60)
+    -n <N>                Number of log entries (logs command)
+    -nodes <name=addr>    Comma-separated node list (fleet command)
+
+  REMOTE AGENTS
+
+    All commands accept -addr to target a remote agent:
+      gogitops status -addr 10.0.0.229:7780
+      gogitops config -addr 10.0.0.251:7780
+      gogitops git-pull -addr 10.200.0.4:7780
+      gogitops restart -addr 10.0.0.229:7780
+
+  INSTALL ON A NEW MACHINE
+
+    # Linux (amd64)
+    curl -sL github.com/b3nnb/gogitops/releases/download/v0.5.0/gogitops_0.5.0_amd64.deb -o /tmp/gogitops.deb
+    sudo dpkg -i /tmp/gogitops.deb
+
+    # macOS (arm64)
+    curl -sL github.com/b3nnb/gogitops/releases/download/v0.5.0/gogitops-installer-darwin-arm64.tar.gz | tar xz
+    bash install.sh
+
+    The installer auto-detects hostname, LAN/Nebula IP, starts the daemon,
+    and registers with the dashboard. Zero prompts.
+
+  AGENT API
+
+    GET  /v1/health          Health snapshot (services, peers, system)
+    GET  /v1/config          Agent configuration (repo, git, labels, recipes)
+    GET  /v1/logs?limit=N    Recent activity log entries
+    POST /v1/git/pull        Force immediate git pull
+    POST /v1/restart         Restart agent (systemd auto-restarts)
 
 `)
 }
