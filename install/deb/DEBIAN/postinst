@@ -63,10 +63,13 @@ fi
 # If still no token, prompt (only if we have a TTY — i.e. not apt non-interactive)
 if [ -z "$NENV_TOKEN" ] && [ -t 0 ]; then
     echo ""
-    echo "gogitops needs a nenv agent token to check in with the NetEnv server."
-    echo "You can find it in nenv: nenv get gogitops AGENT_TOKEN"
-    echo "Or get it from the NetEnv UI: http://10.2.0.102:7200/ui"
-    read -rp "nenv token (or press Enter to skip): " NENV_TOKEN
+    echo "gogitops needs a NetEnv agent token so nenv-agent can check in."
+    echo ""
+    echo "How to get one:"
+    echo "  1. On the NetEnv server host, run:  nenv token create --name <hostname>"
+    echo "  2. Or visit the NetEnv UI:  http://10.2.0.102:7200/ui  → Tokens tab"
+    echo ""
+    read -rp "Paste nenv token (or Enter to skip, configure later): " NENV_TOKEN
 fi
 
 # Apply nenv config
@@ -75,9 +78,10 @@ if [ -n "$NENV_TOKEN" ]; then
     sed -i "s|__NENV_TOKEN__|$NENV_TOKEN|g" /usr/lib/systemd/user/nenv-agent.service
 else
     # Mark the placeholder so it's obvious what needs fixing
-    echo "  ⚠ No nenv token configured. Edit /usr/lib/systemd/user/nenv-agent.service"
-    echo "    and replace __NENV_TOKEN__ with your token, then:"
-    echo "    systemctl --user daemon-reload && systemctl --user enable --now nenv-agent"
+    echo "  ⚠ No nenv token configured."
+    echo "    Get one: nenv token create --name $(hostname)"
+    echo "    Then edit /usr/lib/systemd/user/nenv-agent.service to replace __NENV_TOKEN__"
+    echo "    And run: systemctl --user daemon-reload && systemctl --user enable --now nenv-agent"
 fi
 
 # ── 6. Reload systemd ─────────────────────────────────────────
