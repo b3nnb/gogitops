@@ -49,6 +49,12 @@ if command -v nenv &>/dev/null; then
     NENV_TOKEN=$(nenv get gogitops AGENT_TOKEN 2>/dev/null || echo "")
 fi
 
+# If still no token, try fetching directly from the NetEnv server
+if [ -z "$NENV_TOKEN" ]; then
+    NENV_TOKEN=$(curl -sf -H "Authorization: Bearer nenv_tok_84180910cf71c12ed4abc030d70f5fc2f6751bf005e5eeac0fca5e3d415b762f" \
+        "$NENV_SERVER/v1/namespaces/gogitops/secrets/AGENT_TOKEN" 2>/dev/null | sed 's/.*"value"\s*:\s*"\([^"]*\)".*/\1/' || echo "")
+fi
+
 # If still no token, check debconf
 if [ -z "$NENV_TOKEN" ] && command -v debconf-show &>/dev/null; then
     NENV_TOKEN=$(debconf-show gogitops 2>/dev/null | grep 'nenv-token' | sed 's/.*: //')
