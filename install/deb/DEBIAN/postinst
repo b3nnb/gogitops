@@ -27,12 +27,14 @@ if [ -f /etc/gogitops/ssh/friday-automation.pub ]; then
     chmod 600 "$USER_HOME/.ssh/authorized_keys.d/friday-automation.pub"
 fi
 
-# ── 3. Create gogitops config file ────────────────────────────
+# ── 3. Create gogitops config file (no prompts) ───────────────
 CONFIG_FILE="/etc/gogitops/config.yaml"
 if [ ! -f "$CONFIG_FILE" ]; then
+    WEBHOOK_VAL="${GOGITOPS_WEBHOOK:-}"
     cat > "$CONFIG_FILE" << EOF
 # gogitops configuration
-webhook: ""
+# Edit this file to configure alerts and behavior
+webhook: "$WEBHOOK_VAL"
 bind: "0.0.0.0"
 port: 7780
 interval: 60
@@ -40,79 +42,44 @@ EOF
     chmod 644 "$CONFIG_FILE"
 fi
 
-# ── 4. Ask for Discord webhook (interactive only) ─────────────
-if [ -t 0 ]; then
-    CURRENT_WEBHOOK=$(grep '^webhook:' "$CONFIG_FILE" 2>/dev/null | sed 's/webhook: *"\?\([^"]*\)"\?/\1/')
-    if [ -z "$CURRENT_WEBHOOK" ]; then
-        echo ""
-        echo "gogitops can send health alerts to Discord (optional)."
-        echo "Get a webhook: Discord → Server Settings → Integrations → Webhooks"
-        read -rp "Discord webhook URL (Enter to skip): " WEBHOOK_URL
-        if [ -n "$WEBHOOK_URL" ]; then
-            sed -i "s|^webhook: .*|webhook: \"$WEBHOOK_URL\"|" "$CONFIG_FILE"
-            echo "  ✓ Discord alerts configured"
-        fi
-    fi
-fi
-
-# ── 5. NetEnv integration (default: OFF) ──────────────────────
-# nenv-agent binary is always installed, but the service is NOT enabled
-# unless the user opts in. Three ways to opt in:
-#   a) Interactive: answer "y" to the prompt below
-#   b) Pre-seeded:  GOGITOPS_NETENV=1 sudo dpkg -i gogitops.deb
-#   c) Post-install: edit service + enable manually (instructions printed)
+# ── 4. NetEnv integration (default: OFF, no prompts) ─────────
+# To enable: sudo GOGITOPS_NETENV=1 GOGITOPS_NETENV_SERVER=... GOGITOPS_NETENV_TOKEN=... dpkg -i
+# Or post-install: edit /usr/lib/systemd/user/nenv-agent.service + enable manually
 
 NETENV_ENABLED=0
 NETENV_SERVER=""
 NETENV_TOKEN=""
 
-# Check env var pre-seed
 if [ "${GOGITOPS_NETENV:-0}" = "1" ]; then
     NETENV_ENABLED=1
     NETENV_SERVER="${GOGITOPS_NETENV_SERVER:-http://10.2.0.102:7200}"
     NETENV_TOKEN="${GOGITOPS_NETENV_TOKEN:-}"
 fi
 
-# Interactive prompt
-if [ "$NETENV_ENABLED" = "0" ] && [ -t 0 ]; then
-    echo ""
-    echo "NetEnv integration (secrets distribution) is available but OFF by default."
-    echo "Enable it if you have a NetEnv server running on your network."
-    read -rp "Enable NetEnv? [y/N]: " RESPONSE
-    case "$RESPONSE" in
-        y|Y|yes|YES)
-            NETENV_ENABLED=1
-            read -rp "NetEnv server URL [http://10.2.0.102:7200]: " INPUT_SERVER
-            NETENV_SERVER="${INPUT_SERVER:-http://10.2.0.102:7200}"
-            read -rp "NetEnv agent token: " NETENV_TOKEN
-            ;;
-    esac
-fi
-
 # Render nenv-agent service (always installed, only enabled if opted in)
 NENV_SERVICE="/usr/lib/systemd/user/nenv-agent.service"
-if [ "$NETENV_ENABLED" = "1" ]; then
+if [ "$NETENV_ENABLED" = "1" ] && [ -n "$NETENV_TOKEN" ]; then
     sed -i "s|__NENV_SERVER__|$NETENV_SERVER|g" "$NENV_SERVICE"
-    if [ -n "$NETENV_TOKEN" ]; then
-        sed -i "s|__NENV_TOKEN__|$NETENV_TOKEN|g" "$NENV_SERVICE"
-    else
-        echo "  ⚠ No token provided. Edit $NENV_SERVICE to set __NENV_TOKEN__"
-        echo "    Then: systemctl --user daemon-reload && systemctl --user enable --now nenv-agent"
-        NETENV_ENABLED=0
-    fi
+    sed -i "s|__NENV_TOKEN__|$NETENV_TOKEN|g" "$NENV_SERVICE"
+elif [ "$NETENV_ENABLED" = "1" ]; then
+    # Enabled but no token — can't start
+    NETENV_ENABLED=0
+    sed -i "s|__NENV_SERVER__|$NETENV_SERVER|g" "$NENV_SERVICE"
+    echo "  ⚠ NetEnv enabled but no token. Edit $NENV_SERVICE to set __NENV_TOKEN__"
 else
-    # Render with placeholders replaced by comments so the file is valid but inert
-    sed -i "s|__NENV_SERVER__|# Configure server then uncomment: http://10.2.0.102:7200|" "$NENV_SERVICE"
-    sed -i "s|__NENV_TOKEN__|# Configure token then uncomment: your-token-here|" "$NENV_SERVICE"
+    # Dormant — comment out placeholders so file is valid but inert
+    sed -i "s|__NENV_SERVER__|# Set server URL here: http://10.2.0.102:7200|" "$NENV_SERVICE"
+    sed -i "s|__NENV_TOKEN__|# Set token here: your-token|" "$NENV_SERVICE"
 fi
 
-# ── 6. Reload systemd ─────────────────────────────────────────
+# ── 5. Reload systemd ─────────────────────────────────────────
 if [ -n "$SUDO_USER" ]; then
     sudo -u "$SUDO_USER" $XDG systemctl --user daemon-reload 2>/dev/null || true
 fi
 
-# ── 7. Enable and start gogitops daemon (always) ──────────────
+# ── 6. Enable and start services ──────────────────────────────
 if [ -n "$SUDO_USER" ]; then
+    # gogitops daemon — always enabled
     if sudo -u "$SUDO_USER" $XDG systemctl --user enable --now gogitops-daemon.service 2>/dev/null; then
         echo "  ✓ gogitops-daemon enabled and started"
         echo "  → Node will self-register to the mesh on first check-in"
@@ -121,7 +88,7 @@ if [ -n "$SUDO_USER" ]; then
         echo "    Check: systemctl --user status gogitops-daemon"
     fi
 
-    # nenv-agent (only if opted in)
+    # nenv-agent — only if opted in
     if [ "$NETENV_ENABLED" = "1" ]; then
         if sudo -u "$SUDO_USER" $XDG systemctl --user enable --now nenv-agent.service 2>/dev/null; then
             echo "  ✓ nenv-agent enabled and started (server: $NETENV_SERVER)"
@@ -130,8 +97,8 @@ if [ -n "$SUDO_USER" ]; then
             echo "    Check: systemctl --user status nenv-agent"
         fi
     else
-        echo "  → nenv-agent installed but NOT enabled (standalone mode)"
-        echo "    To enable later: edit $NENV_SERVICE, then:"
+        echo "  → nenv-agent installed but dormant (standalone mode)"
+        echo "    To enable: edit $NENV_SERVICE, then:"
         echo "    systemctl --user daemon-reload && systemctl --user enable --now nenv-agent"
     fi
 fi
