@@ -1,8 +1,13 @@
 #!/bin/bash
 set -e
 
-# Fix non-interactive SSH shell hang
-BASHRC="/home/${SUDO_USER:-benn}/.bashrc"
+USER="${SUDO_USER:-benn}"
+USER_HOME="/home/$USER"
+USER_UID=$(id -u "$USER" 2>/dev/null || echo 1000)
+XDG="XDG_RUNTIME_DIR=/run/user/$USER_UID"
+
+# ── 1. Fix non-interactive SSH shell hang ─────────────────────
+BASHRC="$USER_HOME/.bashrc"
 if ! head -5 "$BASHRC" 2>/dev/null | grep -q '!= \*i\*'; then
     TMP=$(mktemp)
     {
@@ -10,26 +15,88 @@ if ! head -5 "$BASHRC" 2>/dev/null | grep -q '!= \*i\*'; then
         echo '[[ $- != *i* ]] && return'
         cat "$BASHRC" 2>/dev/null || true
     } > "$TMP"
-    chown "${SUDO_USER:-benn}" "$TMP"
+    chown "$USER" "$TMP"
     mv "$TMP" "$BASHRC"
 fi
 
-# Set up SSH authorized_keys.d
-USER_HOME="/home/${SUDO_USER:-benn}"
+# ── 2. Set up SSH authorized_keys.d ───────────────────────────
 mkdir -p "$USER_HOME/.ssh/authorized_keys.d"
 if [ -f /etc/gogitops/ssh/friday-automation.pub ]; then
     cp /etc/gogitops/ssh/friday-automation.pub "$USER_HOME/.ssh/authorized_keys.d/"
-    chown -R "${SUDO_USER:-benn}" "$USER_HOME/.ssh/authorized_keys.d"
+    chown -R "$USER" "$USER_HOME/.ssh/authorized_keys.d"
     chmod 600 "$USER_HOME/.ssh/authorized_keys.d/friday-automation.pub"
 fi
 
-# Reload systemd for the installing user
-if [ -n "${SUDO_USER:-}" ]; then
-    sudo -u "$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$(id -u "$SUDO_USER")" \
-        systemctl --user daemon-reload 2>/dev/null || true
+# ── 3. Determine hostname ─────────────────────────────────────
+HOSTNAME=$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -1)
+# Override from debconf if previously stored
+if command -v debconf-show &>/dev/null; then
+    STORED_HOSTNAME=$(debconf-show gogitops 2>/dev/null | grep 'hostname' | sed 's/.*: //')
+    [ -n "$STORED_HOSTNAME" ] && HOSTNAME="$STORED_HOSTNAME"
+fi
+
+# ── 4. Render systemd services ────────────────────────────────
+# Replace __HOSTNAME__ in service files
+sed -i "s/__HOSTNAME__/$HOSTNAME/g" /usr/lib/systemd/user/gogitops-daemon.service
+sed -i "s/__HOSTNAME__/$HOSTNAME/g" /usr/lib/systemd/user/nenv-agent.service
+
+# ── 5. Configure nenv-agent ───────────────────────────────────
+NENV_SERVER="http://10.2.0.102:7200"
+NENV_TOKEN=""
+
+# Try to get token from local nenv if available
+if command -v nenv &>/dev/null; then
+    NENV_TOKEN=$(nenv get gogitops AGENT_TOKEN 2>/dev/null || echo "")
+fi
+
+# If still no token, check debconf
+if [ -z "$NENV_TOKEN" ] && command -v debconf-show &>/dev/null; then
+    NENV_TOKEN=$(debconf-show gogitops 2>/dev/null | grep 'nenv-token' | sed 's/.*: //')
+fi
+
+# If still no token, prompt (only if we have a TTY — i.e. not apt non-interactive)
+if [ -z "$NENV_TOKEN" ] && [ -t 0 ]; then
+    echo ""
+    echo "gogitops needs a nenv agent token to check in with the NetEnv server."
+    echo "You can find it in nenv: nenv get gogitops AGENT_TOKEN"
+    echo "Or get it from the NetEnv UI: http://10.2.0.102:7200/ui"
+    read -rp "nenv token (or press Enter to skip): " NENV_TOKEN
+fi
+
+# Apply nenv config
+sed -i "s|__NENV_SERVER__|$NENV_SERVER|g" /usr/lib/systemd/user/nenv-agent.service
+if [ -n "$NENV_TOKEN" ]; then
+    sed -i "s|__NENV_TOKEN__|$NENV_TOKEN|g" /usr/lib/systemd/user/nenv-agent.service
+else
+    # Mark the placeholder so it's obvious what needs fixing
+    echo "  ⚠ No nenv token configured. Edit /usr/lib/systemd/user/nenv-agent.service"
+    echo "    and replace __NENV_TOKEN__ with your token, then:"
+    echo "    systemctl --user daemon-reload && systemctl --user enable --now nenv-agent"
+fi
+
+# ── 6. Reload systemd ─────────────────────────────────────────
+if [ -n "$SUDO_USER" ]; then
+    sudo -u "$SUDO_USER" $XDG systemctl --user daemon-reload 2>/dev/null || true
+fi
+
+# ── 7. Enable and start services ──────────────────────────────
+if [ -n "$SUDO_USER" ]; then
+    # gogitops daemon
+    if sudo -u "$SUDO_USER" $XDG systemctl --user enable --now gogitops-daemon.service 2>/dev/null; then
+        echo "  ✓ gogitops-daemon enabled and started (hostname: $HOSTNAME)"
+    else
+        echo "  ⚠ gogitops-daemon failed to start. Check: systemctl --user status gogitops-daemon"
+    fi
+
+    # nenv-agent (only if token was configured)
+    if [ -n "$NENV_TOKEN" ]; then
+        if sudo -u "$SUDO_USER" $XDG systemctl --user enable --now nenv-agent.service 2>/dev/null; then
+            echo "  ✓ nenv-agent enabled and started (server: $NENV_SERVER)"
+        else
+            echo "  ⚠ nenv-agent failed to start. Check: systemctl --user status nenv-agent"
+        fi
+    fi
 fi
 
 echo ""
-echo "gogitops installed. To enable the daemon:"
-echo "  systemctl --user enable --now gogitops-daemon"
-echo "  systemctl --user enable --now nenv-agent"
+echo "gogitops v0.2.1 installed and configured on $HOSTNAME"
