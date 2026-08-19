@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,6 +33,16 @@ func main() {
 			cmdFleet(os.Args[2:])
 		case "info":
 			cmdInfo(os.Args[2:])
+		case "config":
+			cmdConfig(os.Args[2:])
+		case "logs":
+			cmdLogs(os.Args[2:])
+		case "watch":
+			cmdWatch(os.Args[2:])
+		case "git-pull":
+			cmdGitPull(os.Args[2:])
+		case "restart":
+			cmdRestart(os.Args[2:])
 		case "version", "--version", "-v":
 			cli.Banner()
 			fmt.Printf("\n  \033[38;5;141m%s\033[0m\n\n", version)
@@ -69,6 +80,11 @@ func printHelp() {
     status     Show local agent health (services, tags, peers, system)
     fleet      Show all agents in the fleet (compact view)
     info       Show detailed attributes for a node (tags, groups, config)
+    config     Show agent configuration (repo, git, labels, groups, recipes)
+    logs       Show recent agent activity log
+    watch      Live monitoring — auto-refreshing status view
+    git-pull   Force a git pull on the agent's config repo
+    restart    Restart the agent daemon
     daemon     Run the agent daemon
     dashboard  Fleet status dashboard (web UI)
     recipe     Recipe management (new, list, validate)
@@ -354,6 +370,378 @@ func cmdInfo(args []string) {
 	}
 }
 
+// ── config: show agent configuration ─────────────────────────────────────
+
+func cmdConfig(args []string) {
+	fs := flag.NewFlagSet("config", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:7780", "agent health API address")
+	fs.Parse(args)
+
+	resp, err := http.Get("http://" + *addr + "/v1/config")
+	if err != nil {
+		cli.PrintError(fmt.Sprintf("agent not reachable at %s", *addr))
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	var cfg struct {
+		Hostname      string   `json:"hostname"`
+		RepoDir       string   `json:"repo_dir"`
+		GitRepo       string   `json:"git_repo"`
+		GitBranch     string   `json:"git_branch"`
+		GitPullInt    string   `json:"git_pull_interval"`
+		Labels        []string `json:"labels"`
+		Services      []string `json:"services"`
+		DiskChecks    []string `json:"disk_checks"`
+		Groups        []string `json:"groups"`
+		Recipes       []string `json:"recipes"`
+		Webhook       string   `json:"webhook_configured"`
+		Uptime        int64    `json:"uptime_seconds"`
+		Cycles        int64    `json:"cycle_count"`
+		LastGitPull   string   `json:"last_git_pull"`
+		LastGitResult string   `json:"last_git_result"`
+	}
+	json.NewDecoder(resp.Body).Decode(&cfg)
+
+	cli.Banner()
+	fmt.Println()
+
+	// Header
+	fmt.Printf("  \033[1m\033[38;5;141m%s\033[0m configuration\n\n", cfg.Hostname)
+
+	// Git config
+	fmt.Printf("  \033[38;5;240m╭─ GitOps ──────────────────────\033[0m\n")
+	fmt.Printf("  \033[38;5;240m│\033[0m Repo       \033[38;5;255m%s\033[0m\n", cfg.RepoDir)
+	if cfg.GitRepo != "" {
+		fmt.Printf("  \033[38;5;240m│\033[0m Remote     \033[38;5;38m%s\033[0m\n", cfg.GitRepo)
+		fmt.Printf("  \033[38;5;240m│\033[0m Branch     \033[38;5;255m%s\033[0m\n", cfg.GitBranch)
+		fmt.Printf("  \033[38;5;240m│\033[0m Pull every \033[38;5;255m%s\033[0m\n", cfg.GitPullInt)
+	} else {
+		fmt.Printf("  \033[38;5;240m│\033[0m \033[38;5;240mno git remote configured\033[0m\n")
+	}
+	if cfg.LastGitPull != "" {
+		gitColor := "\033[38;5;46m"
+		if cfg.LastGitResult != "" && !strings.Contains(cfg.LastGitResult, "up to date") {
+			gitColor = "\033[38;5;226m"
+		}
+		fmt.Printf("  \033[38;5;240m│\033[0m Last pull  %s%s\033[0m\n", gitColor, cfg.LastGitPull)
+		fmt.Printf("  \033[38;5;240m│\033[0m Result     %s%s\033[0m\n", gitColor, cfg.LastGitResult)
+	}
+	fmt.Printf("  \033[38;5;240m╰──────────────────────────────\033[0m\n\n")
+
+	// Runtime stats
+	fmt.Printf("  \033[38;5;240m╭─ Runtime ────────────────────\033[0m\n")
+	fmt.Printf("  \033[38;5;240m│\033[0m Uptime     \033[38;5;245m%s\033[0m\n", formatUptime(cfg.Uptime))
+	fmt.Printf("  \033[38;5;240m│\033[0m Cycles     \033[38;5;245m%d\033[0m\n", cfg.Cycles)
+	fmt.Printf("  \033[38;5;240m│\033[0m Webhook    \033[38;5;245m%s\033[0m\n", cfg.Webhook)
+	fmt.Printf("  \033[38;5;240m╰──────────────────────────────\033[0m\n\n")
+
+	// Labels
+	if len(cfg.Labels) > 0 {
+		roles := []string{}
+		tags := []string{}
+		stacks := []string{}
+		for _, l := range cfg.Labels {
+			if strings.HasPrefix(l, "stack:") {
+				stacks = append(stacks, l[6:])
+			} else if strings.Contains(l, "-host") || strings.Contains(l, "compute") {
+				roles = append(roles, l)
+			} else {
+				tags = append(tags, l)
+			}
+		}
+		fmt.Printf("  \033[38;5;240m╭─ Labels ─────────────────────\033[0m\n")
+		if len(roles) > 0 {
+			fmt.Printf("  \033[38;5;240m│\033[0m \033[38;5;141mRoles\033[0m    ")
+			for _, r := range roles {
+				fmt.Printf("\033[38;5;141m%s\033[0m ", r)
+			}
+			fmt.Println()
+		}
+		if len(tags) > 0 {
+			fmt.Printf("  \033[38;5;240m│\033[0m \033[38;5;38mTags\033[0m     ")
+			for _, t := range tags {
+				fmt.Printf("\033[38;5;38m%s\033[0m ", t)
+			}
+			fmt.Println()
+		}
+		if len(stacks) > 0 {
+			fmt.Printf("  \033[38;5;240m│\033[0m \033[38;5;178mStacks\033[0m   ")
+			for _, s := range stacks {
+				fmt.Printf("\033[38;5;178m%s\033[0m ", s)
+			}
+			fmt.Println()
+		}
+		fmt.Printf("  \033[38;5;240m╰──────────────────────────────\033[0m\n\n")
+	}
+
+	// Groups
+	if len(cfg.Groups) > 0 {
+		fmt.Printf("  \033[38;5;240m╭─ Groups (%d) ────────────────\033[0m\n", len(cfg.Groups))
+		for _, g := range cfg.Groups {
+			fmt.Printf("  \033[38;5;240m│\033[0m \033[38;5;38m▸\033[0m %s\n", g)
+		}
+		fmt.Printf("  \033[38;5;240m╰──────────────────────────────\033[0m\n\n")
+	}
+
+	// Recipes
+	if len(cfg.Recipes) > 0 {
+		fmt.Printf("  \033[38;5;240m╭─ Recipes (%d) ───────────────\033[0m\n", len(cfg.Recipes))
+		for _, r := range cfg.Recipes {
+			fmt.Printf("  \033[38;5;240m│\033[0m \033[38;5;178m▸\033[0m %s\n", r)
+		}
+		fmt.Printf("  \033[38;5;240m╰──────────────────────────────\033[0m\n\n")
+	}
+
+	// Services
+	if len(cfg.Services) > 0 {
+		fmt.Printf("  \033[38;5;240m╭─ Services (%d) ──────────────\033[0m\n", len(cfg.Services))
+		for _, s := range cfg.Services {
+			fmt.Printf("  \033[38;5;240m│\033[0m \033[38;5;245m%s\033[0m\n", s)
+		}
+		fmt.Printf("  \033[38;5;240m╰──────────────────────────────\033[0m\n\n")
+	}
+
+	// Disk checks
+	if len(cfg.DiskChecks) > 0 {
+		fmt.Printf("  \033[38;5;240m╭─ Disk Checks ────────────────\033[0m\n")
+		for _, d := range cfg.DiskChecks {
+			fmt.Printf("  \033[38;5;240m│\033[0m \033[38;5;245m%s\033[0m\n", d)
+		}
+		fmt.Printf("  \033[38;5;240m╰──────────────────────────────\033[0m\n")
+	}
+}
+
+// ── logs: show agent activity log ────────────────────────────────────────
+
+func cmdLogs(args []string) {
+	fs := flag.NewFlagSet("logs", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:7780", "agent health API address")
+	count := fs.Int("n", 30, "number of log entries to show")
+	fs.Parse(args)
+
+	resp, err := http.Get(fmt.Sprintf("http://%s/v1/logs?limit=%d", *addr, *count))
+	if err != nil {
+		cli.PrintError(fmt.Sprintf("agent not reachable at %s", *addr))
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	var entries []struct {
+		Timestamp string `json:"ts"`
+		Level     string `json:"level"`
+		Category  string `json:"cat"`
+		Message   string `json:"msg"`
+		Detail    string `json:"detail"`
+	}
+	json.NewDecoder(resp.Body).Decode(&entries)
+
+	if len(entries) == 0 {
+		cli.PrintInfo("no log entries found")
+		return
+	}
+
+	cli.Banner()
+	fmt.Printf("\n  \033[1m\033[38;5;141mActivity Log\033[0m — %d entries\n\n", len(entries))
+
+	for _, e := range entries {
+		var levelCol, levelIcon string
+		switch e.Level {
+		case "info":
+			levelCol = "\033[38;5;245m"
+			levelIcon = " "
+		case "warn":
+			levelCol = "\033[38;5;226m"
+			levelIcon = "⚠"
+		case "error":
+			levelCol = "\033[38;5;196m"
+			levelIcon = "✖"
+		case "action":
+			levelCol = "\033[38;5;51m"
+			levelIcon = "▸"
+		default:
+			levelCol = "\033[38;5;245m"
+			levelIcon = " "
+		}
+
+		// Category color
+		var catCol string
+		switch e.Category {
+		case "git":
+			catCol = "\033[38;5;178m"
+		case "service":
+			catCol = "\033[38;5;46m"
+		case "agent":
+			catCol = "\033[38;5;141m"
+		case "disk":
+			catCol = "\033[38;5;226m"
+		case "peer":
+			catCol = "\033[38;5;38m"
+		default:
+			catCol = "\033[38;5;245m"
+		}
+
+		ts := e.Timestamp
+		if len(ts) > 10 {
+			ts = ts[11:] // just time, not date
+		}
+
+		fmt.Printf("  %s%s\033[0m  \033[38;5;240m%s\033[0m  %s%-6s\033[0m  %s\n",
+			levelCol, levelIcon,
+			ts,
+			catCol, e.Category,
+			e.Message)
+		if e.Detail != "" {
+			fmt.Printf("  %s       %s\033[0m\n", levelCol, e.Detail)
+		}
+	}
+	fmt.Println()
+}
+
+// ── watch: live monitoring ───────────────────────────────────────────────
+
+func cmdWatch(args []string) {
+	fs := flag.NewFlagSet("watch", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:7780", "agent health API address")
+	intervalS := fs.Int("interval", 5, "refresh interval in seconds")
+	fs.Parse(args)
+
+	interval := time.Duration(*intervalS) * time.Second
+
+	cli.Banner()
+	fmt.Printf("\n  \033[1m\033[38;5;141mLive Monitor\033[0m — refreshing every %ds (Ctrl+C to exit)\n\n", *intervalS)
+
+	for {
+		// Clear screen and redraw
+		fmt.Print("\033[2J\033[H") // clear screen + move cursor to top-left
+		cli.Banner()
+		fmt.Printf("\n  \033[1m\033[38;5;141mLive Monitor\033[0m — refreshing every %ds (Ctrl+C to exit)\n\n", *intervalS)
+
+		h, err := cli.FetchHealth(*addr)
+		if err != nil {
+			cli.PrintError(fmt.Sprintf("agent not reachable at %s", *addr))
+		} else {
+			// Compact status
+			up, down := 0, 0
+			for _, v := range h.Services {
+				if v == "running" {
+					up++
+				} else {
+					down++
+				}
+			}
+			healthIcon := "\033[38;5;46m●\033[0m"
+			if down > 0 {
+				healthIcon = "\033[38;5;226m◐\033[0m"
+			}
+
+			fmt.Printf("  %s \033[1m%s\033[0m  %s%d/%d services\033[0m  \033[38;5;240m%s\033[0m  \033[38;5;240mup %s\033[0m\n\n",
+				healthIcon, h.Hostname,
+				"\033[38;5;46m", up, up+down,
+				h.System.OS+"/"+h.System.Arch,
+				formatUptime(h.UptimeSeconds))
+
+			// Services in two columns
+			names := make([]string, 0, len(h.Services))
+			for k := range h.Services {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+
+			mid := (len(names) + 1) / 2
+			for i := 0; i < mid; i++ {
+				left := names[i]
+				leftStatus := h.Services[left]
+				leftIcon := "\033[38;5;46m●\033[0m"
+				if leftStatus != "running" {
+					leftIcon = "\033[38;5;196m○\033[0m"
+				}
+
+				line := fmt.Sprintf("  %s \033[38;5;245m%-20s\033[0m", leftIcon, left)
+
+				if i+mid < len(names) {
+					right := names[i+mid]
+					rightStatus := h.Services[right]
+					rightIcon := "\033[38;5;46m●\033[0m"
+					if rightStatus != "running" {
+						rightIcon = "\033[38;5;196m○\033[0m"
+					}
+					line += fmt.Sprintf("  %s \033[38;5;245m%-20s\033[0m", rightIcon, right)
+				}
+				fmt.Println(line)
+			}
+
+			// Nebula + disk
+			fmt.Println()
+			if h.NebulaRunning {
+				fmt.Printf("  \033[38;5;46m●\033[0m Nebula  ")
+			} else {
+				fmt.Printf("  \033[38;5;196m○\033[0m Nebula  ")
+			}
+			if len(h.DiskWarns) > 0 {
+				fmt.Printf(" \033[38;5;226m⚠ Disk: %s\033[0m", strings.Join(h.DiskWarns, ", "))
+			}
+			fmt.Println()
+		}
+
+		fmt.Printf("\n  \033[38;5;240m%s\033[0m\n", time.Now().Format("15:04:05"))
+		time.Sleep(interval)
+	}
+}
+
+// ── git-pull: force git pull via API ─────────────────────────────────────
+
+func cmdGitPull(args []string) {
+	fs := flag.NewFlagSet("git-pull", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:7780", "agent health API address")
+	fs.Parse(args)
+
+	resp, err := http.Post("http://"+*addr+"/v1/git/pull", "application/json", nil)
+	if err != nil {
+		cli.PrintError(fmt.Sprintf("agent not reachable at %s", *addr))
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Result   string `json:"result"`
+		Hostname string `json:"hostname"`
+		Time     string `json:"time"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	if strings.Contains(result.Result, "error") {
+		cli.PrintError(fmt.Sprintf("git pull failed: %s", result.Result))
+	} else {
+		cli.PrintSuccess(fmt.Sprintf("git pull: %s", result.Result))
+		fmt.Printf("  \033[38;5;240m%s @ %s\033[0m\n", result.Hostname, result.Time)
+	}
+}
+
+// ── restart: restart the agent via API ───────────────────────────────────
+
+func cmdRestart(args []string) {
+	fs := flag.NewFlagSet("restart", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:7780", "agent health API address")
+	fs.Parse(args)
+
+	resp, err := http.Post("http://"+*addr+"/v1/restart", "application/json", nil)
+	if err != nil {
+		cli.PrintError(fmt.Sprintf("agent not reachable at %s", *addr))
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Status   string `json:"status"`
+		Hostname string `json:"hostname"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	cli.PrintSuccess(fmt.Sprintf("restart triggered on %s", result.Hostname))
+	fmt.Printf("  \033[38;5;240magent will exit and systemd will restart it\033[0m\n")
+}
+
 // findGroupsForNode loads all group YAMLs and finds which ones include this node
 func findGroupsForNode(repoDir, hostname string) []string {
 	groupsDir := repoDir + "/groups"
@@ -541,6 +929,11 @@ func runDaemon(args []string) {
 
 	addr := net.JoinHostPort(bind, fmt.Sprintf("%d", *port))
 	http.HandleFunc("/v1/health", a.HealthHandler)
+	http.HandleFunc("/v1/config", a.ConfigHandler)
+	http.HandleFunc("/v1/logs", a.LogsHandler)
+	http.HandleFunc("/v1/git/pull", a.GitPullHandler)
+	http.HandleFunc("/v1/restart", a.RestartHandler)
+	a.SetRepoDir(*repoDir)
 	go func() {
 		log.Printf("health API listening on %s", addr)
 		if err := http.ListenAndServe(addr, nil); err != nil {
