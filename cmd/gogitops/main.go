@@ -11,7 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -997,7 +1000,7 @@ func findGroupsForNode(repoDir, hostname string) []string {
 
 func cmdRecipe(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>       Scaffold a new recipe directory with template + examples\n  list             List all recipes in the repo\n  validate <file>  Validate a recipe YAML file\n")
+		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n")
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -1007,6 +1010,8 @@ func cmdRecipe(args []string) {
 		recipeList()
 	case "validate":
 		recipeValidate(args[1:])
+	case "run":
+		recipeRun(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown recipe subcommand: %s\n", args[0])
 		os.Exit(1)
@@ -1078,12 +1083,16 @@ func recipeList() {
 	}
 	fmt.Printf("Recipes in %s/:\n\n", recipesDir)
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		yamlFile := recipesDir + "/" + e.Name() + "/" + e.Name() + ".yaml"
-		if _, err := os.Stat(yamlFile); err == nil {
-			fmt.Printf("  📦 %s\n", e.Name())
+		if e.IsDir() {
+			// Directory-based recipe: recipes/<name>/<name>.yaml
+			yamlFile := recipesDir + "/" + e.Name() + "/" + e.Name() + ".yaml"
+			if _, err := os.Stat(yamlFile); err == nil {
+				fmt.Printf("  📦 %s\n", e.Name())
+			}
+		} else if strings.HasSuffix(e.Name(), ".yaml") {
+			// Flat recipe: recipes/<name>.yaml
+			name := strings.TrimSuffix(e.Name(), ".yaml")
+			fmt.Printf("  📦 %s\n", name)
 		}
 	}
 }
@@ -1115,6 +1124,448 @@ func recipeValidate(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("✅ %s looks valid\n", file)
+}
+
+// ── Recipe runner ─────────────────────────────────────────────────────────
+
+type recipeStep struct {
+	Name          string `yaml:"name"`
+	Description   string `yaml:"description"`
+	Command       string `yaml:"command"`
+	OS            string `yaml:"os"`
+	Arch          string `yaml:"arch"`
+	LabelsReq     []string `yaml:"labels_required"`
+	Expect        string `yaml:"expect"`
+	ExpectRegex   string `yaml:"expect_regex"`
+	ExpectExit    *int   `yaml:"expect_exit"`
+	Parse         string `yaml:"parse"`
+	Pattern       string `yaml:"pattern"`
+	OnlyIf        string `yaml:"only_if"`
+	When          string `yaml:"when"`
+	OnFailure     string `yaml:"on_failure"`
+	Retries       int    `yaml:"retries"`
+	RetryDelay    string `yaml:"retry_delay"`
+}
+
+type recipe struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Version     string `yaml:"version"`
+	Labels      []string `yaml:"labels"`
+	Params      []struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
+		Required    bool   `yaml:"required"`
+	} `yaml:"params"`
+	Steps []recipeStep `yaml:"steps"`
+}
+
+func recipeRun(args []string) {
+	fs := flag.NewFlagSet("recipe run", flag.ExitOnError)
+	repoDir := fs.String("repo", ".", "path to gogitops repo")
+	dryRun := fs.Bool("dry-run", false, "print commands without executing")
+	verbose := fs.Bool("verbose", false, "show full command output")
+
+	// Separate flags from positional args
+	var positional []string
+	var flagArgs []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--repo" && i+1 < len(args) {
+			flagArgs = append(flagArgs, args[i], args[i+1])
+			i++
+		} else if strings.HasPrefix(args[i], "-") {
+			flagArgs = append(flagArgs, args[i])
+		} else {
+			positional = append(positional, args[i])
+		}
+	}
+	fs.Parse(flagArgs)
+
+	if len(positional) < 1 {
+		fmt.Fprintf(os.Stderr, "usage: gogitops recipe run <file.yaml|name> [--repo path] [--dry-run] [--verbose]\n\n")
+		fmt.Fprintf(os.Stderr, "  Executes a recipe step-by-step.\n")
+		fmt.Fprintf(os.Stderr, "  --dry-run   Print each command without running it\n")
+		fmt.Fprintf(os.Stderr, "  --verbose   Show full command output (stdout+stderr)\n")
+		os.Exit(1)
+	}
+
+	target := positional[0]
+
+	// Resolve recipe file path
+	recipeFile := target
+	if _, err := os.Stat(recipeFile); err != nil {
+		// Try as a name: recipes/<name>.yaml or recipes/<name>/<name>.yaml
+		candidates := []string{
+			*repoDir + "/recipes/" + target + ".yaml",
+			*repoDir + "/recipes/" + target + "/" + target + ".yaml",
+		}
+		found := false
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				recipeFile = c
+				found = true
+				break
+			}
+		}
+		if !found {
+			cli.PrintError(fmt.Sprintf("recipe not found: %s (tried %s)", target, strings.Join(candidates, ", ")))
+			os.Exit(1)
+		}
+	}
+
+	// Parse YAML (simple line-based parser — no external deps)
+	data, err := os.ReadFile(recipeFile)
+	if err != nil {
+		cli.PrintError(fmt.Sprintf("cannot read recipe: %v", err))
+		os.Exit(1)
+	}
+
+	r := parseRecipe(string(data))
+	if r.Name == "" {
+		cli.PrintError("recipe missing 'name' field")
+		os.Exit(1)
+	}
+	if len(r.Steps) == 0 {
+		cli.PrintError("recipe has no steps")
+		os.Exit(1)
+	}
+
+	// Build variable map for substitution
+	vars := map[string]string{
+		"repo":     *repoDir,
+		"hostname": config.DetectHostname(),
+	}
+	// Detect OS/arch
+	vars["os"] = runtime.GOOS
+	vars["arch"] = runtime.GOARCH
+
+	// Banner
+	cli.Banner()
+	fmt.Printf("\n  \033[1m\033[38;5;141mRecipe: %s\033[0m\n", r.Name)
+	if r.Description != "" {
+		fmt.Printf("  \033[38;5;240m%s\033[0m\n", r.Description)
+	}
+	fmt.Printf("  \033[38;5;240m%d steps%s\033[0m\n\n", len(r.Steps), func() string {
+		if *dryRun {
+			return " (DRY RUN)"
+		}
+		return ""
+	}())
+
+	// Execute steps
+	passed := 0
+	skipped := 0
+	failed := 0
+	for i, step := range r.Steps {
+		stepNum := i + 1
+		displayName := step.Name
+		if displayName == "" {
+			displayName = fmt.Sprintf("step-%d", stepNum)
+		}
+
+		// Substitute variables in command
+		cmd := substituteVars(step.Command, vars)
+
+		// OS filter
+		if step.OS != "" && step.OS != vars["os"] {
+			fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: os=%s, host=%s)\033[0m\n", stepNum, len(r.Steps), displayName, step.OS, vars["os"])
+			skipped++
+			continue
+		}
+		// Arch filter
+		if step.Arch != "" && step.Arch != vars["arch"] {
+			fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: arch=%s)\033[0m\n", stepNum, len(r.Steps), displayName, step.Arch)
+			skipped++
+			continue
+		}
+
+		// when: condition — run shell test, skip if exit != 0
+		if step.When != "" {
+			whenCmd := substituteVars(step.When, vars)
+			wCmd := exec.Command("bash", "-c", whenCmd)
+			if err := wCmd.Run(); err != nil {
+				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: when condition false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				skipped++
+				continue
+			}
+		}
+
+		// only_if: condition (inverse of when — skip if false)
+		if step.OnlyIf != "" {
+			onlyCmd := substituteVars(step.OnlyIf, vars)
+			oCmd := exec.Command("bash", "-c", onlyCmd)
+			if err := oCmd.Run(); err != nil {
+				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: only_if false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				skipped++
+				continue
+			}
+		}
+
+		// Description
+		if step.Description != "" {
+			fmt.Printf("  \033[38;5;38m▸ %d/%d %s\033[0m — \033[38;5;245m%s\033[0m\n", stepNum, len(r.Steps), displayName, step.Description)
+		} else {
+			fmt.Printf("  \033[38;5;38m▸ %d/%d %s\033[0m\n", stepNum, len(r.Steps), displayName)
+		}
+
+		// Dry run — just print
+		if *dryRun {
+			fmt.Printf("     \033[38;5;240m$ %s\033[0m\n", cmd)
+			passed++
+			continue
+		}
+
+		// Execute with retries
+		maxRetries := step.Retries
+		if maxRetries == 0 {
+			maxRetries = 1
+		}
+		retryDelay := 2 * time.Second
+		if step.RetryDelay != "" {
+			if d, err := time.ParseDuration(step.RetryDelay); err == nil {
+				retryDelay = d
+			}
+		}
+
+		var lastOutput string
+		var lastExitCode int
+		var stepErr error
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			eCmd := exec.Command("bash", "-c", cmd)
+			var out []byte
+			out, stepErr = eCmd.CombinedOutput()
+			lastOutput = string(out)
+			lastExitCode = 0
+			if stepErr != nil {
+				if exitErr, ok := stepErr.(*exec.ExitError); ok {
+					lastExitCode = exitErr.ExitCode()
+				} else {
+					lastExitCode = 1
+				}
+			}
+
+			// Check expectations
+			success := true
+			if step.Expect != "" && !strings.Contains(lastOutput, step.Expect) {
+				success = false
+			}
+			if step.ExpectRegex != "" {
+				matched, _ := regexp.MatchString(step.ExpectRegex, lastOutput)
+				if !matched {
+					success = false
+				}
+			}
+			if step.ExpectExit != nil && lastExitCode != *step.ExpectExit {
+				success = false
+			}
+			if lastExitCode != 0 && step.ExpectExit == nil {
+				success = false
+			}
+
+			if success {
+				break
+			}
+			if attempt < maxRetries {
+				fmt.Printf("     \033[38;5;226m↻ retry %d/%d (waiting %s)\033[0m\n", attempt, maxRetries, retryDelay)
+				time.Sleep(retryDelay)
+			}
+		}
+
+		// Parse output if requested
+		if step.Parse == "regex" && step.Pattern != "" {
+			re, err := regexp.Compile(step.Pattern)
+			if err == nil {
+				matches := re.FindStringSubmatch(lastOutput)
+				if len(matches) > 1 {
+					for idx, m := range matches[1:] {
+						vars[fmt.Sprintf("%d", idx+1)] = strings.TrimSpace(m)
+					}
+				}
+			}
+		}
+
+		// Verbose output
+		if *verbose && lastOutput != "" {
+			for _, line := range strings.Split(strings.TrimSpace(lastOutput), "\n") {
+				fmt.Printf("     \033[38;5;240m%s\033[0m\n", line)
+			}
+		}
+
+		// Result
+		if lastExitCode == 0 || (step.ExpectExit != nil && lastExitCode == *step.ExpectExit) {
+			fmt.Printf("     \033[38;5;46m✓\033[0m\n")
+			passed++
+		} else {
+			failureAction := step.OnFailure
+			if failureAction == "" {
+				failureAction = "abort"
+			}
+			fmt.Printf("     \033[38;5;196m✖ (exit %d)\033[0m\n", lastExitCode)
+			if *verbose == false && lastOutput != "" {
+				// Show last 3 lines of output on failure
+				lines := strings.Split(strings.TrimSpace(lastOutput), "\n")
+				start := len(lines) - 3
+				if start < 0 {
+					start = 0
+				}
+				for _, line := range lines[start:] {
+					fmt.Printf("     \033[38;5;196m%s\033[0m\n", line)
+				}
+			}
+			failed++
+			if failureAction == "abort" {
+				fmt.Printf("\n  \033[38;5;196m✖ Recipe aborted at step %d: %s\033[0m\n", stepNum, displayName)
+				fmt.Printf("  \033[38;5;240m%d passed, %d skipped, %d failed\033[0m\n\n", passed, skipped, failed)
+				os.Exit(1)
+			}
+		}
+	}
+
+	// Summary
+	fmt.Printf("\n  ")
+	if failed > 0 {
+		fmt.Printf("\033[38;5;226m⚠ %s complete: %d passed, %d skipped, %d failed\033[0m\n\n", r.Name, passed, skipped, failed)
+	} else {
+		fmt.Printf("\033[38;5;46m✓ %s complete: %d passed, %d skipped\033[0m\n\n", r.Name, passed, skipped)
+	}
+}
+
+// parseRecipe does a simple line-based YAML parse for recipe files.
+// Avoids adding gopkg.in/yaml.v3 dependency.
+func parseRecipe(content string) recipe {
+	r := recipe{}
+	var inSteps bool
+	var currentStep *recipeStep
+
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		// Top-level keys (no indent)
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "	") {
+			inSteps = false
+			if strings.HasPrefix(trimmed, "name:") {
+				r.Name = strings.TrimSpace(strings.TrimPrefix(trimmed, "name:"))
+				r.Name = unquoteYAML(r.Name)
+				} else if strings.HasPrefix(trimmed, "description:") {
+				r.Description = strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
+				r.Description = unquoteYAML(r.Description)
+				} else if strings.HasPrefix(trimmed, "version:") {
+				r.Version = strings.TrimSpace(strings.TrimPrefix(trimmed, "version:"))
+				r.Version = unquoteYAML(r.Version)
+			} else if strings.HasPrefix(trimmed, "steps:") {
+				inSteps = true
+			}
+			continue
+		}
+
+		// Steps section
+		if !inSteps {
+			continue
+		}
+
+		// New step starts with "  - name:"
+		if strings.HasPrefix(trimmed, "- name:") || strings.HasPrefix(trimmed, "- name :") {
+			if currentStep != nil {
+				r.Steps = append(r.Steps, *currentStep)
+			}
+			currentStep = &recipeStep{}
+			val := strings.TrimSpace(strings.SplitN(trimmed, ":", 2)[1])
+			currentStep.Name = unquoteYAML(val)
+			continue
+		}
+
+		// Also handle "- " followed by other key on same line
+		if strings.HasPrefix(trimmed, "- ") && currentStep == nil {
+			currentStep = &recipeStep{}
+			trimmed = strings.TrimPrefix(trimmed, "- ")
+		} else if strings.HasPrefix(trimmed, "- ") && currentStep != nil {
+			// Previous step done, start new one
+			r.Steps = append(r.Steps, *currentStep)
+			currentStep = &recipeStep{}
+			trimmed = strings.TrimPrefix(trimmed, "- ")
+		}
+
+		if currentStep == nil {
+			continue
+		}
+
+		// Parse key: value
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		// Only strip outer wrapping quotes (double or single)
+		val = unquoteYAML(val)
+
+		switch key {
+		case "name":
+			currentStep.Name = val
+		case "description":
+			currentStep.Description = val
+		case "command":
+			currentStep.Command = val
+		case "os":
+			currentStep.OS = val
+		case "arch":
+			currentStep.Arch = val
+		case "expect":
+			currentStep.Expect = val
+		case "expect_regex":
+			currentStep.ExpectRegex = val
+		case "expect_exit":
+			n, _ := strconv.Atoi(val)
+			currentStep.ExpectExit = &n
+		case "parse":
+			currentStep.Parse = val
+		case "pattern":
+			currentStep.Pattern = val
+		case "only_if":
+			currentStep.OnlyIf = val
+		case "when":
+			currentStep.When = val
+		case "on_failure":
+			currentStep.OnFailure = val
+		case "retries":
+			currentStep.Retries, _ = strconv.Atoi(val)
+		case "retry_delay":
+			currentStep.RetryDelay = val
+		case "labels_required":
+			// Simple parse: [a, b] → skip for now
+		}
+	}
+
+	if currentStep != nil {
+		r.Steps = append(r.Steps, *currentStep)
+	}
+
+	return r
+}
+
+// unquoteYAML removes wrapping quotes from a YAML value.
+// Only strips if the value starts AND ends with the same quote char.
+func unquoteYAML(s string) string {
+	if len(s) >= 2 {
+		if s[0] == '"' && s[len(s)-1] == '"' {
+			return s[1 : len(s)-1]
+		}
+		if s[0] == '\'' && s[len(s)-1] == '\'' {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
+// substituteVars replaces {{var}} placeholders in a string
+func substituteVars(s string, vars map[string]string) string {
+	for k, v := range vars {
+		s = strings.ReplaceAll(s, "{{"+k+"}}", v)
+	}
+	return s
 }
 
 // ── Daemon mode ──────────────────────────────────────────────────────────
