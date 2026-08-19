@@ -823,23 +823,34 @@ func cmdRecipe(args []string) {
 }
 
 func recipeNew(args []string) {
+	// Parse flags from full args to handle --repo before or after name
+	// Go flag package requires flags before positional args, so we rearrange
 	fs := flag.NewFlagSet("recipe new", flag.ExitOnError)
 	repoDir := fs.String("repo", ".", "path to gogitops repo (recipes/ directory)")
-	fs.Parse(args)
 
-	if fs.NArg() < 1 {
+	// Separate flags from positional args manually
+	var positional []string
+	var flagArgs []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--repo" && i+1 < len(args) {
+			flagArgs = append(flagArgs, args[i], args[i+1])
+			i++ // skip value
+		} else if strings.HasPrefix(args[i], "-") {
+			flagArgs = append(flagArgs, args[i])
+		} else {
+			positional = append(positional, args[i])
+		}
+	}
+	fs.Parse(flagArgs)
+
+	if len(positional) < 1 {
 		fmt.Fprintf(os.Stderr, "usage: gogitops recipe new <name> [--repo path]\n\nCreates a recipe directory with a commented YAML template.\n")
 		os.Exit(1)
 	}
 
-	name := fs.Arg(0)
+	name := positional[0]
 	recipesDir := *repoDir + "/recipes"
 	recipeDir := recipesDir + "/" + name
-
-	if _, err := os.Stat(recipeDir); err == nil {
-		fmt.Fprintf(os.Stderr, "❌ recipe directory already exists: %s\n", recipeDir)
-		os.Exit(1)
-	}
 
 	if err := os.MkdirAll(recipeDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ failed to create directory: %v\n", err)
@@ -865,7 +876,10 @@ steps: []
 }
 
 func recipeList() {
-	recipesDir := "recipes"
+	fs := flag.NewFlagSet("recipe list", flag.ExitOnError)
+	repoDir := fs.String("repo", ".", "path to gogitops repo (recipes/ directory)")
+	fs.Parse(os.Args[3:]) // skip "gogitops recipe list"
+	recipesDir := *repoDir + "/recipes"
 	entries, err := os.ReadDir(recipesDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ cannot read recipes directory: %v\n", err)
