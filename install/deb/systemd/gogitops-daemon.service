@@ -1,12 +1,18 @@
 [Unit]
-Description=GoGitOps Daemon — agent mesh health checker
+Description=GoGitOps Daemon — fleet health checker
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+# Defaults — overridden by /etc/gogitops/agent.env
+Environment=GOGITOPS_BIND=0.0.0.0
+Environment=GOGITOPS_PORT=7780
+Environment=GOGITOPS_INTERVAL=60
+Environment=GOGITOPS_REPO_DIR=%h/.config/gogitops
 EnvironmentFile=-/etc/gogitops/agent.env
-ExecStart=/usr/local/bin/gogitops daemon -repo /etc/gogitops -bind 0.0.0.0 -port 7780 -interval 60 -dashboard ${GOGITOPS_DASHBOARD_URL}
+# Optional flags (-dashboard, -hostname) only passed if set
+ExecStart=/bin/bash -c '/usr/local/bin/gogitops daemon -repo "${GOGITOPS_REPO_DIR}" -bind "${GOGITOPS_BIND}" -port "${GOGITOPS_PORT}" -interval "${GOGITOPS_INTERVAL}" ${GOGITOPS_DASHBOARD_URL:+-dashboard "${GOGITOPS_DASHBOARD_URL}"} ${GOGITOPS_HOSTNAME:+-hostname "${GOGITOPS_HOSTNAME}"}'
 Restart=on-failure
 RestartSec=10
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -43,6 +44,8 @@ func main() {
 			cmdGitPull(os.Args[2:])
 		case "restart":
 			cmdRestart(os.Args[2:])
+		case "set":
+			cmdSet(os.Args[2:])
 		case "version", "--version", "-v":
 			cli.Banner()
 			fmt.Printf("\n  \033[38;5;141m%s\033[0m\n\n", version)
@@ -85,6 +88,7 @@ func printHelp() {
     watch      Live monitoring — auto-refreshing status (Ctrl+C to exit)
     git-pull   Force a git pull on the agent's config repo
     restart    Restart the agent daemon
+    set        Set config values (repo, branch, dashboard, webhook, hostname)
     daemon     Run the agent daemon
     dashboard  Fleet status dashboard (web UI on :7781)
     recipe     Recipe management (new, list, validate)
@@ -772,6 +776,193 @@ func cmdRestart(args []string) {
 
 	cli.PrintSuccess(fmt.Sprintf("restart triggered on %s", result.Hostname))
 	fmt.Printf("  \033[38;5;240magent will exit and systemd will restart it\033[0m\n")
+}
+
+// ── set: edit agent config values ────────────────────────────────────────
+
+func cmdSet(args []string) {
+	if len(args) == 0 {
+		cli.Banner()
+		fmt.Println()
+		fmt.Printf("  \033[1m\033[38;5;141mSet Configuration\033[0m\n\n")
+		fmt.Printf("  Usage: gogitops set <key> <value>\n\n")
+		fmt.Printf("  \033[38;5;240mKeys:\033[0m\n")
+		fmt.Printf("    repo <url>         Git config repo URL\n")
+		fmt.Printf("    branch <name>      Git branch (default: main)\n")
+		fmt.Printf("    dashboard <url>    Beacon/dashboard URL for self-registration\n")
+		fmt.Printf("    webhook <url>      Discord webhook URL or nenv:<ns>/<key>\n")
+		fmt.Printf("    hostname <name>    Override detected hostname\n")
+		fmt.Printf("    bind <addr>        Health API bind address\n")
+		fmt.Printf("    port <num>         Health API port\n")
+		fmt.Printf("    interval <sec>     Check cycle interval\n\n")
+		fmt.Printf("  \033[38;5;240mExamples:\033[0m\n")
+		fmt.Printf("    gogitops set repo git@github.com:org/fleet-config.git\n")
+		fmt.Printf("    gogitops set dashboard http://10.2.0.102:7781\n")
+		fmt.Printf("    gogitops set webhook nenv:gogitops/DISCORD_WEBHOOK\n\n")
+		return
+	}
+
+	key := args[0]
+	if len(args) < 2 {
+		cli.PrintError(fmt.Sprintf("no value provided for '%s'", key))
+		fmt.Fprintf(os.Stderr, "  usage: gogitops set %s <value>\n", key)
+		os.Exit(1)
+	}
+	value := args[1]
+
+	// Map keys to config file keys / env vars
+	envFile := "/etc/gogitops/agent.env"
+	configFile := "/etc/gogitops/config.yaml"
+
+	// Keys that go in agent.env (env vars read by systemd)
+	envKeys := map[string]string{
+		"repo":      "GOGITOPS_REPO_URL",
+		"branch":    "GOGITOPS_REPO_BRANCH",
+		"dashboard": "GOGITOPS_DASHBOARD_URL",
+		"hostname":  "GOGITOPS_HOSTNAME",
+		"bind":      "GOGITOPS_BIND",
+		"port":      "GOGITOPS_PORT",
+		"interval":  "GOGITOPS_INTERVAL",
+	}
+
+	// Keys that go in config.yaml (non-systemd config)
+	configKeys := map[string]string{
+		"webhook": "webhook",
+	}
+
+	// Keys that need a daemon restart
+	needsRestart := map[string]bool{
+		"repo": true, "branch": true, "dashboard": true,
+		"webhook": true, "bind": true, "port": true, "interval": true,
+		"hostname": true,
+	}
+
+	if envKey, ok := envKeys[key]; ok {
+		// Update agent.env
+		if err := updateEnvFile(envFile, envKey, value); err != nil {
+			// Try user-local path if /etc isn't writable
+			home, _ := os.UserHomeDir()
+			altEnv := home + "/.config/gogitops/agent.env"
+			if err2 := updateEnvFile(altEnv, envKey, value); err2 != nil {
+				cli.PrintError(fmt.Sprintf("failed to update %s: %v", envFile, err))
+				os.Exit(1)
+			}
+			envFile = altEnv
+		}
+
+		// If setting repo URL, clone it if not already present
+		if key == "repo" {
+			home, _ := os.UserHomeDir()
+			repoDir := home + "/.config/gogitops"
+			if _, err := os.Stat(repoDir + "/.git"); err != nil {
+				branch := "main"
+				// Try to read branch from env file
+				if b, err := readEnvValue(envFile, "GOGITOPS_REPO_BRANCH"); err == nil && b != "" {
+					branch = b
+				}
+				fmt.Printf("  \033[38;5;51m▸\033[0m Cloning repo...\n")
+				cmd := exec.Command("git", "clone", "--branch", branch, value, repoDir)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					cli.PrintError(fmt.Sprintf("clone failed: %s", strings.TrimSpace(string(out))))
+				} else {
+					cli.PrintSuccess(fmt.Sprintf("cloned to %s", repoDir))
+				}
+			}
+		}
+
+		cli.PrintSuccess(fmt.Sprintf("%s = %s", key, value))
+		fmt.Printf("  \033[38;5;240mwritten to %s\033[0m\n", envFile)
+	} else if configKey, ok := configKeys[key]; ok {
+		// Update config.yaml
+		if err := updateConfigYaml(configFile, configKey, value); err != nil {
+			home, _ := os.UserHomeDir()
+			altConfig := home + "/.config/gogitops/config.yaml"
+			if err2 := updateConfigYaml(altConfig, configKey, value); err2 != nil {
+				cli.PrintError(fmt.Sprintf("failed to update %s: %v", configFile, err))
+				os.Exit(1)
+			}
+			configFile = altConfig
+		}
+		cli.PrintSuccess(fmt.Sprintf("%s = %s", key, value))
+		fmt.Printf("  \033[38;5;240mwritten to %s\033[0m\n", configFile)
+	} else {
+		cli.PrintError(fmt.Sprintf("unknown config key: %s", key))
+		fmt.Fprintf(os.Stderr, "  run 'gogitops set' for available keys\n")
+		os.Exit(1)
+	}
+
+	if needsRestart[key] {
+		fmt.Printf("  \033[38;5;226m⚠\033[0m Restart agent for changes to take effect: \033[38;5;255mgogitops restart\033[0m\n")
+	}
+}
+
+// updateEnvFile updates a KEY=value line in an env file, or adds it if missing
+func updateEnvFile(path, key, value string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Create the file (ensure parent dir exists)
+		_ = os.MkdirAll(filepath.Dir(path), 0755)
+		content := fmt.Sprintf("# gogitops agent environment\n%s=%s\n", key, value)
+		return os.WriteFile(path, []byte(content), 0644)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, key+"=") {
+			lines[i] = fmt.Sprintf("%s=%s", key, value)
+			found = true
+			break
+		}
+	}
+	if !found {
+		lines = append(lines, fmt.Sprintf("%s=%s", key, value))
+	}
+
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+}
+
+// readEnvValue reads a KEY=value from an env file
+func readEnvValue(path, key string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, key+"=") {
+			return strings.TrimPrefix(trimmed, key+"="), nil
+		}
+	}
+	return "", fmt.Errorf("key not found")
+}
+
+// updateConfigYaml updates a key: value line in a YAML config file
+func updateConfigYaml(path, key, value string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Create the file (ensure parent dir exists)
+		_ = os.MkdirAll(filepath.Dir(path), 0755)
+		content := fmt.Sprintf("# gogitops configuration\n%s: \"%s\"\n", key, value)
+		return os.WriteFile(path, []byte(content), 0644)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, key+":") {
+			lines[i] = fmt.Sprintf("%s: \"%s\"", key, value)
+			found = true
+			break
+		}
+	}
+	if !found {
+		lines = append(lines, fmt.Sprintf("%s: \"%s\"", key, value))
+	}
+
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
 }
 
 // findGroupsForNode loads all group YAMLs and finds which ones include this node

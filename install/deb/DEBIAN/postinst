@@ -37,17 +37,45 @@ if [ -f /etc/gogitops/ssh/friday-automation.pub ]; then
     chmod 600 "$USER_HOME/.ssh/authorized_keys.d/friday-automation.pub"
 fi
 
-# ── 3. Create agent.env (dashboard URL + other env vars) ──────
+# ── 3. Create agent.env (all config in one file) ──────────────
 AGENT_ENV="/etc/gogitops/agent.env"
 if [ ! -f "$AGENT_ENV" ]; then
     DASHBOARD_URL="${GOGITOPS_DASHBOARD_URL:-}"
+    REPO_URL="${GOGITOPS_REPO_URL:-}"
+    REPO_BRANCH="${GOGITOPS_REPO_BRANCH:-main}"
+    HOSTNAME="${GOGITOPS_HOSTNAME:-}"
     cat > "$AGENT_ENV" << EOF
 # gogitops agent environment
-# Set GOGITOPS_DASHBOARD_URL so this node self-registers with the dashboard
-# Example: GOGITOPS_DASHBOARD_URL=http://10.2.0.102:7781
+# All config lives here. Edit with: gogitops set <key> <value>
+
+# Beacon URL — agent self-registers with this dashboard
 GOGITOPS_DASHBOARD_URL=$DASHBOARD_URL
+
+# Git config repo — agent clones and pulls from here
+GOGITOPS_REPO_URL=$REPO_URL
+GOGITOPS_REPO_BRANCH=$REPO_BRANCH
+
+# Hostname override (leave empty for auto-detect)
+GOGITOPS_HOSTNAME=$HOSTNAME
+
+# Daemon settings
+GOGITOPS_BIND=0.0.0.0
+GOGITOPS_PORT=7780
+GOGITOPS_INTERVAL=60
 EOF
     chmod 644 "$AGENT_ENV"
+fi
+
+# ── 3b. Clone the repo if URL was provided ─────────────────────
+REPO_DIR="$USER_HOME/.config/gogitops"
+if [ -n "$REPO_URL" ] && [ ! -d "$REPO_DIR/.git" ]; then
+    mkdir -p "$REPO_DIR"
+    if sudo -u "$USER" git clone --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR" 2>/dev/null; then
+        echo "  ✓ Cloned config repo: $REPO_URL → $REPO_DIR"
+    else
+        echo "  ⚠ Failed to clone repo: $REPO_URL"
+        echo "    Agent will retry on startup"
+    fi
 fi
 
 # ── 4. Create gogitops config file ────────────────────────────
@@ -125,9 +153,13 @@ echo "=== gogitops installed ==="
 echo ""
 echo "Binary:   /usr/local/bin/gogitops"
 echo "Config:   /etc/gogitops/config.yaml"
-echo "Mesh:     /etc/gogitops/mesh.yaml (auto-updated on registration)"
+echo "Env:      /etc/gogitops/agent.env"
+echo "Repo:     $USER_HOME/.config/gogitops"
 echo "Services: gogitops-daemon (running), nenv-agent (dormant)"
 echo ""
 echo "Commands:"
 echo "  gogitops status          — check local node health"
-echo "  gogitops mesh            — list mesh peers"
+echo "  gogitops config          — show agent configuration"
+echo "  gogitops set repo <url>  — set git config repo"
+echo "  gogitops set dashboard <url> — set beacon URL"
+echo "  gogitops help            — full command reference"
