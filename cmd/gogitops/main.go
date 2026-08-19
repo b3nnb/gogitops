@@ -1,11 +1,10 @@
-// gogitops — decentralized agent mesh for Benn's homelab.
+// gogitops — fleet management via GitOps. Go binary per device, Git repo as truth.
 package main
 
 import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bennbanks/gogitops/internal/agent"
+	"github.com/bennbanks/gogitops/internal/cli"
 	"github.com/bennbanks/gogitops/internal/config"
 	"github.com/bennbanks/gogitops/internal/dashboard"
 )
@@ -28,30 +28,361 @@ func main() {
 		switch os.Args[1] {
 		case "status":
 			cmdStatus(os.Args[2:])
-		case "version":
-			fmt.Printf("gogitops %s\n", version)
+		case "fleet":
+			cmdFleet(os.Args[2:])
+		case "info":
+			cmdInfo(os.Args[2:])
+		case "version", "--version", "-v":
+			cli.Banner()
+			fmt.Printf("\n  \033[38;5;141m%s\033[0m\n\n", version)
 		case "daemon", "run":
 			runDaemon(os.Args[2:])
 		case "dashboard":
 			runDashboard(os.Args[2:])
 		case "recipe":
 			cmdRecipe(os.Args[2:])
+		case "help", "--help", "-h":
+			printHelp()
 		default:
 			if strings.HasPrefix(os.Args[1], "-") {
-				// legacy: bare flags means daemon mode
 				runDaemon(os.Args[1:])
 			} else {
-				fmt.Fprintf(os.Stderr, "unknown command: %s\nusage: gogitops [status|version|daemon|dashboard|recipe]\n", os.Args[1])
+				cli.PrintError(fmt.Sprintf("unknown command: %s", os.Args[1]))
+				printHelp()
 				os.Exit(1)
 			}
 		}
 		return
 	}
-	fmt.Fprintf(os.Stderr, "usage: gogitops <command>\n\nCommands:\n  status     Show local agent health\n  daemon     Run the agent\n  dashboard  Fleet status dashboard\n  recipe     Recipe management (new, list, validate)\n  version    Print version\n")
-	os.Exit(1)
+	printHelp()
 }
 
-// ── CLI subcommands ──────────────────────────────────────────────────────
+func printHelp() {
+	cli.Banner()
+	fmt.Printf(`
+  USAGE
+
+    gogitops <command> [flags]
+
+  COMMANDS
+
+    status     Show local agent health (services, tags, peers, system)
+    fleet      Show all agents in the fleet (compact view)
+    info       Show detailed attributes for a node (tags, groups, config)
+    daemon     Run the agent daemon
+    dashboard  Fleet status dashboard (web UI)
+    recipe     Recipe management (new, list, validate)
+    version    Print version
+
+  FLAGS
+
+    -addr      Agent address for status/info (default: 127.0.0.1:7780)
+    -repo      Path to git config repo (default: current dir)
+    -port      Port for daemon/dashboard
+    -hostname  Override hostname
+
+`)
+}
+
+// ── status: show local or remote agent health ────────────────────────────
+
+func cmdStatus(args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:7780", "agent health API address")
+	fs.Parse(args)
+
+	h, err := cli.FetchHealth(*addr)
+	if err != nil {
+		cli.PrintError(fmt.Sprintf("agent not reachable at %s", *addr))
+		os.Exit(1)
+	}
+	cli.PrintStatus(h, *addr)
+}
+
+// ── fleet: show all agents in compact view ───────────────────────────────
+
+func cmdFleet(args []string) {
+	fs := flag.NewFlagSet("fleet", flag.ExitOnError)
+	repoDir := fs.String("repo", ".", "path to gogitops repo (reads mesh.yaml)")
+	addrList := fs.String("nodes", "", "comma-separated name=address pairs (overrides mesh.yaml)")
+	fs.Parse(args)
+
+	// Build node list
+	var nodes []struct {
+		name    string
+		address string
+	}
+
+	if *addrList != "" {
+		for _, pair := range strings.Split(*addrList, ",") {
+			pair = strings.TrimSpace(pair)
+			if pair == "" {
+				continue
+			}
+			parts := strings.SplitN(pair, "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			addr := parts[1]
+			if !strings.Contains(addr, ":") {
+				addr = addr + ":7780"
+			}
+			nodes = append(nodes, struct {
+				name    string
+				address string
+			}{parts[0], addr})
+		}
+	} else {
+		mesh, err := config.LoadMesh(*repoDir)
+		if err == nil {
+			for _, peer := range mesh.Peers {
+				addr := peer.Address()
+				if addr == "" {
+					continue
+				}
+				nodes = append(nodes, struct {
+					name    string
+					address string
+				}{peer.Hostname, addr})
+			}
+		}
+	}
+
+	if len(nodes) == 0 {
+		cli.PrintInfo("no nodes found. Use --nodes flag or configure mesh.yaml")
+		return
+	}
+
+	cli.Banner()
+	fmt.Printf("\n  \033[1m\033[38;5;141mFleet Status\033[0m — %d nodes\n\n", len(nodes))
+	cli.PrintCompactHeader()
+
+	// Query all nodes in parallel
+	results := make(chan *cli.HealthResponse, len(nodes))
+	errors := make(chan error, len(nodes))
+
+	for _, n := range nodes {
+		go func(name, addr string) {
+			h, err := cli.FetchHealth(addr)
+			if err != nil {
+				errors <- fmt.Errorf("%s: %v", name, err)
+				return
+			}
+			results <- h
+		}(n.name, n.address)
+	}
+
+	for i := 0; i < len(nodes); i++ {
+		select {
+		case h := <-results:
+			cli.PrintCompact(h)
+		case err := <-errors:
+			fmt.Printf("  %s○%s  %s%s%s  %s%s%s\n",
+				"\033[38;5;196m", "\033[0m",
+				"\033[1m", padRight(extractName(err.Error(), 14), 14), "\033[0m",
+				"\033[38;5;240m", "unreachable", "\033[0m")
+		case <-time.After(6 * time.Second):
+			fmt.Printf("  %s○%s  %s%s%s  %s%s%s\n",
+				"\033[38;5;196m", "\033[0m",
+				"\033[1m", "timeout", "\033[0m",
+				"\033[38;5;240m", "timed out", "\033[0m")
+		}
+	}
+	fmt.Println()
+}
+
+func extractName(errStr string, width int) string {
+	// Extract node name from "name: error" format
+	parts := strings.SplitN(errStr, ":", 2)
+	name := strings.TrimSpace(parts[0])
+	return padRight(name, width)
+}
+
+// ── info: show detailed node config (tags, groups, services, attributes) ─
+
+func cmdInfo(args []string) {
+	fs := flag.NewFlagSet("info", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:7780", "agent health API address")
+	repoDir := fs.String("repo", ".", "path to gogitops repo")
+	fs.Parse(args)
+
+	hostname := ""
+	if fs.NArg() > 0 {
+		hostname = fs.Arg(0)
+	}
+
+	// Fetch live health data
+	h, err := cli.FetchHealth(*addr)
+	if err != nil {
+		cli.PrintError(fmt.Sprintf("agent not reachable at %s", *addr))
+		os.Exit(1)
+	}
+
+	cli.Banner()
+	fmt.Println()
+
+	// Header
+	fmt.Printf("  \033[1m\033[38;5;141m%s\033[0m %s\n\n", h.Hostname, h.AgentVersion)
+
+	// System attributes
+	fmt.Printf("  %s╭─ Attributes ─────────────────%s\n", "\033[38;5;240m", "\033[0m")
+	fmt.Printf("  %s│%s Hostname    %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;255m", h.Hostname, "\033[0m")
+	fmt.Printf("  %s│%s OS          %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;255m", h.System.OS, "\033[0m")
+	fmt.Printf("  %s│%s Arch        %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;255m", h.System.Arch, "\033[0m")
+	fmt.Printf("  %s│%s IP          %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;38m", h.System.IP, "\033[0m")
+	fmt.Printf("  %s│%s Host ID     %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;245m", h.System.HostID, "\033[0m")
+	fmt.Printf("  %s│%s Uptime      %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;245m", formatUptime(h.UptimeSeconds), "\033[0m")
+	fmt.Printf("  %s│%s Version     %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;245m", h.AgentVersion, "\033[0m")
+	if h.NebulaRunning {
+		fmt.Printf("  %s│%s Nebula      %s● running%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;46m", "\033[0m")
+	} else {
+		fmt.Printf("  %s│%s Nebula      %s○ down%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;196m", "\033[0m")
+	}
+	fmt.Printf("  %s╰──────────────────────────────%s\n", "\033[38;5;240m", "\033[0m")
+	fmt.Println()
+
+	// Labels — categorized
+	if len(h.Labels) > 0 {
+		roles := []string{}
+		tags := []string{}
+		stacks := []string{}
+		for _, l := range h.Labels {
+			if strings.HasPrefix(l, "stack:") {
+				stacks = append(stacks, l[6:])
+			} else if strings.Contains(l, "-host") || strings.Contains(l, "compute") {
+				roles = append(roles, l)
+			} else {
+				tags = append(tags, l)
+			}
+		}
+		fmt.Printf("  %s╭─ Labels ─────────────────────%s\n", "\033[38;5;240m", "\033[0m")
+		if len(roles) > 0 {
+			fmt.Printf("  %s│%s %sRoles%s    %s", "\033[38;5;240m", "\033[0m", "\033[38;5;141m", "\033[0m", "")
+			for _, r := range roles {
+				fmt.Printf("%s%s%s ", "\033[38;5;141m", r, "\033[0m")
+			}
+			fmt.Println()
+		}
+		if len(tags) > 0 {
+			fmt.Printf("  %s│%s %sTags%s     %s", "\033[38;5;240m", "\033[0m", "\033[38;5;38m", "\033[0m", "")
+			for _, t := range tags {
+				fmt.Printf("%s%s%s ", "\033[38;5;38m", t, "\033[0m")
+			}
+			fmt.Println()
+		}
+		if len(stacks) > 0 {
+			fmt.Printf("  %s│%s %sStacks%s   %s", "\033[38;5;240m", "\033[0m", "\033[38;5;178m", "\033[0m", "")
+			for _, s := range stacks {
+				fmt.Printf("%s%s%s ", "\033[38;5;178m", s, "\033[0m")
+			}
+			fmt.Println()
+		}
+		fmt.Printf("  %s╰──────────────────────────────%s\n", "\033[38;5;240m", "\033[0m")
+		fmt.Println()
+	}
+
+	// Groups membership (from repo config)
+	if hostname != "" {
+		groups := findGroupsForNode(*repoDir, hostname)
+		if len(groups) > 0 {
+			fmt.Printf("  %s╭─ Groups ─────────────────────%s\n", "\033[38;5;240m", "\033[0m")
+			for _, g := range groups {
+				fmt.Printf("  %s│%s %s▸ %s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;38m", g, "\033[0m")
+			}
+			fmt.Printf("  %s╰──────────────────────────────%s\n", "\033[38;5;240m", "\033[0m")
+			fmt.Println()
+		}
+	}
+
+	// Services
+	fmt.Printf("  %s╭─ Services (%d) ──────────────%s\n", "\033[38;5;240m", len(h.Services), "\033[0m")
+	names := make([]string, 0, len(h.Services))
+	for k := range h.Services {
+		names = append(names, k)
+	}
+	// Sort alphabetically
+	for i := 0; i < len(names); i++ {
+		for j := i + 1; j < len(names); j++ {
+			if names[i] > names[j] {
+				names[i], names[j] = names[j], names[i]
+			}
+		}
+	}
+	up, down := 0, 0
+	for _, name := range names {
+		status := h.Services[name]
+		var icon, col string
+		if status == "running" {
+			icon = "●"
+			col = "\033[38;5;46m"
+			up++
+		} else {
+			icon = "○"
+			col = "\033[38;5;196m"
+			down++
+		}
+		fmt.Printf("  %s│%s %s%s%s  %s%s%s", "\033[38;5;240m", "\033[0m", col, icon, "\033[0m", "\033[38;5;245m", padRight(name, 22), "\033[0m")
+		if status != "running" {
+			fmt.Printf("  %s%s%s", "\033[38;5;124m", status, "\033[0m")
+		}
+		fmt.Println()
+	}
+	fmt.Printf("  \033[38;5;240m╰── \033[38;5;46m%d up\033[0m, \033[38;5;196m%d down\033[0m \033[38;5;240m───────────\033[0m\n", up, down)
+	fmt.Println()
+
+	// Peers
+	if len(h.PeersReachable) > 0 || len(h.PeersUnreach) > 0 {
+		fmt.Printf("  %s╭─ Peers ──────────────────────%s\n", "\033[38;5;240m", "\033[0m")
+		for _, p := range h.PeersReachable {
+			fmt.Printf("  %s│%s %s●%s  %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;46m", "\033[0m", "\033[38;5;245m", p, "\033[0m")
+		}
+		for _, p := range h.PeersUnreach {
+			fmt.Printf("  %s│%s %s○%s  %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;196m", "\033[0m", "\033[38;5;240m", p, "\033[0m")
+		}
+		fmt.Printf("  %s╰──────────────────────────────%s\n", "\033[38;5;240m", "\033[0m")
+		fmt.Println()
+	}
+
+	// Disk warnings
+	if len(h.DiskWarns) > 0 {
+		fmt.Printf("  %s╭─ Disk Warnings ──────────────%s\n", "\033[38;5;240m", "\033[0m")
+		for _, w := range h.DiskWarns {
+			fmt.Printf("  %s│%s %s⚠%s  %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;226m", "\033[0m", "\033[38;5;178m", w, "\033[0m")
+		}
+		fmt.Printf("  %s╰──────────────────────────────%s\n", "\033[38;5;240m", "\033[0m")
+		fmt.Println()
+	}
+}
+
+// findGroupsForNode loads all group YAMLs and finds which ones include this node
+func findGroupsForNode(repoDir, hostname string) []string {
+	groupsDir := repoDir + "/groups"
+	entries, err := os.ReadDir(groupsDir)
+	if err != nil {
+		return nil
+	}
+
+	var result []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+		path := groupsDir + "/" + entry.Name()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		// Simple check: does the group YAML reference this hostname or its labels?
+		content := string(data)
+		if strings.Contains(content, "node: "+hostname) || strings.Contains(content, hostname) {
+			name := strings.TrimSuffix(entry.Name(), ".yaml")
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
+// ── Recipe commands (unchanged) ──────────────────────────────────────────
 
 func cmdRecipe(args []string) {
 	if len(args) == 0 {
@@ -71,7 +402,6 @@ func cmdRecipe(args []string) {
 	}
 }
 
-// recipeNew scaffolds a new recipe directory with a commented template.
 func recipeNew(args []string) {
 	fs := flag.NewFlagSet("recipe new", flag.ExitOnError)
 	repoDir := fs.String("repo", ".", "path to gogitops repo (recipes/ directory)")
@@ -86,165 +416,22 @@ func recipeNew(args []string) {
 	recipesDir := *repoDir + "/recipes"
 	recipeDir := recipesDir + "/" + name
 
-	// Check if already exists
 	if _, err := os.Stat(recipeDir); err == nil {
 		fmt.Fprintf(os.Stderr, "❌ recipe directory already exists: %s\n", recipeDir)
 		os.Exit(1)
 	}
 
-	// Create directory
 	if err := os.MkdirAll(recipeDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ failed to create directory: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Write the template YAML
 	template := `# GoGitOps Recipe: ` + name + `
-# 
-# Recipes are declarative YAML files that describe operational procedures.
-# This template shows every available field with comments explaining usage.
-# Remove what you don't need — minimal valid recipe is just name + steps.
-
 name: ` + name + `
-description: "TODO: Human-readable description of what this recipe does"
+description: "TODO: Human-readable description"
 version: "1.0.0"
-
-# Which nodes can run this recipe. Empty = all nodes.
-# Use labels from nodes/*.yaml (e.g. [docker-host, gpu])
 labels: []
-
-# Optional parameters — passed via --var name=value or env
-# Referenced in steps as {{param_name}}
-params:
-  # - name: target_node
-  #   description: "Node to migrate to"
-  #   required: true
-  #   default: "mini"
-
-# Tag-based switching (for failover/migration recipes)
-# Tags are applied to nodes and queried by the recipe engine
-tags:
-  # - capable    # Node has all services installed (provisioned)
-  # - primary    # Node is currently active
-  # - standby    # Node is provisioned but inactive
-
-# Source node (for clone/migration recipes)
-# source_node: friday
-# source_ip: 10.2.0.102
-
-# IP address mapping (for configs that need per-node IPs)
-# ip_map:
-#   friday_lan: 10.2.0.102
-#   mini_lan: 10.0.0.251
-#   friday_nebula: 10.200.0.4
-#   mini_nebula: 10.200.0.3
-
-# Services to clone (for failover recipes)
-# services:
-#   - name: hermes-gateway
-#     type: systemd-user
-#     ports: [8642]
-#     config: ~/.hermes/config.yaml
-#     note: "Adjust Ollama base_url for target node"
-#   - name: caddy
-#     type: systemd
-#     config: /etc/caddy/Caddyfile
-#     ports: [80]
-
-# Docker compose stacks to clone
-# compose_stacks:
-#   - name: ctl
-#     path: /home/benn/Documents/code/Docker/ctl/
-#     ports: [3000, 8001, 5432]
-#   - name: netenv
-#     path: /home/benn/Documents/code/netenv/
-#     ports: [7200, 5432]
-
-# Standalone containers to clone
-# standalone_containers:
-#   - name: qdrant-hermes
-#     image: qdrant/qdrant:latest
-#     ports: [6333, 6334]
-
-# NAS mounts required on target node
-# nas_mounts:
-#   - mount: /media/benn/Bifrost
-#     share: //10.2.0.103/Bifrost
-
-# Files to sync from source to target
-# sync_files:
-#   - ~/.hermes/config.yaml
-#   - ~/.hermes/.env
-#   - ~/.hermes/skills/
-#   - /etc/caddy/Caddyfile
-
-# ── Steps ──────────────────────────────────────────────────────────────
-# Each step runs in order. Steps support:
-#   command: shell command to run
-#   action: built-in (mesh-query, service-check, git-commit, mesh-broadcast, wait-for-healthy)
-#   os/arch: filter by platform
-#   labels_required: node must have these labels
-#   expect/expect_regex: validate output
-#   parse + pattern: capture groups into {{1}}, {{2}}
-#   only_if / when: conditional execution
-#   retries / retry_delay: retry on failure
-#   on_failure: continue | abort (default: abort)
-#
-# Variables: {{param_name}}, {{hostname}}, {{os}}, {{arch}}, {{nebula_ip}}, {{repo}}
-
-steps:
-  # ── Example: Detect platform ──
-  - name: detect-arch
-    description: "Detect CPU architecture"
-    command: "uname -m"
-    parse: regex
-    pattern: "(.+)"
-
-  # ── Example: Install something (with retry) ──
-  # - name: install-package
-  #   description: "Install required package"
-  #   command: "apt-get install -y curl"
-  #   when: "! which curl 2>/dev/null"
-  #   retries: 2
-  #   retry_delay: 5s
-  #   on_failure: abort
-
-  # ── Example: Copy config with env var substitution ──
-  # - name: deploy-config
-  #   description: "Copy config file with IP substitution"
-  #   command: "sed 's/10.2.0.102/{{target_ip}}/g' {{repo}}/config.template > /etc/caddy/Caddyfile"
-  #   expect: ""  # empty stdout = success
-
-  # ── Example: Start service and wait ──
-  # - name: start-service
-  #   description: "Start the service"
-  #   command: "systemctl start caddy"
-  #   action: wait-for-healthy
-  #   retries: 3
-  #   retry_delay: 10s
-
-  # ── Example: Validate ──
-  # - name: verify-port
-  #   description: "Verify service is listening"
-  #   command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:80"
-  #   expect: "200"
-  #   on_failure: abort
-
-  # ── Example: Tag the node (for failover) ──
-  # - name: tag-primary
-  #   description: "Tag this node as primary"
-  #   action: git-commit
-  #   command: "echo 'friday-primary' >> {{repo}}/nodes/{{hostname}}.yaml"
-
-# ── Post-conditions ────────────────────────────────────────────────────
-# Checked after all steps complete. Recipe fails if any post-condition fails.
-# post_conditions:
-#   - name: health-check
-#     command: "curl -sf http://127.0.0.1:8642/health"
-#     expect: ""
-#   - name: port-check
-#     command: "ss -tlnp | grep 8642"
-#     expect: "8642"
+steps: []
 `
 
 	recipeFile := recipeDir + "/" + name + ".yaml"
@@ -253,41 +440,10 @@ steps:
 		os.Exit(1)
 	}
 
-	// Write a README.md for the recipe
-	readme := `# Recipe: ` + name + `
-
-TODO: Description of what this recipe does.
-
-## Usage
-
-` + "```bash" + `
-# Apply this recipe to a node
-gogitops recipe apply ` + name + ` --node mini
-
-# Apply with parameters
-gogitops recipe apply ` + name + ` --node mini --var target_ip=10.0.0.251
-` + "```" + `
-
-## Tags
-
-This recipe uses the following tags:
-- (none yet)
-
-## Steps
-
-See ` + name + `.yaml for the full step list with comments.
-`
-	readmeFile := recipeDir + "/README.md"
-	_ = os.WriteFile(readmeFile, []byte(readme), 0644)
-
 	fmt.Printf("✅ Created recipe: %s\n", recipeDir)
-	fmt.Printf("   %s  — commented YAML template with all fields\n", recipeFile)
-	fmt.Printf("   %s       — quick-start README\n", readmeFile)
-	fmt.Printf("\nEdit the YAML, remove comments you don't need, then:\n")
-	fmt.Printf("  gogitops recipe validate %s\n", recipeFile)
+	fmt.Printf("   %s  — YAML template\n", recipeFile)
 }
 
-// recipeList lists all recipes in the repo.
 func recipeList() {
 	recipesDir := "recipes"
 	entries, err := os.ReadDir(recipesDir)
@@ -300,23 +456,13 @@ func recipeList() {
 		if !e.IsDir() {
 			continue
 		}
-		// Check for YAML file matching directory name
 		yamlFile := recipesDir + "/" + e.Name() + "/" + e.Name() + ".yaml"
 		if _, err := os.Stat(yamlFile); err == nil {
 			fmt.Printf("  📦 %s\n", e.Name())
-		} else {
-			// List any .yaml files in the directory
-			subEntries, _ := os.ReadDir(recipesDir + "/" + e.Name())
-			for _, se := range subEntries {
-				if !se.IsDir() && strings.HasSuffix(se.Name(), ".yaml") {
-					fmt.Printf("  📦 %s (%s)\n", e.Name(), se.Name())
-				}
-			}
 		}
 	}
 }
 
-// recipeValidate does a basic syntax check on a recipe YAML.
 func recipeValidate(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: gogitops recipe validate <file.yaml>\n")
@@ -328,37 +474,14 @@ func recipeValidate(args []string) {
 		fmt.Fprintf(os.Stderr, "❌ cannot read file: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Basic checks — ensure required fields exist
 	content := string(data)
 	errors := []string{}
-
 	if !strings.Contains(content, "name:") {
 		errors = append(errors, "missing required field: name")
 	}
 	if !strings.Contains(content, "steps:") {
 		errors = append(errors, "missing required field: steps")
 	}
-
-	// Check for unclosed quotes (basic)
-	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
-			continue
-		}
-		// Count unescaped quotes
-		quoteCount := 0
-		for _, c := range trimmed {
-			if c == '"' {
-				quoteCount++
-			}
-		}
-		if quoteCount%2 != 0 {
-			errors = append(errors, fmt.Sprintf("line %d: unclosed quote", i+1))
-		}
-	}
-
 	if len(errors) > 0 {
 		fmt.Printf("❌ %s has issues:\n", file)
 		for _, e := range errors {
@@ -366,91 +489,7 @@ func recipeValidate(args []string) {
 		}
 		os.Exit(1)
 	}
-
 	fmt.Printf("✅ %s looks valid\n", file)
-}
-
-func cmdStatus(args []string) {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	addr := fs.String("addr", "127.0.0.1:7780", "agent health API address")
-	fs.Parse(args)
-
-	resp, err := http.Get("http://" + *addr + "/v1/health")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ agent not reachable at %s\n", *addr)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	var h peerHealth
-	if err := json.Unmarshal(body, &h); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ bad response from agent\n")
-		os.Exit(1)
-	}
-
-	fmt.Printf("gogitops %s — %s  uptime %ds\n", h.AgentVersion, h.Hostname, h.UptimeSeconds)
-	fmt.Println()
-
-	// Services
-	up, down := 0, 0
-	for _, v := range h.Services {
-		if v == "running" {
-			up++
-		} else {
-			down++
-		}
-	}
-	fmt.Printf("Services: %d/%d running\n", up, up+down)
-	for k, v := range h.Services {
-		if v == "running" {
-			fmt.Printf("  ✅ %s\n", k)
-		} else {
-			fmt.Printf("  ❌ %s (%s)\n", k, v)
-		}
-	}
-
-	// Nebula
-	fmt.Println()
-	if h.NebulaRunning {
-		fmt.Println("Nebula: ✅ running")
-	} else {
-		fmt.Println("Nebula: ❌ down")
-	}
-
-	// Peers
-	fmt.Println()
-	if len(h.PeersReachable) > 0 || len(h.PeersUnreach) > 0 {
-		fmt.Printf("Peers: %d up, %d down\n", len(h.PeersReachable), len(h.PeersUnreach))
-		for _, p := range h.PeersReachable {
-			fmt.Printf("  ✅ %s\n", p)
-		}
-		for _, p := range h.PeersUnreach {
-			fmt.Printf("  ❌ %s\n", p)
-		}
-	}
-
-	// Disk warnings
-	if len(h.DiskWarns) > 0 {
-		fmt.Println()
-		fmt.Println("Disk warnings:")
-		for _, w := range h.DiskWarns {
-			fmt.Printf("  ⚠️  %s\n", w)
-		}
-	}
-}
-
-// minimal struct to decode health response
-type peerHealth struct {
-	Hostname       string            `json:"hostname"`
-	AgentVersion   string            `json:"agent_version"`
-	UptimeSeconds  int64             `json:"uptime_seconds"`
-	NebulaRunning  bool              `json:"nebula_running"`
-	Labels         []string          `json:"labels"`
-	Services       map[string]string `json:"services"`
-	DiskWarns      []string          `json:"disk_warns"`
-	PeersReachable []string          `json:"peers_reachable"`
-	PeersUnreach   []string          `json:"peers_unreachable"`
 }
 
 // ── Daemon mode ──────────────────────────────────────────────────────────
@@ -475,23 +514,19 @@ func runDaemon(args []string) {
 		hostname = config.DetectHostname()
 	}
 
-	// Load node config
 	node, err := config.LoadNode(*repoDir, hostname)
 	if err != nil {
 		log.Fatalf("failed to load node config for %q: %v\n(hint: create nodes/%s.yaml in the repo)", hostname, err, hostname)
 	}
 
-	// Load mesh config
 	meshCfg, err := config.LoadMesh(*repoDir)
 	if err != nil {
 		log.Printf("warning: failed to load mesh config: %v — running without peer pings", err)
 		meshCfg = &config.MeshConfig{}
 	}
 
-	// Resolve nenv: webhook references
 	wbhook := resolveWebhook(*webhook)
 
-	// Determine bind address — default to Nebula IP so agent is invisible to LAN
 	bind := *bindAddr
 	if bind == "" {
 		bind = node.NebulaIP
@@ -501,11 +536,9 @@ func runDaemon(args []string) {
 		log.Printf("warning: no nebula_ip in node config — binding to localhost only")
 	}
 
-	// Create agent
 	a := agent.New(node, meshCfg, wbhook)
 	agent.Version = version
 
-	// Start health API
 	addr := net.JoinHostPort(bind, fmt.Sprintf("%d", *port))
 	http.HandleFunc("/v1/health", a.HealthHandler)
 	go func() {
@@ -515,18 +548,15 @@ func runDaemon(args []string) {
 		}
 	}()
 
-	// Self-register with the dashboard if configured
 	if *dashFlag != "" {
 		go registerWithDashboard(*dashFlag, hostname, bind, *port, node)
 	}
 
-	// Run main loop
 	interval := time.Duration(*intervalS) * time.Second
 	a.Run(interval)
 	os.Exit(0)
 }
 
-// resolveWebhook resolves nenv: prefixes at daemon startup
 func resolveWebhook(url string) string {
 	if strings.HasPrefix(url, "nenv:") {
 		ref := url[5:]
@@ -547,13 +577,9 @@ func resolveWebhook(url string) string {
 	return url
 }
 
-// registerWithDashboard sends a POST /api/register to the dashboard.
-// Retries periodically so the dashboard doesn't need to be up first.
 func registerWithDashboard(dashURL, hostname, bindAddr string, port int, node *config.NodeConfig) {
-	// Build the address the dashboard can reach us at
 	address := bindAddr
 	if address == "0.0.0.0" {
-		// Use the node's best IP
 		address = node.Address()
 		if address == "" {
 			address = "127.0.0.1"
@@ -561,7 +587,6 @@ func registerWithDashboard(dashURL, hostname, bindAddr string, port int, node *c
 	}
 	address = fmt.Sprintf("%s:%d", address, port)
 
-	// Build display IP
 	displayIP := node.LanIP
 	if displayIP != "" && displayIP != "null" && node.NebulaIP != "" && node.NebulaIP != "null" {
 		displayIP = node.LanIP + " (lan) / " + node.NebulaIP + " (neb)"
@@ -591,19 +616,18 @@ func registerWithDashboard(dashURL, hostname, bindAddr string, port int, node *c
 	}
 }
 
-// ── Dashboard ───────────────────────────────────────────────────────────
+// ── Dashboard ────────────────────────────────────────────────────────────
 
 func runDashboard(args []string) {
 	fs := flag.NewFlagSet("dashboard", flag.ExitOnError)
 	port := fs.Int("port", 7781, "HTTP port for the dashboard")
-	dbPath := fs.String("db", "", "path to SQLite status database (default: $XDG_CACHE_HOME/gogitops/status.db)")
-	repoDir := fs.String("repo", "/home/benn/Documents/code/GoGitOps", "path to config repo (reads mesh.yaml for auto-discovery)")
-	nodesFlag := fs.String("nodes", "", "override: comma-separated name=address pairs (e.g. friday=10.2.0.102:7780). Skips mesh.yaml.")
-	binDir := fs.String("binaries", "", "path to directory with pre-built binaries (e.g. gogitops-linux-amd64, gogitops-darwin-arm64). Enables /api/binary/ downloads.")
-	dashHost := fs.String("host", "10.2.0.102", "external hostname/IP for the dashboard (used in deploy commands and agent registration)")
+	dbPath := fs.String("db", "", "path to SQLite status database")
+	repoDir := fs.String("repo", "/home/benn/Documents/code/GoGitOps", "path to config repo")
+	nodesFlag := fs.String("nodes", "", "override: comma-separated name=address pairs")
+	binDir := fs.String("binaries", "", "path to pre-built binaries directory")
+	dashHost := fs.String("host", "10.2.0.102", "external hostname/IP")
 	fs.Parse(args)
 
-	// Resolve DB path
 	if *dbPath == "" {
 		cacheDir := os.Getenv("XDG_CACHE_HOME")
 		if cacheDir == "" {
@@ -613,11 +637,9 @@ func runDashboard(args []string) {
 		*dbPath = cacheDir + "/gogitops/status.db"
 	}
 
-	// Build node list
 	var nodes []dashboard.NodeConfig
 
 	if *nodesFlag != "" {
-		// Manual override
 		for _, pair := range strings.Split(*nodesFlag, ",") {
 			pair = strings.TrimSpace(pair)
 			if pair == "" {
@@ -625,7 +647,7 @@ func runDashboard(args []string) {
 			}
 			parts := strings.SplitN(pair, "=", 2)
 			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-				log.Fatalf("invalid --nodes entry %q (expected name=address)", pair)
+				log.Fatalf("invalid --nodes entry %q", pair)
 			}
 			name := parts[0]
 			addr := parts[1]
@@ -643,43 +665,37 @@ func runDashboard(args []string) {
 			})
 		}
 	} else {
-		// Auto-discover from mesh.yaml
 		mesh, err := config.LoadMesh(*repoDir)
-		if err != nil {
-			log.Fatalf("failed to load mesh.yaml: %v\n(hint: use --nodes to manually specify peers)", err)
-		}
-		for _, peer := range mesh.Peers {
-			addr := peer.Address()
-			if addr == "" {
-				continue // skip peers with no reachable address
+		if err == nil {
+			for _, peer := range mesh.Peers {
+				addr := peer.Address()
+				if addr == "" {
+					continue
+				}
+				displayIP := peer.LanIP
+				if displayIP == "" || displayIP == "null" {
+					displayIP = peer.NebulaIP
+				} else if peer.NebulaIP != "" && peer.NebulaIP != "null" {
+					displayIP = peer.LanIP + " (lan) / " + peer.NebulaIP + " (neb)"
+				}
+				nodes = append(nodes, dashboard.NodeConfig{
+					Name:      peer.Hostname,
+					Address:   addr,
+					DisplayIP: displayIP,
+				})
 			}
-			// DisplayIP: show both IPs if available, otherwise just the one used
-			displayIP := peer.LanIP
-			if displayIP == "" || displayIP == "null" {
-				displayIP = peer.NebulaIP
-			} else if peer.NebulaIP != "" && peer.NebulaIP != "null" {
-				// Show LAN as primary, Nebula as secondary
-				displayIP = peer.LanIP + " (lan) / " + peer.NebulaIP + " (neb)"
-			}
-			nodes = append(nodes, dashboard.NodeConfig{
-				Name:      peer.Hostname,
-				Address:   addr,
-				DisplayIP: displayIP,
-			})
 		}
 		if len(nodes) == 0 {
-			log.Printf("warning: mesh.yaml has no peers with reachable addresses")
+			log.Printf("no static nodes in mesh.yaml — waiting for nodes to self-register")
 		}
 	}
 
-	// Open store
 	store, err := dashboard.NewStore(*dbPath)
 	if err != nil {
 		log.Fatalf("failed to open status database: %v", err)
 	}
 	defer store.Close()
 
-	// Create handler
 	dashURL := fmt.Sprintf("http://%s:%d", *dashHost, *port)
 	h := dashboard.NewHandler(store, nodes, dashURL, *binDir)
 
@@ -695,4 +711,28 @@ func runDashboard(args []string) {
 	if err := http.ListenAndServe(listenAddr, nil); err != nil {
 		log.Fatalf("dashboard server failed: %v", err)
 	}
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────
+
+func padRight(s string, width int) string {
+	if len(s) >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-len(s))
+}
+
+func formatUptime(seconds int64) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	if seconds < 3600 {
+		return fmt.Sprintf("%dm", seconds/60)
+	}
+	if seconds < 86400 {
+		return fmt.Sprintf("%dh %dm", seconds/3600, (seconds%3600)/60)
+	}
+	days := seconds / 86400
+	hours := (seconds % 86400) / 3600
+	return fmt.Sprintf("%dd %dh", days, hours)
 }
