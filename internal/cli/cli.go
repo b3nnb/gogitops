@@ -238,8 +238,8 @@ func PrintStatus(h *HealthResponse, addr string) {
 	fmt.Printf("  %s╰──────────────────────────────%s\n", greyDark, reset)
 	fmt.Println()
 
-	// Peers
-	if len(h.PeersReachable) > 0 || len(h.PeersUnreach) > 0 {
+	// Peers — only show if at least one is reachable (standalone nodes have no peers)
+	if len(h.PeersReachable) > 0 {
 		fmt.Printf("  %s╭─ Peers ──────────────────────%s\n", greyDark, reset)
 		for _, p := range h.PeersReachable {
 			fmt.Printf("  %s│%s %s●%s  %s%s%s\n", greyDark, reset, green, reset, grey, p, reset)

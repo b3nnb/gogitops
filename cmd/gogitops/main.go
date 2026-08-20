@@ -377,8 +377,8 @@ func cmdInfo(args []string) {
 	fmt.Printf("  \033[38;5;240m╰── \033[38;5;46m%d up\033[0m, \033[38;5;196m%d down\033[0m \033[38;5;240m───────────\033[0m\n", up, down)
 	fmt.Println()
 
-	// Peers
-	if len(h.PeersReachable) > 0 || len(h.PeersUnreach) > 0 {
+	// Peers — only show if at least one is reachable (standalone nodes have no peers)
+	if len(h.PeersReachable) > 0 {
 		fmt.Printf("  %s╭─ Peers ──────────────────────%s\n", "\033[38;5;240m", "\033[0m")
 		for _, p := range h.PeersReachable {
 			fmt.Printf("  %s│%s %s●%s  %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;46m", "\033[0m", "\033[38;5;245m", p, "\033[0m")

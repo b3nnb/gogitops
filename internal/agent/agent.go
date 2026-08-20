@@ -313,10 +313,15 @@ func (a *Agent) cycle(first bool) {
 	// 1. Service checks
 	result := health.RunAllChecks(a.node)
 
-	// 2. Peer pings
-	reachable, unreachable := a.pinger.PingAll(a.node.Hostname)
-	peersTotal := len(a.mesh.Peers) - 1
-	peersHealthy := len(reachable)
+	// 2. Peer pings (only if peers are configured — standalone nodes skip this)
+	var reachable, unreachable []string
+	peersTotal := 0
+	peersHealthy := 0
+	if len(a.mesh.Peers) > 1 {
+		reachable, unreachable = a.pinger.PingAll(a.node.Hostname)
+		peersTotal = len(a.mesh.Peers) - 1
+		peersHealthy = len(reachable)
+	}
 
 	// 3. Write starship cache
 	var downSvcs []string
