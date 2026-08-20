@@ -17,6 +17,7 @@ type PeerHealth struct {
 	AgentVersion   string            `json:"agent_version"`
 	UptimeSeconds  int64             `json:"uptime_seconds"`
 	NebulaRunning  bool              `json:"nebula_running"`
+	NebulaIP       string            `json:"nebula_ip,omitempty"`
 	Labels         []string          `json:"labels"`
 	Services       map[string]string `json:"services"`
 	DiskWarns      []string          `json:"disk_warns,omitempty"`

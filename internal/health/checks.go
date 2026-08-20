@@ -41,6 +41,8 @@ func CheckService(svc config.Service) Status {
 		return checkCompose(svc)
 	case "process":
 		return checkProcess(svc)
+	case "not_configured":
+		return Status{Name: svc.Name, Status: "not_configured"}
 	default:
 		return Status{Name: svc.Name, Status: "error", Detail: fmt.Sprintf("unknown check type: %s", svc.Type)}
 	}

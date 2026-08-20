@@ -289,35 +289,27 @@ func cmdInfo(args []string) {
 	fmt.Printf("  %s│%s Uptime      %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;245m", formatUptime(h.UptimeSeconds), "\033[0m")
 	fmt.Printf("  %s│%s Version     %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;245m", h.AgentVersion, "\033[0m")
 	if h.NebulaRunning {
-		fmt.Printf("  %s│%s Nebula      %s● running%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;46m", "\033[0m")
-	} else {
+		fmt.Printf("  %s│%s Nebula      %s● up%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;46m", "\033[0m")
+	} else if h.NebulaIP != "" {
 		fmt.Printf("  %s│%s Nebula      %s○ down%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;196m", "\033[0m")
+	} else {
+		fmt.Printf("  %s│%s Nebula      %s— not configured%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;245m", "\033[0m")
 	}
 	fmt.Printf("  %s╰──────────────────────────────%s\n", "\033[38;5;240m", "\033[0m")
 	fmt.Println()
 
-	// Labels — categorized
+	// Tags
 	if len(h.Labels) > 0 {
-		roles := []string{}
 		tags := []string{}
 		stacks := []string{}
 		for _, l := range h.Labels {
 			if strings.HasPrefix(l, "stack:") {
 				stacks = append(stacks, l[6:])
-			} else if strings.Contains(l, "-host") || strings.Contains(l, "compute") {
-				roles = append(roles, l)
 			} else {
 				tags = append(tags, l)
 			}
 		}
-		fmt.Printf("  %s╭─ Labels ─────────────────────%s\n", "\033[38;5;240m", "\033[0m")
-		if len(roles) > 0 {
-			fmt.Printf("  %s│%s %sRoles%s    %s", "\033[38;5;240m", "\033[0m", "\033[38;5;141m", "\033[0m", "")
-			for _, r := range roles {
-				fmt.Printf("%s%s%s ", "\033[38;5;141m", r, "\033[0m")
-			}
-			fmt.Println()
-		}
+		fmt.Printf("  %s╭─ Tags ─────────────────────%s\n", "\033[38;5;240m", "\033[0m")
 		if len(tags) > 0 {
 			fmt.Printf("  %s│%s %sTags%s     %s", "\033[38;5;240m", "\033[0m", "\033[38;5;38m", "\033[0m", "")
 			for _, t := range tags {

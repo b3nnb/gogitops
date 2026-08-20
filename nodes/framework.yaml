@@ -8,8 +8,9 @@ labels:
 
 services:
   - name: nebula
-    type: process
-    pattern: nebula
+    type: not_configured
+  - name: netenv
+    type: not_configured
 
 disk:
   - mount: /

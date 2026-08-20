@@ -42,6 +42,7 @@ type HealthResponse struct {
 	AgentVersion   string            `json:"agent_version"`
 	UptimeSeconds  int64             `json:"uptime_seconds"`
 	NebulaRunning  bool              `json:"nebula_running"`
+	NebulaIP       string            `json:"nebula_ip"`
 	Labels         []string          `json:"labels"`
 	Services       map[string]string `json:"services"`
 	DiskWarns      []string          `json:"disk_warns"`
@@ -82,10 +83,12 @@ func colorForStatus(status string) string {
 	switch status {
 	case "running":
 		return green
-	case "stopped", "failed", "exited":
+	case "stopped", "failed", "exited", "down":
 		return red
 	case "degraded":
 		return yellow
+	case "not_configured":
+		return grey
 	default:
 		return grey
 	}
@@ -95,10 +98,12 @@ func iconForStatus(status string) string {
 	switch status {
 	case "running":
 		return "●"
-	case "stopped", "failed", "exited":
+	case "stopped", "failed", "exited", "down":
 		return "○"
 	case "degraded":
 		return "◐"
+	case "not_configured":
+		return "—"
 	default:
 		return "?"
 	}
@@ -189,21 +194,15 @@ func PrintStatus(h *HealthResponse, addr string) {
 
 	// Labels / tags
 	if len(h.Labels) > 0 {
-		fmt.Printf("  %s╭─ Tags & Groups ──────────────%s\n", greyDark, reset)
+		fmt.Printf("  %s╭─ Tags ──────────────────────%s\n", greyDark, reset)
 		tags := []string{}
 		stacks := []string{}
-		roles := []string{}
 		for _, l := range h.Labels {
 			if strings.HasPrefix(l, "stack:") {
 				stacks = append(stacks, l[6:])
-			} else if strings.Contains(l, "-host") || strings.Contains(l, "compute") {
-				roles = append(roles, l)
 			} else {
 				tags = append(tags, l)
 			}
-		}
-		if len(roles) > 0 {
-			fmt.Printf("  %s│%s Roles    %s%s%s\n", greyDark, reset, purple, strings.Join(roles, " "), reset)
 		}
 		if len(tags) > 0 {
 			fmt.Printf("  %s│%s Tags     %s%s%s\n", greyDark, reset, teal, strings.Join(tags, " "), reset)

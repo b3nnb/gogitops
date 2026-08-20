@@ -87,6 +87,7 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		AgentVersion:   Version,
 		UptimeSeconds:  int64(time.Since(a.started).Seconds()),
 		NebulaRunning:  a.nebulaRunning(),
+		NebulaIP:       a.node.NebulaIP,
 		Labels:         a.node.Labels,
 		Services:       svcMap,
 		DiskWarns:      append(result.DiskWarns, result.DiskCrits...),
