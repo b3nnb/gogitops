@@ -1,6 +1,6 @@
 name: setup-ssh-access
 description: "Ensure SSH daemon is running, enabled on boot, and agent keys are installed for key-based access"
-version: "3.0.0"
+version: "3.1.0"
 labels: []  # all nodes
 
 params:
@@ -13,6 +13,13 @@ steps:
   - name: detect-os
     description: "Detect operating system"
     command: "uname -s | tr '[:upper:]' '[:lower:]'"
+    parse: regex
+    pattern: "(.+)"
+
+  # --- Detect username ---
+  - name: detect-user
+    description: "Get current username for authorized_keys path"
+    command: "whoami"
     parse: regex
     pattern: "(.+)"
 
@@ -42,39 +49,45 @@ steps:
     command: "mkdir -p ~/.ssh/authorized_keys.d && chmod 700 ~/.ssh && chmod 700 ~/.ssh/authorized_keys.d"
     on_failure: abort
 
-  # --- Install hermes-agent key from repo (preferred) ---
+  # --- Build user keys file (sshd reads authorized_keys.d/%u = username) ---
+  - name: build-user-keys
+    description: "Assemble all keys into ~/.ssh/authorized_keys.d/<username>"
+    command: "cat /dev/null > ~/.ssh/authorized_keys.d/{{1}}"
+    on_failure: abort
+
   - name: install-hermes-key-repo
-    description: "Install hermes-agent public key from gogitops repo"
-    command: "cp {{repo}}/install/ssh/hermes-agent.pub ~/.ssh/authorized_keys.d/hermes-agent && chmod 644 ~/.ssh/authorized_keys.d/hermes-agent"
+    description: "Append hermes-agent public key from gogitops repo"
+    command: "cat {{repo}}/install/ssh/hermes-agent.pub >> ~/.ssh/authorized_keys.d/{{1}} && chmod 600 ~/.ssh/authorized_keys.d/{{1}}"
     when: "test -f {{repo}}/install/ssh/hermes-agent.pub"
     on_failure: continue
 
-  # --- Install hermes-agent key from env var (fallback for nodes without repo) ---
   - name: install-hermes-key-env
-    description: "Install hermes-agent public key from GOGITOPS_SSH_PUBKEY env var"
-    command: 'echo "$GOGITOPS_SSH_PUBKEY" > ~/.ssh/authorized_keys.d/hermes-agent && chmod 644 ~/.ssh/authorized_keys.d/hermes-agent'
-    when: "test -z \"$(cat ~/.ssh/authorized_keys.d/hermes-agent 2>/dev/null)\" && test -n \"$GOGITOPS_SSH_PUBKEY\""
+    description: "Append hermes-agent public key from GOGITOPS_SSH_PUBKEY env var"
+    command: 'echo "$GOGITOPS_SSH_PUBKEY" >> ~/.ssh/authorized_keys.d/{{1}} && chmod 600 ~/.ssh/authorized_keys.d/{{1}}'
+    when: "test -n \"$GOGITOPS_SSH_PUBKEY\""
     on_failure: continue
 
-  # --- Install friday-automation key from repo ---
-  - name: install-friday-key
-    description: "Install friday-automation public key from gogitops repo"
-    command: "cp {{repo}}/install/ssh/friday-automation.pub ~/.ssh/authorized_keys.d/friday-automation && chmod 644 ~/.ssh/authorized_keys.d/friday-automation"
+  - name: install-friday-key-repo
+    description: "Append friday-automation public key from gogitops repo"
+    command: "cat {{repo}}/install/ssh/friday-automation.pub >> ~/.ssh/authorized_keys.d/{{1}}"
     when: "test -f {{repo}}/install/ssh/friday-automation.pub"
     on_failure: continue
 
-  # --- Install friday-automation key from env var ---
   - name: install-friday-key-env
-    description: "Install friday-automation public key from GOGITOPS_SSH_PUBKEY_FRIDAY env var"
-    command: 'echo "$GOGITOPS_SSH_PUBKEY_FRIDAY" > ~/.ssh/authorized_keys.d/friday-automation && chmod 644 ~/.ssh/authorized_keys.d/friday-automation'
-    when: "test -z \"$(cat ~/.ssh/authorized_keys.d/friday-automation 2>/dev/null)\" && test -n \"$GOGITOPS_SSH_PUBKEY_FRIDAY\""
+    description: "Append friday-automation public key from GOGITOPS_SSH_PUBKEY_FRIDAY env var"
+    command: 'echo "$GOGITOPS_SSH_PUBKEY_FRIDAY" >> ~/.ssh/authorized_keys.d/{{1}}'
+    when: "test -n \"$GOGITOPS_SSH_PUBKEY_FRIDAY\""
     on_failure: continue
 
-  # --- Install named key if param provided ---
   - name: install-named-key
-    description: "Install named SSH key from gogitops repo"
-    command: "cp {{repo}}/install/ssh/{{key_name}}.pub ~/.ssh/authorized_keys.d/{{key_name}} && chmod 644 ~/.ssh/authorized_keys.d/{{key_name}}"
+    description: "Append named SSH key from gogitops repo"
+    command: "cat {{repo}}/install/ssh/{{key_name}}.pub >> ~/.ssh/authorized_keys.d/{{1}}"
     when: "test -n '{{key_name}}' && test -f {{repo}}/install/ssh/{{key_name}}.pub"
+    on_failure: continue
+
+  - name: fix-key-permissions
+    description: "Ensure user keys file has correct permissions"
+    command: "chmod 600 ~/.ssh/authorized_keys.d/{{1}}"
     on_failure: continue
 
   # --- Ensure legacy authorized_keys exists ---
@@ -120,9 +133,9 @@ steps:
     on_failure: continue
 
   # --- Verify keys are installed ---
-  - name: verify-hermes-key
-    description: "Confirm hermes-agent key is installed"
-    command: "test -s ~/.ssh/authorized_keys.d/hermes-agent"
+  - name: verify-user-keys
+    description: "Confirm user keys file has content"
+    command: "test -s ~/.ssh/authorized_keys.d/{{1}}"
     on_failure: abort
 
   - name: verify-keys-dir
