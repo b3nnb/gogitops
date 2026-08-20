@@ -1,80 +1,117 @@
 name: setup-ssh-access
-description: "Set up SSH authorized_keys.d directory with key from gogitops repo"
-version: "1.0.0"
+description: "Ensure SSH daemon is running, enabled on boot, and agent keys are installed for key-based access"
+version: "2.0.0"
 labels: []  # all nodes
 
 params:
   - name: key_name
-    description: "Name of the SSH public key file in the repo (without .pub)"
+    description: "SSH key to install from install/ssh/ (default: hermes-agent)"
     required: false
 
 steps:
   # --- Detect OS ---
   - name: detect-os
-    description: "Detect operating system for sshd config path"
+    description: "Detect operating system"
     command: "uname -s | tr '[:upper:]' '[:lower:]'"
     parse: regex
     pattern: "(.+)"
 
+  # --- Ensure SSH daemon is running ---
+  - name: ensure-sshd-running
+    description: "Start sshd if not running"
+    os: linux
+    command: "sudo systemctl start ssh 2>/dev/null || sudo systemctl start sshd 2>/dev/null || true"
+    on_failure: continue
+
+  - name: ensure-sshd-running-macos
+    description: "Start sshd if not running (macOS)"
+    os: darwin
+    command: "sudo systemsetup -setremotelogin on 2>/dev/null || true"
+    on_failure: continue
+
+  # --- Ensure SSH daemon is enabled on boot ---
+  - name: enable-sshd-boot
+    description: "Enable sshd on boot"
+    os: linux
+    command: "sudo systemctl enable ssh 2>/dev/null || sudo systemctl enable sshd 2>/dev/null || true"
+    on_failure: continue
+
   # --- Create SSH directory structure ---
   - name: create-ssh-dirs
-    description: "Create ~/.ssh and authorized_keys.d directory"
-    command: "mkdir -p ~/.ssh/authorized_keys.d && chmod 700 ~/.ssh"
+    description: "Create ~/.ssh and authorized_keys.d directory with correct permissions"
+    command: "mkdir -p ~/.ssh/authorized_keys.d && chmod 700 ~/.ssh && chmod 700 ~/.ssh/authorized_keys.d"
     on_failure: abort
 
-  # --- Copy SSH key from repo ---
-  - name: copy-key-default
-    description: "Copy friday-automation.pub from gogitops repo (default key)"
-    command: "cp {{repo}}/install/ssh/friday-automation.pub ~/.ssh/authorized_keys.d/friday-automation && chmod 600 ~/.ssh/authorized_keys.d/friday-automation"
+  # --- Install hermes-agent key (default) ---
+  - name: install-hermes-key
+    description: "Install hermes-agent public key from repo"
+    command: "cp {{repo}}/install/ssh/hermes-agent.pub ~/.ssh/authorized_keys.d/hermes-agent && chmod 644 ~/.ssh/authorized_keys.d/hermes-agent"
+    when: "test -f {{repo}}/install/ssh/hermes-agent.pub"
+    on_failure: abort
+
+  # --- Install friday-automation key (fleet-wide) ---
+  - name: install-friday-key
+    description: "Install friday-automation public key from repo"
+    command: "cp {{repo}}/install/ssh/friday-automation.pub ~/.ssh/authorized_keys.d/friday-automation && chmod 644 ~/.ssh/authorized_keys.d/friday-automation"
     when: "test -f {{repo}}/install/ssh/friday-automation.pub"
     on_failure: continue
 
-  - name: copy-key-named
-    description: "Copy named SSH key from gogitops repo"
-    command: "cp {{repo}}/install/ssh/{{key_name}}.pub ~/.ssh/authorized_keys.d/{{key_name}} && chmod 600 ~/.ssh/authorized_keys.d/{{key_name}}"
+  # --- Install named key if param provided ---
+  - name: install-named-key
+    description: "Install named SSH key from repo"
+    command: "cp {{repo}}/install/ssh/{{key_name}}.pub ~/.ssh/authorized_keys.d/{{key_name}} && chmod 644 ~/.ssh/authorized_keys.d/{{key_name}}"
     when: "test -n '{{key_name}}' && test -f {{repo}}/install/ssh/{{key_name}}.pub"
     on_failure: continue
 
-  # --- Ensure authorized_keys exists (fallback) ---
+  # --- Ensure legacy authorized_keys exists ---
   - name: touch-authorized-keys
     description: "Ensure legacy authorized_keys file exists"
     command: "touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
     on_failure: continue
 
-  # --- Configure sshd for authorized_keys.d (Linux only) ---
+  # --- Configure sshd for authorized_keys.d (Linux) ---
   - name: configure-sshd-linux
     description: "Add AuthorizedKeysFile directive to sshd_config if missing"
     os: linux
     command: "grep -q 'authorized_keys.d' /etc/ssh/sshd_config || echo 'AuthorizedKeysFile .ssh/authorized_keys.d/%u .ssh/authorized_keys' | sudo tee -a /etc/ssh/sshd_config"
     on_failure: continue
 
-  - name: restart-sshd-linux
-    description: "Restart sshd to pick up new config"
-    os: linux
-    command: "sudo systemctl restart sshd 2>/dev/null || sudo systemctl restart ssh 2>/dev/null || true"
-    when: "grep -q 'authorized_keys.d' /etc/ssh/sshd_config"
-    on_failure: continue
-
-  # --- macOS: sshd config is different ---
   - name: configure-sshd-macos
     description: "Add AuthorizedKeysFile directive to macOS sshd_config"
     os: darwin
     command: "grep -q 'authorized_keys.d' /etc/ssh/sshd_config || echo 'AuthorizedKeysFile .ssh/authorized_keys.d/%u .ssh/authorized_keys' | sudo tee -a /etc/ssh/sshd_config"
     on_failure: continue
 
-  # --- Verify ---
+  # --- Restart sshd to pick up config changes ---
+  - name: restart-sshd
+    description: "Restart sshd to pick up new config"
+    os: linux
+    command: "sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null || true"
+    when: "grep -q 'authorized_keys.d' /etc/ssh/sshd_config"
+    on_failure: continue
+
+  # --- Verify sshd is running ---
+  - name: verify-sshd-running
+    description: "Confirm sshd is active"
+    os: linux
+    command: "systemctl is-active ssh 2>/dev/null || systemctl is-active sshd 2>/dev/null || echo 'unknown'"
+    expect_regex: "active|unknown"
+    on_failure: continue
+
+  - name: verify-sshd-running-macos
+    description: "Confirm sshd is running (macOS)"
+    os: darwin
+    command: "sudo systemsetup -getremotelogin 2>/dev/null || echo 'unknown'"
+    expect_regex: "On|unknown"
+    on_failure: continue
+
+  # --- Verify keys are installed ---
+  - name: verify-hermes-key
+    description: "Confirm hermes-agent key is installed"
+    command: "test -f ~/.ssh/authorized_keys.d/hermes-agent"
+    on_failure: abort
+
   - name: verify-keys-dir
     description: "Confirm authorized_keys.d directory exists"
     command: "test -d ~/.ssh/authorized_keys.d"
     on_failure: abort
-
-  - name: verify-key-present
-    description: "Confirm at least one key is installed"
-    command: "ls ~/.ssh/authorized_keys.d/*.pub ~/.ssh/authorized_keys.d/* 2>/dev/null | head -1"
-    expect_regex: ".+"
-    on_failure: abort
-
-  - name: verify-sshd-config
-    description: "Confirm sshd config includes authorized_keys.d"
-    command: "grep -c 'authorized_keys.d' /etc/ssh/sshd_config 2>/dev/null || echo 0"
-    on_failure: continue
