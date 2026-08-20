@@ -1,6 +1,6 @@
 name: setup-ssh-access
 description: "Ensure SSH daemon is running, enabled on boot, and agent keys are installed for key-based access"
-version: "2.0.0"
+version: "3.0.0"
 labels: []  # all nodes
 
 params:
@@ -42,23 +42,37 @@ steps:
     command: "mkdir -p ~/.ssh/authorized_keys.d && chmod 700 ~/.ssh && chmod 700 ~/.ssh/authorized_keys.d"
     on_failure: abort
 
-  # --- Install hermes-agent key (default) ---
-  - name: install-hermes-key
-    description: "Install hermes-agent public key from repo"
+  # --- Install hermes-agent key from repo (preferred) ---
+  - name: install-hermes-key-repo
+    description: "Install hermes-agent public key from gogitops repo"
     command: "cp {{repo}}/install/ssh/hermes-agent.pub ~/.ssh/authorized_keys.d/hermes-agent && chmod 644 ~/.ssh/authorized_keys.d/hermes-agent"
     when: "test -f {{repo}}/install/ssh/hermes-agent.pub"
-    on_failure: abort
+    on_failure: continue
 
-  # --- Install friday-automation key (fleet-wide) ---
+  # --- Install hermes-agent key from env var (fallback for nodes without repo) ---
+  - name: install-hermes-key-env
+    description: "Install hermes-agent public key from GOGITOPS_SSH_PUBKEY env var"
+    command: 'echo "$GOGITOPS_SSH_PUBKEY" > ~/.ssh/authorized_keys.d/hermes-agent && chmod 644 ~/.ssh/authorized_keys.d/hermes-agent'
+    when: "test -z \"$(cat ~/.ssh/authorized_keys.d/hermes-agent 2>/dev/null)\" && test -n \"$GOGITOPS_SSH_PUBKEY\""
+    on_failure: continue
+
+  # --- Install friday-automation key from repo ---
   - name: install-friday-key
-    description: "Install friday-automation public key from repo"
+    description: "Install friday-automation public key from gogitops repo"
     command: "cp {{repo}}/install/ssh/friday-automation.pub ~/.ssh/authorized_keys.d/friday-automation && chmod 644 ~/.ssh/authorized_keys.d/friday-automation"
     when: "test -f {{repo}}/install/ssh/friday-automation.pub"
     on_failure: continue
 
+  # --- Install friday-automation key from env var ---
+  - name: install-friday-key-env
+    description: "Install friday-automation public key from GOGITOPS_SSH_PUBKEY_FRIDAY env var"
+    command: 'echo "$GOGITOPS_SSH_PUBKEY_FRIDAY" > ~/.ssh/authorized_keys.d/friday-automation && chmod 644 ~/.ssh/authorized_keys.d/friday-automation'
+    when: "test -z \"$(cat ~/.ssh/authorized_keys.d/friday-automation 2>/dev/null)\" && test -n \"$GOGITOPS_SSH_PUBKEY_FRIDAY\""
+    on_failure: continue
+
   # --- Install named key if param provided ---
   - name: install-named-key
-    description: "Install named SSH key from repo"
+    description: "Install named SSH key from gogitops repo"
     command: "cp {{repo}}/install/ssh/{{key_name}}.pub ~/.ssh/authorized_keys.d/{{key_name}} && chmod 644 ~/.ssh/authorized_keys.d/{{key_name}}"
     when: "test -n '{{key_name}}' && test -f {{repo}}/install/ssh/{{key_name}}.pub"
     on_failure: continue
@@ -108,7 +122,7 @@ steps:
   # --- Verify keys are installed ---
   - name: verify-hermes-key
     description: "Confirm hermes-agent key is installed"
-    command: "test -f ~/.ssh/authorized_keys.d/hermes-agent"
+    command: "test -s ~/.ssh/authorized_keys.d/hermes-agent"
     on_failure: abort
 
   - name: verify-keys-dir
