@@ -1052,6 +1052,29 @@ func findGroupsForNode(repoDir, hostname string) []string {
 
 // ── Recipe commands (unchanged) ──────────────────────────────────────────
 
+// resolveRepoDir returns the gogitops repo path.
+// Precedence: explicit flag > ~/.config/gogitops (if .git exists) > /etc/gogitops (if .git exists) > "."
+func resolveRepoDir(flagVal string) string {
+	if flagVal != "" && flagVal != "." {
+		return flagVal
+	}
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		home + "/.config/gogitops",
+		"/etc/gogitops",
+	}
+	for _, dir := range candidates {
+		if _, err := os.Stat(dir + "/.git"); err == nil {
+			return dir
+		}
+		// Also accept if recipes/ dir exists (non-git config repo)
+		if _, err := os.Stat(dir + "/recipes"); err == nil {
+			return dir
+		}
+	}
+	return "."
+}
+
 func cmdRecipe(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n")
@@ -1099,7 +1122,8 @@ func recipeNew(args []string) {
 	}
 
 	name := positional[0]
-	recipesDir := *repoDir + "/recipes"
+	resolved := resolveRepoDir(*repoDir)
+	recipesDir := resolved + "/recipes"
 	recipeDir := recipesDir + "/" + name
 
 	if err := os.MkdirAll(recipeDir, 0755); err != nil {
@@ -1129,7 +1153,8 @@ func recipeList() {
 	fs := flag.NewFlagSet("recipe list", flag.ExitOnError)
 	repoDir := fs.String("repo", ".", "path to gogitops repo (recipes/ directory)")
 	fs.Parse(os.Args[3:]) // skip "gogitops recipe list"
-	recipesDir := *repoDir + "/recipes"
+	resolved := resolveRepoDir(*repoDir)
+	recipesDir := resolved + "/recipes"
 	entries, err := os.ReadDir(recipesDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ cannot read recipes directory: %v\n", err)
@@ -1244,14 +1269,15 @@ func recipeRun(args []string) {
 	}
 
 	target := positional[0]
+	resolved := resolveRepoDir(*repoDir)
 
 	// Resolve recipe file path
 	recipeFile := target
 	if _, err := os.Stat(recipeFile); err != nil {
 		// Try as a name: recipes/<name>.yaml or recipes/<name>/<name>.yaml
 		candidates := []string{
-			*repoDir + "/recipes/" + target + ".yaml",
-			*repoDir + "/recipes/" + target + "/" + target + ".yaml",
+			resolved + "/recipes/" + target + ".yaml",
+			resolved + "/recipes/" + target + "/" + target + ".yaml",
 		}
 		found := false
 		for _, c := range candidates {
@@ -1286,7 +1312,7 @@ func recipeRun(args []string) {
 
 	// Build variable map for substitution
 	vars := map[string]string{
-		"repo":     *repoDir,
+		"repo":     resolved,
 		"hostname": config.DetectHostname(),
 	}
 	// Detect OS/arch
