@@ -754,8 +754,37 @@ func cmdGitPull(args []string) {
 func cmdRestart(args []string) {
 	fs := flag.NewFlagSet("restart", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:7780", "agent health API address")
+	hard := fs.Bool("hard", false, "daemon-reload + systemctl restart (picks up service file changes)")
 	fs.Parse(args)
 
+	if *hard {
+		// Full systemctl restart — reloads unit file, picks up env changes
+		fmt.Printf("  \033[38;5;51m▸\033[0m Running daemon-reload + restart...\n")
+		reloadCmd := exec.Command("sudo", "systemctl", "daemon-reload")
+		if out, err := reloadCmd.CombinedOutput(); err != nil {
+			cli.PrintError(fmt.Sprintf("daemon-reload failed: %s", strings.TrimSpace(string(out))))
+			os.Exit(1)
+		}
+		restartCmd := exec.Command("sudo", "systemctl", "restart", "gogitops")
+		if out, err := restartCmd.CombinedOutput(); err != nil {
+			cli.PrintError(fmt.Sprintf("restart failed: %s", strings.TrimSpace(string(out))))
+			os.Exit(1)
+		}
+		// Wait for agent to come back up
+		for i := 0; i < 15; i++ {
+			time.Sleep(500 * time.Millisecond)
+			resp, err := http.Get("http://" + *addr + "/v1/health")
+			if err == nil {
+				resp.Body.Close()
+				cli.PrintSuccess("agent restarted and healthy")
+				return
+			}
+		}
+		cli.PrintError("agent did not come back within 7s — check: systemctl status gogitops")
+		return
+	}
+
+	// Soft restart — tell agent to exit, systemd restarts it
 	resp, err := http.Post("http://"+*addr+"/v1/restart", "application/json", nil)
 	if err != nil {
 		cli.PrintError(fmt.Sprintf("agent not reachable at %s", *addr))
@@ -771,6 +800,7 @@ func cmdRestart(args []string) {
 
 	cli.PrintSuccess(fmt.Sprintf("restart triggered on %s", result.Hostname))
 	fmt.Printf("  \033[38;5;240magent will exit and systemd will restart it\033[0m\n")
+	fmt.Printf("  \033[38;5;240muse --hard to also daemon-reload (picks up service file changes)\033[0m\n")
 }
 
 // ── set: edit agent config values ────────────────────────────────────────
@@ -858,7 +888,39 @@ func cmdSet(args []string) {
 				fmt.Printf("  \033[38;5;51m▸\033[0m Cloning repo...\n")
 				cmd := exec.Command("git", "clone", "--branch", branch, value, repoDir)
 				if out, err := cmd.CombinedOutput(); err != nil {
-					cli.PrintError(fmt.Sprintf("clone failed: %s", strings.TrimSpace(string(out))))
+					cloneErr := strings.TrimSpace(string(out))
+					// If dir exists but isn't a git repo, init + remote add + pull instead
+					if strings.Contains(cloneErr, "already exists") {
+						fmt.Printf("  \033[38;5;51m▸\033[0m Dir exists — initializing git repo...\n")
+						initCmd := exec.Command("git", "init")
+						initCmd.Dir = repoDir
+						if initOut, initErr := initCmd.CombinedOutput(); initErr != nil {
+							cli.PrintError(fmt.Sprintf("git init failed: %s", strings.TrimSpace(string(initOut))))
+						} else {
+							// Set remote (overwrite if exists)
+							remoteCmd := exec.Command("git", "remote", "add", "origin", value)
+							remoteCmd.Dir = repoDir
+							if _, remoteErr := remoteCmd.CombinedOutput(); remoteErr != nil {
+								// remote might already exist — try set-url
+								setURLCmd := exec.Command("git", "remote", "set-url", "origin", value)
+								setURLCmd.Dir = repoDir
+								setURLCmd.CombinedOutput()
+							}
+							// Fetch and checkout branch
+							fetchCmd := exec.Command("git", "fetch", "origin", branch)
+							fetchCmd.Dir = repoDir
+							if fetchOut, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
+								cli.PrintError(fmt.Sprintf("git fetch failed: %s", strings.TrimSpace(string(fetchOut))))
+							} else {
+								checkoutCmd := exec.Command("git", "checkout", branch)
+							checkoutCmd.Dir = repoDir
+							checkoutCmd.CombinedOutput()
+								cli.PrintSuccess(fmt.Sprintf("initialized and fetched to %s", repoDir))
+							}
+						}
+					} else {
+						cli.PrintError(fmt.Sprintf("clone failed: %s", cloneErr))
+					}
 				} else {
 					cli.PrintSuccess(fmt.Sprintf("cloned to %s", repoDir))
 				}
