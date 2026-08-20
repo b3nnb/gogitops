@@ -6,8 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/gogitops/agent.env
-ExecStart=%h/bin/gogitops daemon \
-  -repo %h/.config/gogitops \
+ExecStart=/usr/local/bin/gogitops daemon \
+  -repo /etc/gogitops \
   -hostname __HOSTNAME__ \
   -bind 0.0.0.0 \
   -port 7780 \

@@ -2,33 +2,54 @@
 # gogitops + nenv-agent installer
 # Usage: bash install.sh [hostname] [nenv-server-url] [nenv-token]
 # Defaults: hostname=$(hostname), server=http://10.2.0.102:7200, token from nenv
+# Binaries go to /usr/local/bin (system-wide, no PATH shadowing)
+# Config goes to /etc/gogitops (standard system config location)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOSTNAME="${1:-$(hostname)}"
 NENV_SERVER="${2:-http://10.2.0.102:7200}"
-NENV_TOKEN="${3:-}"
+NENV_TOKEN="${3:...BINDIR="/usr/local/bin"
+CFGDIR="/etc/gogitops"
 
 echo "=== GoGitOps + nenv-agent installer ==="
 echo "  Host:    $HOSTNAME"
-echo "  Server:  $NENV_SERVER"
+echo "  Bin:     $BINDIR"
+echo "  Config:  $CFGDIR"
 echo ""
 
-# 1. Install binaries
-echo "▸ Installing binaries..."
-mkdir -p ~/bin
-cp "$SCRIPT_DIR/bin/gogitops" ~/bin/
-cp "$SCRIPT_DIR/bin/nenv-agent" ~/bin/
-chmod +x ~/bin/gogitops ~/bin/nenv-agent
-echo "  ✓ gogitops $(~/bin/gogitops version 2>/dev/null || echo 'installed')"
+# 1. Install binaries (system-wide)
+echo "▸ Installing binaries to $BINDIR..."
+if [ ! -w "$BINDIR" ]; then
+    echo "  $BINDIR not writable — using sudo"
+    SUDO="sudo"
+else
+    SUDO=""
+fi
+
+$SUDO mkdir -p "$BINDIR"
+$SUDO cp "$SCRIPT_DIR/bin/gogitops" "$BINDIR/gogitops"
+$SUDO cp "$SCRIPT_DIR/bin/nenv-agent" "$BINDIR/nenv-agent"
+$SUDO chmod +x "$BINDIR/gogitops" "$BINDIR/nenv-agent"
+echo "  ✓ gogitops $($BINDIR/gogitops version 2>/dev/null || echo 'installed')"
 echo "  ✓ nenv-agent installed"
 
-# 2. Install mesh config
-echo "▸ Installing mesh config..."
-mkdir -p ~/.config/gogitops
-cp "$SCRIPT_DIR/config/mesh.yaml" ~/.config/gogitops/
-echo "  ✓ mesh.yaml (peers: $(grep -c 'hostname:' ~/.config/gogitops/mesh.yaml))"
+# Remove old ~/bin copies that shadow the system binary
+for old in ~/bin/gogitops ~/bin/nenv-agent; do
+    if [ -f "$old" ]; then
+        echo "  Removing old $old (shadows $BINDIR/$(basename $old))"
+        rm -f "$old"
+    fi
+done
+
+# 2. Install config
+echo "▸ Installing config to $CFGDIR..."
+$SUDO mkdir -p "$CFGDIR"
+if [ -f "$SCRIPT_DIR/config/mesh.yaml" ]; then
+    $SUDO cp "$SCRIPT_DIR/config/mesh.yaml" "$CFGDIR/mesh.yaml"
+    echo "  ✓ mesh.yaml (peers: $(grep -c 'hostname:' "$CFGDIR/mesh.yaml" 2>/dev/null || echo '?'))"
+fi
 
 # 3. Set up SSH authorized_keys.d
 echo "▸ Setting up SSH authorized keys directory..."
@@ -39,7 +60,7 @@ if [ -f "$SCRIPT_DIR/ssh/friday-automation.pub" ]; then
     chmod 600 ~/.ssh/authorized_keys.d/friday-automation
     echo "  ✓ ~/.ssh/authorized_keys.d/friday-automation"
 else
-    echo "  ⚠ No SSH key in package — skipping (add manually if needed)"
+    echo "  ⚠ No SSH key in package — skipping"
 fi
 touch ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
@@ -68,7 +89,7 @@ fi
 # 5. Resolve nenv token
 if [ -z "$NENV_TOKEN" ]; then
     if command -v nenv &>/dev/null; then
-        NENV_TOKEN=$(nenv get gogitops AGENT_TOKEN 2>/dev/null || echo "")
+        NENV_TOKEN=*** get gogitops AGENT_TOKEN 2>/dev/null || echo "")
     fi
     if [ -z "$NENV_TOKEN" ]; then
         echo ""
@@ -104,6 +125,5 @@ systemctl --user enable --now nenv-agent.service 2>/dev/null \
 echo ""
 echo "=== Done! ==="
 echo "Verify:"
-echo "  ~/bin/gogitops version"
-echo "  ~/bin/gogitops daemon --help"
+echo "  $BINDIR/gogitops version"
 echo "  systemctl --user status gogitops-daemon nenv-agent"

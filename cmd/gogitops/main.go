@@ -1605,11 +1605,13 @@ func runDaemon(args []string) {
 
 	bind := *bindAddr
 	if bind == "" {
+		bind = node.LanIP
+	}
+	if bind == "" {
 		bind = node.NebulaIP
 	}
-	if bind == "" || bind == "null" {
-		bind = "127.0.0.1"
-		log.Printf("warning: no nebula_ip in node config — binding to localhost only")
+	if bind == "" {
+		bind = "0.0.0.0"
 	}
 
 	a := agent.New(node, meshCfg, wbhook)
