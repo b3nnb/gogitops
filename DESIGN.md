@@ -245,6 +245,74 @@ steps:
     expect: "Nebula {{latest_version}}"
 ```
 
+## Unified Tag Model
+
+_All systems in Benn's stack call them tags. GoGitOps does too — one word, one concept._
+
+### What Each System Calls Them
+
+| System | Concept | Naming | Example |
+|--------|---------|--------|---------|
+| GoGitOps | node tags + groups | `tags:` in node YAML, `groups/` dir | `docker-host`, `gpu` |
+| dnclient / Defined Networking | Nebula cert groups | `role:*` and `t:*:*` namespaced tags | `role:benn`, `t:service:n8n` |
+| NetEnv | secret tags + namespaces | `tags:` on secrets | secrets carry arbitrary tags |
+
+**Key insight:** DN's `t:` prefix is namespaced tags — `t:service:n8n` = category `service`, value `n8n`. Everything aligns on `category:value`.
+
+### Tag Sources Merge at Runtime
+
+An agent's effective tags come from three places, merged in this order:
+
+```
+1. Static tags (node YAML)       — always present
+2. Nebula cert groups (dnclient) — role:benn → dn-role:benn, t:service:n8n → service:n8n
+3. NetEnv namespace tags          — if netenv integration enabled, namespace tags import
+```
+
+Example — friday's effective tags:
+
+```
+static:     primary-compute, docker-host, gpu
+from DN:    role:trader-host (dn cert group), service:hermes-gateway (t:service:*)
+effective:  primary-compute, docker-host, gpu, dn-role:trader-host, service:hermes-gateway
+```
+
+### Recipe Targeting
+
+Recipes declare **targets** — expressions that select which nodes run the recipe:
+
+```yaml
+# Any of these target formats:
+targets:
+  - node:friday            # explicit node by hostname
+  - tag:docker-host        # any node with this static tag
+  - group:exo              # any node in this group
+  - dn-role:benn           # from Nebula cert (role:*)
+  - dn-tag:service:n8n     # from Nebula cert (t:*:*)
+```
+
+- Empty `targets:` = all nodes (default)
+- Multiple targets = **OR** (node runs recipe if it matches ANY target)
+- Step-level `tags_required` still works as an AND filter within a matched node
+
+### Migration from "labels"
+
+GoGitOps originally used Kubernetes-style "labels". Rename to "tags" for stack consistency:
+
+| Old (labels) | New (tags) |
+|--------------|------------|
+| `labels:` in node YAML | `tags:` |
+| `labels: []` on recipes | `targets: []` (empty = all nodes) |
+| step `labels_required:` | step `tags_required:` |
+| target `label:docker-host` | target `tag:docker-host` |
+| container labels (`stack:trader`) | container tags (same syntax, just renamed) |
+
+The agent accepts `labels:` as a silent alias for `tags:` during migration (reads old node YAML without error), so existing configs don't break on upgrade.
+
+### Why Not Just Use DN Roles/Tags Everywhere?
+
+DN tags live in the Nebula cert, which requires the Defined Networking control plane to change. That's fine for network-level identity but too heavy for "this node runs docker" which changes with a config file. Static tags stay local and fast; DN tags import for network identity. Best of both.
+
 ### Group Schema
 
 Groups are named collections with intent. They answer "what breaks if X goes down?" and "is this service cluster healthy?"
@@ -582,9 +650,15 @@ This replaces hardcoded IPs everywhere — configs, recipes, Caddy, n8n, everyth
 ### Phase 2 — Recipes & control
 - [ ] Recipe execution engine
 - [ ] Container restart recipe
-- [ ] Agent self-update
+- [ ] Agent self-update (transitional binary)
 - [ ] Nebula update recipe
 - [ ] Remote command endpoint (authenticated)
+
+### Phase 2.5 — Self-healing
+- [ ] Recipe drift detection (compare declared vs actual state)
+- [ ] Service health → auto-repair (restart → re-run recipe → alert)
+- [ ] Scheduled recipe execution (daemon auto-runs assigned recipes)
+- [ ] Transitional binary rollback (auto-revert on failed self-update)
 
 ### Phase 3 — Migration & DNS
 - [ ] Container-level label migration (move single stacks)
@@ -976,6 +1050,201 @@ On other nodes, the agent can query netenv remotely over LAN (`10.2.0.102:7200`)
 
 **Binary:** `gogitops`
 **Repo:** `github.com/bennbanks/gogitops`
+
+---
+
+## Transitional Binary Updates
+
+_Borrowed from NetEnv's transitional secrets pattern — applied to the agent binary itself._
+
+### The Problem
+
+Self-updating agents have a paradox: if the new binary is broken, the agent that's supposed to detect and fix it IS the broken thing. Dead agents can't self-heal.
+
+### The Solution
+
+Keep the previous binary as a parachute during a transition window. If the new binary fails its self-check, automatically roll back.
+
+### Transition Window
+
+The time the old binary is kept as fallback before cleanup. Customizable at three levels:
+
+| Level | How | Priority |
+|-------|-----|----------|
+| **Build-time default** | `-ldflags "-X main.defaultTransitionWindow=5m"` | Lowest |
+| **CLI flag** | `gogitops daemon --transition-window 10m` | Overrides build-time |
+| **Binary-embedded (new binary)** | New binary ships with its own transition window via ldflags | **Highest — overrides everything when new binary takes over** |
+
+The new binary's built-in value wins because the new binary knows what transition period IT needs. A patch release might need 2 minutes; a major rewrite might need 30. The binary author sets this at build time.
+
+### Update Flow
+
+```
+1. Agent checks releases/latest.json during git-pull cycle
+2. New version found → download to /usr/local/bin/gogitops.<new_version>
+3. Verify checksum (SHA256 in latest.json)
+4. Move current binary → /usr/local/bin/gogitops.previous
+5. Symlink /usr/local/bin/gogitops → gogitops.<new_version>
+6. systemctl restart gogitops
+
+   [new binary starts]
+
+7. Post-start self-check:
+   - Version matches expected
+   - Health endpoint responds (/v1/health)
+   - At least 1 mesh peer responds
+   - Config repo readable
+8. If self-check passes:
+   - Write transition state to /var/lib/gogitops/transition.json
+   - { "previous_version": "0.5.2", "started_at": "...", "transition_until": "..." }
+   - Start transition timer
+9. If self-check FAILS:
+   - Swap symlink back to gogitops.previous
+   - systemctl restart gogitops
+   - Alert: "self-update rolled back: <version> failed self-check"
+
+   [transition window expires]
+
+10. If still running healthy → rm /usr/local/bin/gogitops.previous
+11. If crashed at any point during window:
+    - Systemd watchdog or mesh peer detects
+    - Peer triggers remote rollback: swap symlink, restart
+    - Alert: "auto-rollback: <version> crashed during transition"
+```
+
+### Rollback Triggers
+
+| Trigger | Who detects | Action |
+|---------|------------|--------|
+| Self-check failure | New binary itself | Immediate symlink swap + restart |
+| Crash loop (3 restarts in 60s) | systemd | `ExecStartPre` script checks for `.previous`, swaps if exists |
+| No health endpoint for 2 min | Mesh peer | Peer SSHs or API-calls to swap symlink + restart |
+| Transition window expired + healthy | Agent | Cleanup `.previous` |
+
+### File Layout
+
+```
+/usr/local/bin/
+  gogitops                    → symlink to active version
+  gogitops.0.5.3              # current active binary
+  gogitops.previous           # previous binary (parachute)
+
+/var/lib/gogitops/
+  transition.json             # active transition state (if any)
+
+releases/
+  latest.json                 # version + checksum + download URL
+```
+
+### latest.json Schema
+
+```json
+{
+  "version": "0.5.3",
+  "released": "2026-08-19",
+  "sha256": "abc123...",
+  "download_url": "https://github.com/b3nnb/gogitops/releases/download/v0.5.3/gogitops-linux-amd64",
+  "transition_window": "5m"
+}
+```
+
+The `transition_window` in latest.json is advisory — the binary's own embedded value overrides it once running.
+
+---
+
+## Self-Healing Architecture
+
+_Four layers of self-healing, from process to state convergence._
+
+### Layer 1: Agent Process (✅ exists)
+
+systemd manages the agent. Crash → automatic restart. No special handling needed.
+
+```
+systemd
+  └── gogitops.service
+        ExecStart=/usr/local/bin/gogitops daemon
+        Restart=always
+        RestartSec=5
+```
+
+### Layer 2: Agent Config (✅ exists)
+
+Agent pulls from git repo every 5 minutes. Node YAML changes → picked up next cycle. No restart needed for config changes.
+
+```
+git pull → parse nodes/<hostname>.yaml → update in-memory config
+```
+
+### Layer 3: Recipe Drift Detection (to build)
+
+Agent knows which recipes are assigned to it (via node config `recipes:` field). On each cycle, it checks whether the declared state matches actual state. If drifted, it re-runs the recipe.
+
+```yaml
+# nodes/friday.yaml
+recipes:
+  - name: starship
+    schedule: "0 */6 * * *"     # check every 6 hours
+    drift_check: true            # compare declared vs actual before running
+```
+
+Drift detection per recipe:
+
+```
+for each assigned recipe:
+  if recipe has drift_check:
+    run drift detection steps (lightweight checks, not full recipe)
+    if drifted → run full recipe
+    if not drifted → skip
+  else:
+    run on schedule regardless
+```
+
+### Layer 4: Service Health → Auto-Repair (to build)
+
+Agent already checks service health (port/process). Currently it only alerts. Self-healing adds a repair escalation chain:
+
+```
+service unhealthy
+  → attempt restart (systemctl restart / docker restart)
+  → wait 10s, recheck
+  → if still unhealthy → run setup recipe for that service
+  → wait 30s, recheck
+  → if still unhealthy → alert Discord @here
+```
+
+The setup recipe is defined in the node config:
+
+```yaml
+# nodes/friday.yaml
+services:
+  - name: hermes-gateway
+    type: systemd-user
+    ports: [8642]
+    repair_recipe: hermes-gateway-setup    # recipe to re-run if service won't start
+```
+
+### Self-Healing Loop (daemon mode)
+
+```
+every 60s:
+  1. git pull (if due)
+  2. check mesh peers (ping)
+  3. for each service:
+       if healthy → continue
+       if unhealthy → repair escalation (restart → recipe → alert)
+  4. for each assigned recipe:
+       if drift_check due → check drift → re-run if drifted
+  5. check for new binary version → transitional update if available
+  6. report state to dashboard (if configured)
+```
+
+### What This Is NOT
+
+- **Not Kubernetes.** No reconciler loops, no CRDs, no controller-runtime.
+- **Not Prometheus.** No metrics scraping, no alerting rules, no time-series.
+- **Not Ansible.** No push, no inventory files, no SSH from a control node.
+- **What it IS:** A simple loop that checks "is this thing in the state I declared?" and fixes it if not.
 **Port:** 7780 (Nebula interface only — not LAN)
 **Protocol:** HTTP JSON over Nebula (Nebula cert = agent auth)
 **Config format:** YAML in git
