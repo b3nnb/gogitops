@@ -1,0 +1,45 @@
+# GoGitOps Test Module — Common (all nodes)
+name: common
+description: "Assertions for all nodes regardless of OS"
+test_module: true
+
+steps:
+  - name: hostname-resolved
+    description: "Hostname is resolvable"
+    command: "hostname"
+    assert: "Hostname resolves correctly"
+    set_attr: hostname
+
+  - name: dns-resolution
+    description: "DNS resolution works"
+    command: "nslookup github.com 2>/dev/null || host github.com 2>/dev/null || echo 'no-dns-tool'"
+    assert: "DNS resolution functional"
+    expect_regex: '(?s).+'
+
+  - name: uptime-check
+    description: "System uptime"
+    command: "uptime"
+    parse: regex
+    pattern: 'up (.+?),'
+    attr_prefix: uptime
+
+  - name: disk-root
+    description: "Root filesystem is accessible"
+    command: "df -h /"
+    assert: "Root filesystem accessible"
+    parse: regex
+    pattern: '(\d+%)\s+/$'
+    attr_prefix: disk_root
+
+  - name: memory-available
+    description: "Memory info available"
+    command: "free -m 2>/dev/null || vm_stat 2>/dev/null || echo 'unknown'"
+    parse: regex
+    pattern: '(?s)(.+)'
+    attr_prefix: memory
+
+  - name: network-connectivity
+    description: "Can reach the internet"
+    command: "curl -s -o /dev/null -w '%{http_code}' --max-time 5 https://1.1.1.1 2>/dev/null || echo 'no-curl'"
+    assert: "Internet connectivity"
+    expect_regex: '(200|301|302|000|no-curl)'

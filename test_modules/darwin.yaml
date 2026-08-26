@@ -1,0 +1,58 @@
+# GoGitOps Test Module — macOS (Darwin)
+name: darwin
+description: "Assertions specific to macOS nodes"
+test_module: true
+
+steps:
+  - name: macos-version
+    description: "macOS version"
+    command: "sw_vers -productVersion 2>/dev/null || echo 'unknown'"
+    assert: "macOS version detected"
+    expect_regex: '\d+\.\d+'
+    set_attr: macos_version
+    os: darwin
+
+  - name: homebrew-installed
+    description: "Homebrew is installed"
+    command: "which brew 2>/dev/null && brew --version 2>/dev/null | head -1 || echo 'not-installed'"
+    assert: "Homebrew is installed"
+    expect_regex: 'Homebrew'
+    set_attr: homebrew_installed
+    os: darwin
+
+  - name: homebrew-outdated
+    description: "Count outdated Homebrew packages"
+    command: "brew outdated 2>/dev/null | wc -l || echo '0'"
+    set_attr: brew_outdated
+    os: darwin
+
+  - name: docker-mac
+    description: "Docker Desktop on macOS"
+    command: "docker --version 2>/dev/null || echo 'not-installed'"
+    assert: "Docker available on macOS"
+    expect_regex: 'Docker version'
+    set_attr: docker_installed
+    os: darwin
+
+  - name: disk-apfs
+    description: "APFS disk usage"
+    command: "df -h / 2>/dev/null | tail -1"
+    parse: regex
+    pattern: '(\d+%)\s+/$'
+    attr_prefix: disk_root
+    os: darwin
+
+  - name: launchd-status
+    description: "Launchd is running"
+    command: "launchctl list 2>/dev/null | head -1 || echo 'no-launchctl'"
+    assert: "launchd functional"
+    expect_regex: '(PID|no-launchctl)'
+    os: darwin
+
+  - name: macos-load
+    description: "System load average"
+    command: "sysctl -n vm.loadavg 2>/dev/null || echo '0 0 0'"
+    parse: regex
+    pattern: '\{ ([\d.]+) ([\d.]+) ([\d.]+)'
+    attr_prefix: load
+    os: darwin

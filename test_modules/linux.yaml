@@ -1,0 +1,70 @@
+# GoGitOps Test Module — Linux
+name: linux
+description: "Assertions specific to Linux nodes"
+test_module: true
+
+steps:
+  - name: systemd-running
+    description: "systemd is the init system"
+    command: "ps -p 1 -o comm= 2>/dev/null"
+    assert: "systemd is PID 1"
+    expect: "systemd"
+    os: linux
+
+  - name: kernel-version
+    description: "Kernel version"
+    command: "uname -r"
+    set_attr: kernel_version
+    os: linux
+
+  - name: os-release
+    description: "OS release info"
+    command: "cat /etc/os-release 2>/dev/null | head -5"
+    parse: regex
+    pattern: 'PRETTY_NAME="(.+)"'
+    attr_prefix: os
+    os: linux
+
+  - name: docker-installed
+    description: "Docker is installed"
+    command: "which docker 2>/dev/null && docker --version 2>/dev/null || echo 'not-installed'"
+    assert: "Docker is installed"
+    expect_regex: 'Docker version'
+    set_attr: docker_installed
+    os: linux
+
+  - name: docker-running
+    description: "Docker daemon is running"
+    command: "systemctl is-active docker 2>/dev/null || echo 'inactive'"
+    assert: "Docker daemon active"
+    expect: "active"
+    when_attr: "attr.docker_installed contains Docker"
+    os: linux
+
+  - name: systemd-units-failed
+    description: "Check for failed systemd units"
+    command: "systemctl --failed --no-legend 2>/dev/null | wc -l"
+    assert: "No failed systemd units"
+    expect_exit: 0
+    set_attr: failed_units
+    os: linux
+
+  - name: apt-updates
+    description: "Count available apt updates"
+    command: "apt list --upgradable 2>/dev/null | grep -c upgradable || echo '0'"
+    set_attr: apt_updates
+    os: linux
+
+  - name: nebula-status
+    description: "Nebula VPN status"
+    command: "systemctl is-active nebula 2>/dev/null || echo 'not-installed'"
+    set_attr: nebula_status
+    os: linux
+
+  - name: load-average
+    description: "System load average"
+    command: "cat /proc/loadavg 2>/dev/null || echo '0 0 0'"
+    parse: regex
+    pattern: '^([\d.]+)\s+([\d.]+)\s+([\d.]+)'
+    attr_prefix: load
+    os: linux

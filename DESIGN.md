@@ -1250,3 +1250,164 @@ every 60s:
 **Config format:** YAML in git
 **Router binary:** `gogitops-lite` (stripped-down, ~2MB, WAN/DNS/Nebula checks only)
 **Config format:** YAML in git
+
+---
+
+## Test & Assertion System
+
+GoGitOps includes a built-in test and assertion system that lets recipes act as executable tests, report attributes (key=value pairs), and make step execution conditional on those attributes. This enables modular, OS-aware test modules and attribute-driven workflows.
+
+### Core Concepts
+
+1. **Assertions** — Steps with an `assert` field become test assertions. Pass/fail is recorded as an attribute (`assert.<step_name>.status = pass|fail`).
+2. **Attributes** — A persistent key-value map that accumulates across all steps in a recipe run. Attributes are set via `set_attr`, `attr_prefix`, or assertion results.
+3. **Attribute Conditions** — Steps can be skipped based on attribute values using `when_attr` and `only_if_attr`, enabling conditional execution without shell commands.
+4. **Test Modules** — Special recipes (with `test_module: true`) stored in `test_modules/` that run OS-specific assertions and collect attributes.
+
+### New Recipe Step Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `assert` | string | Makes this step an assertion; value is the test description |
+| `set_attr` | string | Attribute name to set from command output |
+| `attr_prefix` | string | Prefix for multiple attributes from regex capture groups |
+| `when_attr` | string | Attribute condition — step runs only if condition is true |
+| `only_if_attr` | string | Attribute condition — step runs only if condition is true |
+
+### Attribute Condition Syntax
+
+Attribute conditions support four formats:
+
+```yaml
+# Truthy check — true if attr exists, non-empty, not "false", not "0"
+when_attr: "attr.docker_installed"
+
+# Equality
+when_attr: "attr.docker_installed == true"
+
+# Inequality
+only_if_attr: "attr.os_type != alpine"
+
+# Substring check
+when_attr: "attr.docker_installed contains Docker"
+```
+
+### How Assertions Work
+
+When a step has `assert`, the recipe runner:
+
+1. Executes the command
+2. Checks all expectations (`expect`, `expect_regex`, `expect_exit`)
+3. Records `assert.<step_name>.status = pass` or `fail` in the attribute map
+4. Prints the assertion result with ✓/✖ icon and the assert description
+
+Assertions **do not abort** the recipe on failure — they record the result and continue. This is different from regular step failures, which abort by default.
+
+### How set_attr Works
+
+```yaml
+- name: kernel-version
+  command: "uname -r"
+  set_attr: kernel_version
+  # Stores: attr.kernel_version = "6.1.0-generic"
+```
+
+The command's stdout is trimmed and stored as `attr.<set_attr_name>`. It's also available as a variable `{{attr.kernel_version}}` in subsequent steps.
+
+### How attr_prefix Works
+
+When combined with `parse: regex` and `pattern`, capture groups are stored as numbered attributes:
+
+```yaml
+- name: load-average
+  command: "cat /proc/loadavg"
+  parse: regex
+  pattern: '^([\d.]+)\s+([\d.]+)\s+([\d.]+)'
+  attr_prefix: load
+  # Stores: attr.load.1 = "0.52", attr.load.2 = "0.38", attr.load.3 = "0.41"
+```
+
+### Test Modules
+
+Test modules are recipe YAML files stored in `test_modules/` with `test_module: true`. They're run by the `gogitops inspect` command.
+
+**Directory structure:**
+
+```
+test_modules/
+├── common.yaml    — Assertions for all nodes
+├── linux.yaml     — Assertions for Linux nodes
+├── darwin.yaml    — Assertions for macOS nodes
+└── docker.yaml    — Assertions for Docker hosts
+```
+
+**Module loading order:**
+1. `common.yaml` — always run
+2. `<os>.yaml` — OS-specific module (linux.yaml, darwin.yaml)
+3. `docker.yaml` — Docker checks (always loaded, steps use `when_attr` to gate on Docker presence)
+
+### gogitops inspect
+
+The `inspect` command runs all applicable test modules for the current node and reports collected attributes and assertion results.
+
+```bash
+# Basic inspection
+gogitops inspect
+
+# With repo path
+gogitops inspect --repo /path/to/gogitops
+
+# Verbose — show full command output
+gogitops inspect --verbose
+```
+
+**Output includes:**
+- Per-module assertion results (✓/✖)
+- Attribute map (all collected key=value pairs)
+- Assertion summary (pass/fail counts)
+
+### Example: Attribute-Driven Recipe
+
+```yaml
+name: docker-setup
+description: "Install and configure Docker, conditional on current state"
+
+steps:
+  - name: check-docker
+    command: "docker --version 2>/dev/null || echo 'not-installed'"
+    assert: "Docker is available"
+    expect_regex: 'Docker version'
+    set_attr: docker_installed
+
+  - name: install-docker
+    command: "curl -fsSL https://get.docker.com | sh"
+    os: linux
+    only_if_attr: "attr.docker_installed == not-installed"
+    on_failure: abort
+
+  - name: check-compose
+    command: "docker compose version 2>/dev/null || echo 'not-installed'"
+    set_attr: compose_installed
+
+  - name: install-compose
+    command: "apt-get install -y docker-compose-plugin"
+    os: linux
+    only_if_attr: "attr.compose_installed == not-installed"
+    when_attr: "attr.docker_installed contains Docker"
+
+  - name: verify-docker-running
+    command: "systemctl is-active docker"
+    assert: "Docker daemon is active"
+    expect: "active"
+```
+
+### Integration with Recipe Runner
+
+The attribute map persists across all steps within a single `recipe run` invocation. This means:
+
+- Step 1 can `set_attr: os_type`
+- Step 5 can `when_attr: "attr.os_type == alpine"` to conditionally execute
+- Step 10 can `assert: "Service is healthy"` and the result is available to later steps
+
+Attributes are **not** persisted between separate recipe runs. Each `recipe run` starts with a fresh attribute map.
+

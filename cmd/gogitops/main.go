@@ -58,6 +58,8 @@ func main() {
 			runDashboard(os.Args[2:])
 		case "recipe":
 			cmdRecipe(os.Args[2:])
+		case "inspect":
+			cmdInspect(os.Args[2:])
 		case "help", "--help", "-h":
 			printHelp()
 		default:
@@ -95,6 +97,7 @@ func printHelp() {
     daemon     Run the agent daemon
     dashboard  Fleet status dashboard (web UI on :7781)
     recipe     Recipe management (new, list, validate)
+    inspect    Run test modules and collect node attributes
     version    Print version
 
   FLAGS
@@ -1224,6 +1227,11 @@ type recipeStep struct {
 	OnFailure     string `yaml:"on_failure"`
 	Retries       int    `yaml:"retries"`
 	RetryDelay    string `yaml:"retry_delay"`
+	Assert        string `yaml:"assert"`
+	SetAttr       string `yaml:"set_attr"`
+	AttrPrefix    string `yaml:"attr_prefix"`
+	WhenAttr      string `yaml:"when_attr"`
+	OnlyIfAttr    string `yaml:"only_if_attr"`
 }
 
 type recipe struct {
@@ -1231,6 +1239,7 @@ type recipe struct {
 	Description string `yaml:"description"`
 	Version     string `yaml:"version"`
 	Labels      []string `yaml:"labels"`
+	TestModule  bool   `yaml:"test_module"`
 	Params      []struct {
 		Name        string `yaml:"name"`
 		Description string `yaml:"description"`
@@ -1319,6 +1328,9 @@ func recipeRun(args []string) {
 	vars["os"] = runtime.GOOS
 	vars["arch"] = runtime.GOARCH
 
+	// Attribute map — persists across steps within a recipe run
+	attrs := map[string]string{}
+
 	// Banner
 	cli.Banner()
 	fmt.Printf("\n  \033[1m\033[38;5;141mRecipe: %s\033[0m\n", r.Name)
@@ -1376,6 +1388,26 @@ func recipeRun(args []string) {
 			oCmd := exec.Command("bash", "-c", onlyCmd)
 			if err := oCmd.Run(); err != nil {
 				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: only_if false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				skipped++
+				continue
+			}
+		}
+
+		// when_attr: condition on attributes — skip if condition is false
+		if step.WhenAttr != "" {
+			cond := substituteVars(step.WhenAttr, vars)
+			if !evalAttrCondition(cond, attrs) {
+				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: when_attr false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				skipped++
+				continue
+			}
+		}
+
+		// only_if_attr: condition on attributes — skip if condition is false
+		if step.OnlyIfAttr != "" {
+			cond := substituteVars(step.OnlyIfAttr, vars)
+			if !evalAttrCondition(cond, attrs) {
+				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: only_if_attr false)\033[0m\n", stepNum, len(r.Steps), displayName)
 				skipped++
 				continue
 			}
@@ -1459,6 +1491,54 @@ func recipeRun(args []string) {
 				if len(matches) > 1 {
 					for idx, m := range matches[1:] {
 						vars[fmt.Sprintf("%d", idx+1)] = strings.TrimSpace(m)
+					}
+				}
+			}
+		}
+
+		// Assert: record pass/fail as an attribute
+		if step.Assert != "" {
+			assertPassed := lastExitCode == 0 || (step.ExpectExit != nil && lastExitCode == *step.ExpectExit)
+			if step.Expect != "" && !strings.Contains(lastOutput, step.Expect) {
+				assertPassed = false
+			}
+			if step.ExpectRegex != "" {
+				matched, _ := regexp.MatchString(step.ExpectRegex, lastOutput)
+				if !matched {
+					assertPassed = false
+				}
+			}
+			attrKey := "assert." + displayName
+			if assertPassed {
+				attrs[attrKey+".status"] = "pass"
+				fmt.Printf("     \033[38;5;46m✓ assert: %s\033[0m\n", step.Assert)
+			} else {
+				attrs[attrKey+".status"] = "fail"
+				fmt.Printf("     \033[38;5;196m✖ assert: %s\033[0m\n", step.Assert)
+			}
+		}
+
+		// set_attr: store command output as an attribute
+		if step.SetAttr != "" {
+			attrVal := strings.TrimSpace(lastOutput)
+			attrs["attr."+step.SetAttr] = attrVal
+			// Also make available as a variable for subsequent steps
+			vars["attr."+step.SetAttr] = attrVal
+			fmt.Printf("     \033[38;5;178m⊙ attr.%s = %s\033[0m\n", step.SetAttr, truncateStr(attrVal, 60))
+		}
+
+		// attr_prefix: store regex capture groups as attributes
+		if step.AttrPrefix != "" && step.Parse == "regex" && step.Pattern != "" {
+			re, err := regexp.Compile(step.Pattern)
+			if err == nil {
+				matches := re.FindStringSubmatch(lastOutput)
+				if len(matches) > 1 {
+					for idx, m := range matches[1:] {
+						key := fmt.Sprintf("attr.%s.%d", step.AttrPrefix, idx+1)
+						val := strings.TrimSpace(m)
+						attrs[key] = val
+						vars[key] = val
+						fmt.Printf("     \033[38;5;178m⊙ %s = %s\033[0m\n", key, truncateStr(val, 60))
 					}
 				}
 			}
@@ -1614,6 +1694,16 @@ func parseRecipe(content string) recipe {
 			currentStep.Retries, _ = strconv.Atoi(val)
 		case "retry_delay":
 			currentStep.RetryDelay = val
+		case "assert":
+			currentStep.Assert = val
+		case "set_attr":
+			currentStep.SetAttr = val
+		case "attr_prefix":
+			currentStep.AttrPrefix = val
+		case "when_attr":
+			currentStep.WhenAttr = val
+		case "only_if_attr":
+			currentStep.OnlyIfAttr = val
 		case "labels_required":
 			// Simple parse: [a, b] → skip for now
 		}
@@ -1646,6 +1736,312 @@ func substituteVars(s string, vars map[string]string) string {
 		s = strings.ReplaceAll(s, "{{"+k+"}}", v)
 	}
 	return s
+}
+
+// evalAttrCondition evaluates an attribute-based condition expression.
+// Supported formats:
+//
+//	attr.<name>                  — truthy check (non-empty and not "false" and not "0")
+//	attr.<name> == <value>       — equality
+//	attr.<name> != <value>       — inequality
+//	attr.<name> contains <value> — substring check
+func evalAttrCondition(expr string, attrs map[string]string) bool {
+	expr = strings.TrimSpace(expr)
+
+	// attr.<name> contains <value>
+	if parts := strings.SplitN(expr, " contains ", 2); len(parts) == 2 {
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		attrVal, ok := attrs[key]
+		if !ok {
+			return false
+		}
+		return strings.Contains(attrVal, val)
+	}
+
+	// attr.<name> != <value>
+	if parts := strings.SplitN(expr, " != ", 2); len(parts) == 2 {
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		attrVal, ok := attrs[key]
+		if !ok {
+			return val != "" // not present ≠ non-empty value → true; not present ≠ "" → false
+		}
+		return attrVal != val
+	}
+
+	// attr.<name> == <value>
+	if parts := strings.SplitN(expr, " == ", 2); len(parts) == 2 {
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		attrVal, ok := attrs[key]
+		if !ok {
+			return val == ""
+		}
+		return attrVal == val
+	}
+
+	// Truthy check: attr.<name> — true if key exists and value is non-empty, not "false", not "0"
+	attrVal, ok := attrs[expr]
+	if !ok {
+		return false
+	}
+	attrVal = strings.TrimSpace(attrVal)
+	return attrVal != "" && attrVal != "false" && attrVal != "0"
+}
+
+// truncateStr truncates a string to maxLen characters with "..." if needed
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	// Truncate at first newline within range, or hard truncate
+	firstNL := strings.Index(s[:maxLen], "\n")
+	if firstNL >= 0 {
+		return s[:firstNL] + "..."
+	}
+	return s[:maxLen-3] + "..."
+}
+
+// ── inspect: run test modules and collect attributes ─────────────────────
+
+func cmdInspect(args []string) {
+	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
+	repoDir := fs.String("repo", ".", "path to gogitops repo")
+	verbose := fs.Bool("verbose", false, "show full command output from test steps")
+	fs.Parse(args)
+
+	resolved := resolveRepoDir(*repoDir)
+	testModulesDir := resolved + "/test_modules"
+
+	// Determine current OS for module selection
+	currentOS := runtime.GOOS
+	currentArch := runtime.GOARCH
+
+	// Load and run applicable test modules in priority order:
+	// common.yaml first, then OS-specific, then docker (if docker present)
+	moduleOrder := []string{
+		"common.yaml",
+		currentOS + ".yaml",
+		"docker.yaml",
+	}
+
+	// Collect all attributes across modules
+	allAttrs := map[string]string{}
+	assertResults := []struct {
+		module string
+		name   string
+		status string
+	}{}
+
+	cli.Banner()
+	fmt.Printf("\n  \033[1m\033[38;5;141mNode Inspector\033[0m\n")
+	fmt.Printf("  \033[38;5;240mOS: %s/%s  Repo: %s\033[0m\n\n", currentOS, currentArch, resolved)
+
+	modulesRun := 0
+	for _, modFile := range moduleOrder {
+		modPath := testModulesDir + "/" + modFile
+		data, err := os.ReadFile(modPath)
+		if err != nil {
+			continue // skip missing modules
+		}
+
+		r := parseRecipe(string(data))
+		if r.Name == "" || len(r.Steps) == 0 {
+			continue
+		}
+
+		modulesRun++
+		moduleName := strings.TrimSuffix(modFile, ".yaml")
+		fmt.Printf("  \033[38;5;141m▸ Module: %s\033[0m\n", moduleName)
+		if r.Description != "" {
+			fmt.Printf("  \033[38;5;240m  %s\033[0m\n", r.Description)
+		}
+
+		// Build vars for this module
+		vars := map[string]string{
+			"repo":     resolved,
+			"hostname": config.DetectHostname(),
+			"os":       currentOS,
+			"arch":     currentArch,
+		}
+
+		for i, step := range r.Steps {
+			stepNum := i + 1
+			displayName := step.Name
+			if displayName == "" {
+				displayName = fmt.Sprintf("step-%d", stepNum)
+			}
+
+			// OS filter
+			if step.OS != "" && step.OS != currentOS {
+				continue
+			}
+			// Arch filter
+			if step.Arch != "" && step.Arch != currentArch {
+				continue
+			}
+
+			// when_attr condition
+			if step.WhenAttr != "" {
+				cond := substituteVars(step.WhenAttr, vars)
+				if !evalAttrCondition(cond, allAttrs) {
+					continue
+				}
+			}
+
+			// only_if_attr condition
+			if step.OnlyIfAttr != "" {
+				cond := substituteVars(step.OnlyIfAttr, vars)
+				if !evalAttrCondition(cond, allAttrs) {
+					continue
+				}
+			}
+
+			cmd := substituteVars(step.Command, vars)
+
+			// Run command
+			eCmd := exec.Command("bash", "-c", cmd)
+			out, err := eCmd.CombinedOutput()
+			output := strings.TrimSpace(string(out))
+			exitCode := 0
+			if err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					exitCode = exitErr.ExitCode()
+				} else {
+					exitCode = 1
+				}
+			}
+
+			// Determine success
+			success := exitCode == 0
+			if step.Expect != "" && !strings.Contains(output, step.Expect) {
+				success = false
+			}
+			if step.ExpectRegex != "" {
+				matched, _ := regexp.MatchString(step.ExpectRegex, output)
+				if !matched {
+					success = false
+				}
+			}
+			if step.ExpectExit != nil && exitCode != *step.ExpectExit {
+				success = false
+			}
+
+			// Parse output for variables
+			if step.Parse == "regex" && step.Pattern != "" {
+				re, compileErr := regexp.Compile(step.Pattern)
+				if compileErr == nil {
+					matches := re.FindStringSubmatch(output)
+					if len(matches) > 1 {
+						for idx, m := range matches[1:] {
+							vars[fmt.Sprintf("%d", idx+1)] = strings.TrimSpace(m)
+						}
+					}
+				}
+			}
+
+			// Assert: record pass/fail
+			if step.Assert != "" {
+				attrKey := "assert." + displayName
+				status := "pass"
+				if !success {
+					status = "fail"
+				}
+				allAttrs[attrKey+".status"] = status
+				assertResults = append(assertResults, struct {
+					module string
+					name   string
+					status string
+				}{moduleName, step.Assert, status})
+
+				icon := "\033[38;5;46m✓\033[0m"
+				if !success {
+					icon = "\033[38;5;196m✖\033[0m"
+				}
+				fmt.Printf("    %s %s\033[0m\n", icon, step.Assert)
+			}
+
+			// set_attr
+			if step.SetAttr != "" {
+				allAttrs["attr."+step.SetAttr] = output
+				vars["attr."+step.SetAttr] = output
+			}
+
+			// attr_prefix
+			if step.AttrPrefix != "" && step.Parse == "regex" && step.Pattern != "" {
+				re, compileErr := regexp.Compile(step.Pattern)
+				if compileErr == nil {
+					matches := re.FindStringSubmatch(output)
+					if len(matches) > 1 {
+						for idx, m := range matches[1:] {
+							key := fmt.Sprintf("attr.%s.%d", step.AttrPrefix, idx+1)
+							val := strings.TrimSpace(m)
+							allAttrs[key] = val
+							vars[key] = val
+						}
+					}
+				}
+			}
+
+			// Verbose output
+			if *verbose && output != "" {
+				for _, line := range strings.Split(output, "\n") {
+					fmt.Printf("      \033[38;5;240m%s\033[0m\n", line)
+				}
+			}
+		}
+		fmt.Println()
+	}
+
+	// Print attribute summary
+	fmt.Printf("  \033[38;5;240m╭─ Attributes (%d) ──────────────────\033[0m\n", len(allAttrs))
+	// Sort attribute keys
+	attrKeys := make([]string, 0, len(allAttrs))
+	for k := range allAttrs {
+		attrKeys = append(attrKeys, k)
+	}
+	sort.Strings(attrKeys)
+
+	passCount := 0
+	failCount := 0
+	for _, k := range attrKeys {
+		v := allAttrs[k]
+		if strings.HasPrefix(k, "assert.") {
+			if v == "pass" {
+				passCount++
+			} else {
+				failCount++
+			}
+			// Skip printing assert status in attributes list — shown in summary
+			continue
+		}
+		fmt.Printf("  \033[38;5;240m│\033[0m \033[38;5;178m%s\033[0m = \033[38;5;255m%s\033[0m\n", k, truncateStr(v, 60))
+	}
+	fmt.Printf("  \033[38;5;240m╰──────────────────────────────────\033[0m\n\n")
+
+	// Assert summary
+	if len(assertResults) > 0 {
+		fmt.Printf("  \033[38;5;240m╭─ Assertions (%d) ─────────────────\033[0m\n", len(assertResults))
+		for _, a := range assertResults {
+			icon := "\033[38;5;46m✓\033[0m"
+			statusCol := "\033[38;5;46m"
+			if a.status == "fail" {
+				icon = "\033[38;5;196m✖\033[0m"
+				statusCol = "\033[38;5;196m"
+			}
+			fmt.Printf("  \033[38;5;240m│\033[0m %s %s%s\033[0m  \033[38;5;240m[%s]\033[0m\n", icon, statusCol, a.name, a.module)
+		}
+		fmt.Printf("  \033[38;5;240m╰── \033[38;5;46m%d pass\033[0m, \033[38;5;196m%d fail\033[0m \033[38;5;240m────────────\033[0m\n", passCount, failCount)
+		fmt.Println()
+	}
+
+	if modulesRun == 0 {
+		fmt.Printf("  \033[38;5;226m⚠ No test modules found in %s/\033[0m\n\n", testModulesDir)
+	}
 }
 
 // ── Daemon mode ──────────────────────────────────────────────────────────
