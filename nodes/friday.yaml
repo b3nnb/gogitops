@@ -1,5 +1,5 @@
 hostname: friday
-nebula_ip: 100.2.0.2
+nebula_ip: 10.200.0.4
 lan_ip: 10.2.0.102
 
 labels:
@@ -27,7 +27,7 @@ services:
     unit: friday-calls.service
   - name: nebula
     type: systemd
-    unit: nebula.service
+    unit: dnclient.service
   - name: docker
     type: docker
     check: daemon-alive

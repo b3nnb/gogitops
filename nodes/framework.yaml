@@ -8,9 +8,8 @@ labels:
 
 services:
   - name: nebula
-    type: not_configured
-  - name: netenv
-    type: not_configured
+    type: systemd
+    unit: dnclient.service
 
 disk:
   - mount: /
