@@ -1,6 +1,6 @@
 peers:
     - hostname: friday
-      nebula_ip: 10.200.0.4
+      nebula_ip: ""
       lan_ip: 10.2.0.102
       port: 7780
       labels:
@@ -10,7 +10,7 @@ peers:
         - trader-host
         - gpu
     - hostname: mini
-      nebula_ip: 10.200.0.188
+      nebula_ip: ""
       lan_ip: 10.0.0.251
       port: 7780
       labels:
@@ -30,7 +30,7 @@ peers:
     #     - docker-host
     #     - public-edge
     - hostname: lighthouse
-      nebula_ip: 10.200.0.1
+      nebula_ip: ""
       lan_ip: ""
       port: 7780
       labels:
@@ -38,7 +38,7 @@ peers:
         - nebula-lighthouse
         - aws
     - hostname: framework
-      nebula_ip: 10.200.0.6
+      nebula_ip: ""
       lan_ip: 10.0.0.229
       port: 7780
       labels:
@@ -54,14 +54,14 @@ peers:
     #     - cnc
     #     - windows
     - hostname: pixel
-      nebula_ip: 10.200.0.7
+      nebula_ip: ""
       lan_ip: ""
       port: 7780
       labels:
         - mobile
         - android
     - hostname: test
-      nebula_ip: 10.200.0.4
+      nebula_ip: ""
       lan_ip: 10.2.0.102
       port: 7780
       labels:
