@@ -1,5 +1,19 @@
 # GoGitOps Recipe Specification
 
+## Bootstrap Recipe — run this first on every new node
+
+**`setup-ssh-access`** is the fleet's foundational recipe: installs the agent's
+SSH public keys into `authorized_keys.d/<username>`, configures sshd, and
+verifies sshd is running (process-level, init-system agnostic). Run it before
+anything else so every node is reachable:
+
+    gogitops recipe run setup-ssh-access
+
+Verified end-to-end Sep 2026 (Docker ubuntu:24.04): 17 passed / 4 skipped,
+real SSH login with the installed key succeeds. Fresh nodes without the repo
+cloned can use the `GOGITOPS_SSH_PUBKEY` env var fallback.
+
+
 Recipes are declarative YAML files that describe operational procedures —
 installing software, updating configs, restarting services, migrating stacks.
 
@@ -23,7 +37,12 @@ steps:
     
     # Execution — one of:
     command: "<shell command>"   # run a shell command
+    script: "<filename>"         # run a script file (from recipes/scripts/)
     action: <built-in>           # built-in action (see below)
+    
+    # Script options (only used with script:)
+    script_args: "<args>"        # arguments passed to the script
+    script_lang: bash|go|python3 # override language detection
     
     # Filters — skip step if conditions don't match
     os: linux|darwin|windows     # only run on this OS
@@ -40,6 +59,10 @@ steps:
     pattern: "<regex>"           # capture groups become variables
     # captured groups: {{1}}, {{2}}, etc.
     
+    # Attribute capture — store output for API/dashboard/other steps
+    set_attr: <attr_name>        # store stdout as attr.<name>
+    attr_prefix: <prefix>        # store regex captures as attr.<prefix>.1, .2, ...
+    
     # Flow control
     only_if: "<condition>"       # skip step if condition is false
     on_failure: continue|abort   # default: abort
@@ -48,6 +71,8 @@ steps:
     
     # Conditional execution
     when: "<shell test>"         # only run if this command exits 0
+    when_attr: "<expr>"          # only run if attribute condition is true
+    only_if_attr: "<expr>"       # skip if attribute condition is false
 ```
 
 ## Built-in Actions
@@ -114,8 +139,92 @@ recipes/
 ├── agent-self-update.yaml
 ├── container-restart.yaml
 ├── stack-migrate.yaml
-└── full-migrate.yaml
+├── full-migrate.yaml
+├── script-demo.yaml    # demonstrates script execution + attributes
+└── scripts/            # shared scripts referenced by recipes
+    ├── install-docker.sh       # action script (installs Docker)
+    ├── collect-system-info.sh  # info script (KEY=VALUE output)
+    ├── collect-attrs.go        # info script (JSON output, Go)
+    └── check-disk.sh           # info script (threshold check)
 ```
 
 Recipes are stored in the git repo and pulled by agents on every git sync.
 Any node can execute any recipe it matches (by label filter).
+
+## Scripts
+
+Scripts are standalone files in `recipes/scripts/` (shared) or `recipes/<name>/scripts/` (recipe-local).
+They keep complex logic out of YAML and make procedures independently testable.
+
+### Supported Languages
+
+| Extension | Language | Execution |
+|-----------|----------|-----------|
+| `.sh` | Bash | `bash <script> <args>` |
+| `.go` | Go | `go run <script> <args>` |
+| `.py` | Python | `python3 <script> <args>` |
+| (other) | Auto | Direct execution |
+
+Override detection with `script_lang: bash|go|python3`.
+
+### Script Resolution Order
+
+1. `recipes/scripts/<name>` — shared scripts (preferred)
+2. `recipes/<recipe-name>/scripts/<name>` — recipe-local scripts
+3. `install/scripts/<name>` — legacy/global scripts
+4. As-is (absolute or relative path)
+
+### Script Types
+
+**Action scripts** — perform a task, exit code matters:
+```yaml
+- name: install-docker
+  script: install-docker.sh
+  on_failure: abort
+```
+
+**Info scripts** — collect data, output captured as attributes:
+```yaml
+- name: collect-info
+  script: collect-system-info.sh
+  set_attr: system_info       # full stdout → attr.system_info
+```
+
+**Go scripts** — structured JSON output for complex collection:
+```yaml
+- name: collect-attrs
+  script: collect-attrs.go
+  set_attr: system_attrs_json # JSON string → attr.system_attrs_json
+```
+
+**Script with args** — pass variables as arguments:
+```yaml
+- name: check-service
+  script: check-service.sh
+  script_args: "{{hostname}} {{attr.docker_version}}"
+  set_attr: service_check
+```
+
+### Attribute Flow Between Steps
+
+Attributes captured with `set_attr` are available to subsequent steps as `{{attr.<name>}}`:
+
+```yaml
+steps:
+  - name: collect
+    script: collect-system-info.sh
+    set_attr: system_info
+
+  - name: use-it
+    command: "echo '{{attr.system_info}}' > /tmp/sysinfo.txt"
+```
+
+Use `when_attr` / `only_if_attr` for conditional execution based on attributes:
+```yaml
+  - name: docker-check
+    command: "docker ps"
+    only_if_attr: "attr.system_attrs_json contains docker_running"
+```
+
+Attributes persist for the duration of the recipe run. Future: attributes will be
+exposed via the agent API (`/v1/attrs`) and dashboard for observability.
