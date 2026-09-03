@@ -400,6 +400,12 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
       <p>Generate the daemon command for a new node. The agent will register with this dashboard on startup — no manual config needed.</p>
 
       <div class="deploy-form">
+        <label>Beacon URL <small>(saved)</small>
+          <input type="text" id="deployDash" placeholder="http://10.2.0.102:7781" oninput="deploySettingChanged()">
+        </label>
+        <label>Config Repo URL <small>(saved)</small>
+          <input type="text" id="deployRepo" placeholder="git@github.com:b3nnb/gogitops.git" oninput="deploySettingChanged()">
+        </label>
         <label>Hostname
           <input type="text" id="deployHostname" placeholder="e.g. nas" oninput="updateDeploy()">
         </label>
@@ -577,32 +583,78 @@ function switchTab(name, btn) {
   btn.classList.add('active');
 }
 
+var deploySaveTimer = null;
+function deploySettingChanged() {
+  updateDeploy();
+  clearTimeout(deploySaveTimer);
+  deploySaveTimer = setTimeout(saveDeploySettings, 600);
+}
+
+function saveDeploySettings() {
+  var payload = {
+    dashboard_url: document.getElementById('deployDash').value.trim(),
+    repo_url: document.getElementById('deployRepo').value.trim()
+  };
+  if (!payload.dashboard_url && !payload.repo_url) return;
+  fetch('/api/settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) })
+    .catch(function(e) { console.log('settings save failed', e); });
+}
+
+function loadDeploySettings() {
+  fetch('/api/settings').then(function(r) { return r.json(); }).then(function(s) {
+    if (s.dashboard_url && !document.getElementById('deployDash').value) {
+      document.getElementById('deployDash').value = s.dashboard_url;
+    }
+    if (s.repo_url && !document.getElementById('deployRepo').value) {
+      document.getElementById('deployRepo').value = s.repo_url;
+    }
+    updateDeploy();
+  }).catch(function(e) { console.log('settings load failed', e); });
+}
+
 function updateDeploy() {
   var host = document.getElementById('deployHostname').value || '<hostname>';
   var bind = document.getElementById('deployBind').value || '0.0.0.0';
   var port = document.getElementById('deployPort').value || '7780';
   var arch = document.getElementById('deployArch').value;
+  var dash = document.getElementById('deployDash').value.trim() || DASH_URL;
+  var repo = document.getElementById('deployRepo').value.trim();
 
-  var cmd = 'gogitops daemon \\\n  -hostname ' + host + ' \\\n  -bind ' + bind + ' \\\n  -port ' + port + ' \\\n  -interval 60 \\\n  -dashboard ' + DASH_URL;
+  var cmd = 'gogitops daemon \\\n  -hostname ' + host + ' \\\n  -bind ' + bind + ' \\\n  -port ' + port + ' \\\n  -interval 60 \\\n  -dashboard ' + dash;
   document.getElementById('cmdCode').textContent = cmd;
 
   // One-liner install: download from releases + run
   var goos = arch.split('/')[0];
   var goarch = arch.split('/')[1];
   var ext = goos === 'darwin' ? 'darwin-' + goarch : goos + '-' + goarch;
-  var installCmd = 'curl -sL ' + DASH_URL + '/api/binary/' + goos + '/' + goarch + ' -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\n' + cmd;
+  var installCmd = 'curl -sL ' + dash + '/api/binary/' + goos + '/' + goarch + ' -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\n' + cmd;
   if (goos === 'darwin') {
-    installCmd = '# macOS: download binary, ad-hoc sign, then run\ncurl -sL ' + DASH_URL + '/api/binary/' + goos + '/' + goarch + ' -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\ncodesign --force --sign - /usr/local/bin/gogitops && \\\n' + cmd;
+    installCmd = '# macOS: download binary, ad-hoc sign, then run\ncurl -sL ' + dash + '/api/binary/' + goos + '/' + goarch + ' -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\ncodesign --force --sign - /usr/local/bin/gogitops && \\\n' + cmd;
+  }
+  // Bake installer config: agent.env + config repo clone
+  if (goos === 'linux' && (dash || repo)) {
+    var envLines = 'GOGITOPS_HOSTNAME=' + host + '\\nGOGITOPS_BIND=' + bind + '\\nGOGITOPS_PORT=' + port + '\\nGOGITOPS_DASHBOARD_URL=' + dash + '\\n';
+    if (repo) { envLines += 'GOGITOPS_REPO_URL=' + repo + '\\n'; }
+    installCmd = 'sudo mkdir -p /etc/gogitops && \\\nprintf '' + envLines + '' | sudo tee /etc/gogitops/agent.env > /dev/null && \\\n' + installCmd;
+  }
+  if (repo) {
+    installCmd = installCmd.replace('gogitops daemon', 'git clone ' + repo + ' ~/.config/gogitops && \\\ngogitops daemon');
   }
   document.getElementById('installCode').textContent = installCmd;
 
   // Systemd unit
-  var systemd = '[Unit]\nDescription=GoGitOps Agent\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/gogitops daemon \\\n  -hostname ' + host + ' \\\n  -bind ' + bind + ' \\\n  -port ' + port + ' \\\n  -interval 60 \\\n  -dashboard ' + DASH_URL + '\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target';
+  var systemd = '[Unit]\nDescription=GoGitOps Agent\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/gogitops daemon \\\n  -hostname ' + host + ' \\\n  -bind ' + bind + ' \\\n  -port ' + port + ' \\\n  -interval 60 \\\n  -dashboard ' + dash + '\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target';
   document.getElementById('systemdCode').textContent = systemd;
 
   // LaunchAgent
-  var launchd = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n    <key>Label</key>\n    <string>com.benn.gogitops</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>/usr/local/bin/gogitops</string>\n        <string>daemon</string>\n        <string>-hostname</string>\n        <string>' + host + '</string>\n        <string>-bind</string>\n        <string>' + bind + '</string>\n        <string>-port</string>\n        <string>' + port + '</string>\n        <string>-interval</string>\n        <string>60</string>\n        <string>-dashboard</string>\n        <string>' + DASH_URL + '</string>\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n    <key>KeepAlive</key>\n    <true/>\n    <key>StandardOutPath</key>\n    <string>/tmp/gogitops.log</string>\n    <key>StandardErrorPath</key>\n    <string>/tmp/gogitops.err</string>\n</dict>\n</plist>';
+  var launchd = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n    <key>Label</key>\n    <string>com.benn.gogitops</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>/usr/local/bin/gogitops</string>\n        <string>daemon</string>\n        <string>-hostname</string>\n        <string>' + host + '</string>\n        <string>-bind</string>\n        <string>' + bind + '</string>\n        <string>-port</string>\n        <string>' + port + '</string>\n        <string>-interval</string>\n        <string>60</string>\n        <string>-dashboard</string>\n        <string>' + dash + '</string>\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n    <key>KeepAlive</key>\n    <true/>\n    <key>StandardOutPath</key>\n    <string>/tmp/gogitops.log</string>\n    <key>StandardErrorPath</key>\n    <string>/tmp/gogitops.err</string>\n</dict>\n</plist>';
   document.getElementById('launchdCode').textContent = launchd;
+  if (repo || dash) {
+    var envDict = '';
+    if (dash) { envDict += '        <key>GOGITOPS_DASHBOARD_URL</key>\n        <string>' + dash + '</string>\n'; }
+    if (repo) { envDict += '        <key>GOGITOPS_REPO_URL</key>\n        <string>' + repo + '</string>\n'; }
+    launchd = launchd.replace('    </dict>\n</plist>', '    <key>EnvironmentVariables</key>\n    <dict>\n' + envDict + '    </dict>\n  </dict>\n</plist>');
+  }
 }
 
 function copyCode(id, btn) {
@@ -618,6 +670,7 @@ function copyCode(id, btn) {
 }
 
 // Init deploy on load
+loadDeploySettings();
 updateDeploy();
 </script>
 

@@ -66,6 +66,12 @@ CREATE TABLE IF NOT EXISTS registered_nodes (
 	registered_at TIMESTAMPTZ NOT NULL,
 	last_seen TIMESTAMPTZ NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -229,4 +235,34 @@ func (s *Store) GetRegisteredNodes(ctx context.Context) ([]RegisteredNode, error
 		nodes = append(nodes, n)
 	}
 	return nodes, rows.Err()
+}
+
+// GetSettings returns all key/value settings.
+func (s *Store) GetSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT key, value FROM settings")
+	if err != nil {
+		return nil, fmt.Errorf("query settings: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("scan setting: %w", err)
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+// SetSetting upserts a single setting.
+func (s *Store) SetSetting(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`, key, value)
+	if err != nil {
+		return fmt.Errorf("upsert setting %s: %w", key, err)
+	}
+	return nil
 }

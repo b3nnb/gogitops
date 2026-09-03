@@ -2441,7 +2441,8 @@ func cmdDeploy(args []string) {
 	bind := fs.String("bind", "0.0.0.0", "health API bind address")
 	port := fs.String("port", "7780", "health API port")
 	dash := fs.String("dashboard", "", "beacon URL (default: $GOGITOPS_DASHBOARD_URL or http://10.2.0.102:7781)")
-	format := fs.String("format", "all", "cmd | install | systemd | launchd | all")
+	repo := fs.String("repo", "", "git config repo URL baked into the installer config (e.g. git@github.com:b3nnb/gogitops.git)")
+	format := fs.String("format", "all", "cmd | install | config | systemd | launchd | all")
 	fs.Parse(args)
 
 	dashURL := *dash
@@ -2458,8 +2459,24 @@ func cmdDeploy(args []string) {
 	}
 
 	cli.Banner()
-	fmt.Printf("\n  %sDeploy snippets for %s%s — %s/%s, beacon %s\n\n",
-		"\033[1m\033[38;5;141m", *host, "\033[0m", *targetOS, *targetArch, dashURL)
+	if *repo != "" {
+		fmt.Printf("\n  %sDeploy snippets for %s%s — %s/%s, beacon %s, repo %s\n\n",
+			"\033[1m\033[38;5;141m", *host, "\033[0m", *targetOS, *targetArch, dashURL, *repo)
+	} else {
+		fmt.Printf("\n  %sDeploy snippets for %s%s — %s/%s, beacon %s\n\n",
+			"\033[1m\033[38;5;141m", *host, "\033[0m", *targetOS, *targetArch, dashURL)
+	}
+
+	// Installer config lines — baked into /etc/gogitops/agent.env (linux)
+	// or the LaunchAgent plist (darwin).
+	var envLines []string
+	envLines = append(envLines, fmt.Sprintf("GOGITOPS_HOSTNAME=%s", *host))
+	if dashURL != "" {
+		envLines = append(envLines, fmt.Sprintf("GOGITOPS_DASHBOARD_URL=%s", dashURL))
+	}
+	if *repo != "" {
+		envLines = append(envLines, fmt.Sprintf("GOGITOPS_REPO_URL=%s", *repo))
+	}
 
 	daemonCmd := fmt.Sprintf("gogitops daemon \\\n  -hostname %s \\\n  -bind %s \\\n  -port %s \\\n  -interval 60 \\\n  -dashboard %s", *host, *bind, *port, dashURL)
 
@@ -2471,10 +2488,33 @@ func cmdDeploy(args []string) {
 		fmt.Printf("  %s╰──────────────────%s\n\n", "\033[38;5;240m", "\033[0m")
 	}
 
+	if *format == "all" || *format == "config" {
+		fmt.Printf("  %s╭─ Installer Config %s /etc/gogitops/agent.env\n", "\033[38;5;240m", "\033[0m")
+		for _, l := range envLines {
+			fmt.Printf("  %s│%s %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;255m", l, "\033[0m")
+		}
+		if *targetOS == "darwin" {
+			fmt.Printf("  %s│%s %s(darwin: set as EnvironmentVariables in the LaunchAgent plist)%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;245m", "\033[0m")
+		}
+		fmt.Printf("  %s╰──────────────────%s\n\n", "\033[38;5;240m", "\033[0m")
+	}
+
 	if *format == "all" || *format == "install" {
 		install := fmt.Sprintf("curl -sL %s/api/binary/%s/%s -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\n%s", dashURL, *targetOS, *targetArch, daemonCmd)
 		if *targetOS == "darwin" {
 			install = fmt.Sprintf("# macOS: download binary, ad-hoc sign, then run\ncurl -sL %s/api/binary/%s/%s -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\ncodesign --force --sign - /usr/local/bin/gogitops && \\\n%s", dashURL, *targetOS, *targetArch, daemonCmd)
+		}
+		// Bake installer config (linux): write agent.env first
+		if *targetOS == "linux" {
+			cfgWrite := "sudo mkdir -p /etc/gogitops"
+			for _, l := range envLines {
+				cfgWrite += fmt.Sprintf(" && \\\necho '%s' | sudo tee -a /etc/gogitops/agent.env > /dev/null", l)
+			}
+			install = cfgWrite + " && \\\n" + install
+		}
+		// Bake config repo: clone before the daemon starts
+		if *repo != "" {
+			install = strings.Replace(install, "gogitops daemon", fmt.Sprintf("git clone %s ~/.config/gogitops && \\\ngogitops daemon", *repo), 1)
 		}
 		fmt.Printf("  %s╭─ One-Liner Install %s\n", "\033[38;5;240m", "\033[0m")
 		for _, l := range strings.Split(install, "\n") {
@@ -2493,6 +2533,17 @@ func cmdDeploy(args []string) {
 	}
 
 	if (*format == "all" || *format == "launchd") && *targetOS == "darwin" {
+		envXML := ""
+		if dashURL != "" {
+			envXML += fmt.Sprintf("    <key>GOGITOPS_DASHBOARD_URL</key>\n    <string>%s</string>\n", dashURL)
+		}
+		if *repo != "" {
+			envXML += fmt.Sprintf("    <key>GOGITOPS_REPO_URL</key>\n    <string>%s</string>\n", *repo)
+		}
+		envDict := ""
+		if envXML != "" {
+			envDict = fmt.Sprintf("    <key>EnvironmentVariables</key>\n    <dict>\n%s    </dict>\n", envXML)
+		}
 		launchd := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -2522,8 +2573,8 @@ func cmdDeploy(args []string) {
     <string>/tmp/gogitops.log</string>
     <key>StandardErrorPath</key>
     <string>/tmp/gogitops.err</string>
-</dict>
-</plist>`, *host, *bind, *port, dashURL)
+%s</dict>
+</plist>`, *host, *bind, *port, dashURL, envDict)
 		fmt.Printf("  %s╭─ LaunchAgent (macOS) %s  ~/Library/LaunchAgents/com.benn.gogitops.plist\n", "\033[38;5;240m", "\033[0m")
 		for _, l := range strings.Split(launchd, "\n") {
 			fmt.Printf("  %s│%s %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;255m", l, "\033[0m")

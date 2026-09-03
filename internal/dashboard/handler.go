@@ -104,6 +104,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAPI(w, r)
 	case r.URL.Path == "/api/register" && r.Method == "POST":
 		h.handleRegister(w, r)
+	case r.URL.Path == "/api/settings" && r.Method == "GET":
+		h.handleGetSettings(w, r)
+	case r.URL.Path == "/api/settings" && r.Method == "POST":
+		h.handleSetSettings(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/binary/"):
 		h.handleBinary(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/node/"):
@@ -452,6 +456,59 @@ func (h *Handler) handleBinary(w http.ResponseWriter, r *http.Request) {
 	path := h.binDir + "/" + filename
 
 	http.ServeFile(w, r, path)
+}
+
+// handleGetSettings returns saved deploy settings (dashboard + repo URLs).
+func (h *Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	settings, err := h.store.GetSettings(ctx)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	resp := map[string]string{
+		"dashboard_url": settings["dashboard_url"],
+		"repo_url":      settings["repo_url"],
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleSetSettings saves deploy settings (dashboard + repo URLs) from the UI.
+func (h *Handler) handleSetSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DashboardURL string `json:"dashboard_url"`
+		RepoURL      string `json:"repo_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if body.DashboardURL != "" {
+		if err := h.store.SetSetting(ctx, "dashboard_url", body.DashboardURL); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+	if body.RepoURL != "" {
+		if err := h.store.SetSetting(ctx, "repo_url", body.RepoURL); err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Echo back current state
+	settings, _ := h.store.GetSettings(ctx)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"dashboard_url": settings["dashboard_url"],
+		"repo_url":      settings["repo_url"],
+	})
 }
 
 // registrationRequest is the payload for POST /api/register.
