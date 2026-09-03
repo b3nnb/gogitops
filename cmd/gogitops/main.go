@@ -60,6 +60,8 @@ func main() {
 			cmdRecipe(os.Args[2:])
 		case "inspect":
 			cmdInspect(os.Args[2:])
+		case "deploy":
+			cmdDeploy(os.Args[2:])
 		case "help", "--help", "-h":
 			printHelp()
 		default:
@@ -98,6 +100,7 @@ func printHelp() {
     dashboard  Fleet status dashboard (web UI on :7781)
     recipe     Recipe management (new, list, validate)
     inspect    Run test modules and collect node attributes
+    deploy     Generate agent install snippets (one-liner, systemd, launchd)
     version    Print version
 
   FLAGS
@@ -138,6 +141,7 @@ func printHelp() {
     GET  /v1/logs?limit=N    Recent activity log entries
     POST /v1/git/pull        Force immediate git pull
     POST /v1/restart         Restart agent (systemd auto-restarts)
+    POST /v1/recipes/migrate Migrate flat recipe YAML to directory structure (?dry_run=true)
 
 `)
 }
@@ -1080,7 +1084,7 @@ func resolveRepoDir(flagVal string) string {
 
 func cmdRecipe(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n")
+		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n  migrate           Migrate flat .yaml recipes to directory structure\n")
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -1092,6 +1096,8 @@ func cmdRecipe(args []string) {
 		recipeValidate(args[1:])
 	case "run":
 		recipeRun(args[1:])
+	case "migrate":
+		recipeMigrate(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown recipe subcommand: %s\n", args[0])
 		os.Exit(1)
@@ -1150,6 +1156,151 @@ steps: []
 
 	fmt.Printf("✅ Created recipe: %s\n", recipeDir)
 	fmt.Printf("   %s  — YAML template\n", recipeFile)
+}
+
+// recipeMigrate moves flat .yaml recipe files into directory structure.
+// For each recipes/<name>.yaml:
+//   - Creates recipes/<name>/ directory
+//   - Moves the .yaml to recipes/<name>/<name>.yaml
+//   - Creates recipes/<name>/scripts/ directory (empty)
+// Does NOT modify YAML content. Skips files already in directories.
+// Also ensures recipes/scripts/ exists (shared scripts dir).
+func recipeMigrate(args []string) {
+	fs := flag.NewFlagSet("recipe migrate", flag.ExitOnError)
+	repoDir := fs.String("repo", ".", "path to gogitops repo")
+	dryRun := fs.Bool("dry-run", false, "show what would change without moving anything")
+	verbose := fs.Bool("verbose", false, "show details for each file")
+	fs.Parse(args)
+
+	resolved := resolveRepoDir(*repoDir)
+	recipesDir := resolved + "/recipes"
+
+	entries, err := os.ReadDir(recipesDir)
+	if err != nil {
+		cli.PrintError(fmt.Sprintf("cannot read recipes directory: %v", err))
+		os.Exit(1)
+	}
+
+	cli.Banner()
+	fmt.Printf("\n  \033[1m\033[38;5;141mRecipe Migration\033[0m\n")
+	if *dryRun {
+		fmt.Printf("  \033[38;5;226m(DRY RUN — no changes will be made)\033[0m\n")
+	}
+	fmt.Printf("  \033[38;5;240mScanning %s/\033[0m\n\n", recipesDir)
+
+	migrated := 0
+	skipped := 0
+	failed := 0
+
+	// Ensure shared scripts directory exists
+	sharedScriptsDir := filepath.Join(recipesDir, "scripts")
+	if _, err := os.Stat(sharedScriptsDir); err != nil {
+		if *dryRun {
+			fmt.Printf("  \033[38;5;38m▸ would create recipes/scripts/ (shared scripts)\033[0m\n")
+		} else {
+			if err := os.MkdirAll(sharedScriptsDir, 0755); err != nil {
+				fmt.Printf("  \033[38;5;196m✖ failed to create recipes/scripts/: %v\033[0m\n", err)
+				failed++
+			} else {
+				fmt.Printf("  \033[38;5;46m✓ created recipes/scripts/ (shared scripts)\033[0m\n")
+			}
+		}
+	} else {
+		fmt.Printf("  \033[38;5;240m⊘ recipes/scripts/ already exists\033[0m\n")
+	}
+	fmt.Println()
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			// Skip directories — they're either already migrated or subdirs like test-recipe/
+			if *verbose {
+				fmt.Printf("  \033[38;5;240m⊘ %s/ (directory, already structured)\033[0m\n", entry.Name())
+			}
+			skipped++
+			continue
+		}
+
+		name := entry.Name()
+		// Only process .yaml files
+		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+			if *verbose {
+				fmt.Printf("  \033[38;5;240m⊘ %s (not a YAML file)\033[0m\n", name)
+			}
+			skipped++
+			continue
+		}
+
+		// Derive recipe name from filename
+		recipeName := strings.TrimSuffix(name, filepath.Ext(name))
+		srcPath := filepath.Join(recipesDir, name)
+		destDir := filepath.Join(recipesDir, recipeName)
+		destPath := filepath.Join(destDir, recipeName+".yaml")
+		scriptsDir := filepath.Join(destDir, "scripts")
+
+		// Check if destination already exists
+		if _, err := os.Stat(destDir); err == nil {
+			fmt.Printf("  \033[38;5;226m⚠ %s → %s/ (already exists, skipping)\033[0m\n", name, recipeName)
+			skipped++
+			continue
+		}
+
+		if *dryRun {
+			fmt.Printf("  \033[38;5;38m▸ %s → %s/%s.yaml + scripts/\033[0m\n", name, recipeName, recipeName)
+			migrated++
+			continue
+		}
+
+		// Create directory structure
+		if err := os.MkdirAll(destDir, 0755); err != nil {
+			fmt.Printf("  \033[38;5;196m✖ %s: failed to create dir: %v\033[0m\n", name, err)
+			failed++
+			continue
+		}
+		if err := os.MkdirAll(scriptsDir, 0755); err != nil {
+			fmt.Printf("  \033[38;5;196m✖ %s: failed to create scripts/: %v\033[0m\n", name, err)
+			failed++
+			continue
+		}
+
+		// Read original content, write to new location, delete original
+		// (Using read+write instead of os.Rename to ensure content is preserved exactly)
+		content, err := os.ReadFile(srcPath)
+		if err != nil {
+			fmt.Printf("  \033[38;5;196m✖ %s: failed to read: %v\033[0m\n", name, err)
+			failed++
+			continue
+		}
+		if err := os.WriteFile(destPath, content, 0644); err != nil {
+			fmt.Printf("  \033[38;5;196m✖ %s: failed to write: %v\033[0m\n", name, err)
+			failed++
+			continue
+		}
+		if err := os.Remove(srcPath); err != nil {
+			fmt.Printf("  \033[38;5;226m⚠ %s: moved but failed to remove original: %v\033[0m\n", name, err)
+		}
+
+		fmt.Printf("  \033[38;5;46m✓ %s → %s/%s.yaml + scripts/\033[0m\n", name, recipeName, recipeName)
+		migrated++
+	}
+
+	// Summary
+	fmt.Printf("\n  ")
+	if failed > 0 {
+		fmt.Printf("\033[38;5;226m⚠ migration complete: %d migrated, %d skipped, %d failed\033[0m\n\n", migrated, skipped, failed)
+	} else {
+		fmt.Printf("\033[38;5;46m✓ migration complete: %d migrated, %d skipped\033[0m\n\n", migrated, skipped)
+	}
+
+	// Show new structure
+	if migrated > 0 || *dryRun {
+		fmt.Printf("  \033[38;5;240mNew structure:\033[0m\n")
+		fmt.Printf("  \033[38;5;240mrecipes/\033[0m\n")
+		fmt.Printf("  \033[38;5;240m├── scripts/          # shared scripts\033[0m\n")
+		fmt.Printf("  \033[38;5;240m├── <name>/\033[0m\n")
+		fmt.Printf("  \033[38;5;240m│   ├── <name>.yaml   # recipe (unchanged content)\033[0m\n")
+		fmt.Printf("  \033[38;5;240m│   └── scripts/       # recipe-local scripts\033[0m\n")
+		fmt.Printf("  \033[38;5;240m└── ...\033[0m\n\n")
+	}
 }
 
 func recipeList() {
@@ -1214,6 +1365,9 @@ type recipeStep struct {
 	Name          string `yaml:"name"`
 	Description   string `yaml:"description"`
 	Command       string `yaml:"command"`
+	Script        string `yaml:"script"`
+	ScriptArgs    string `yaml:"script_args"`
+	ScriptLang    string `yaml:"script_lang"`
 	OS            string `yaml:"os"`
 	Arch          string `yaml:"arch"`
 	LabelsReq     []string `yaml:"labels_required"`
@@ -1355,8 +1509,42 @@ func recipeRun(args []string) {
 			displayName = fmt.Sprintf("step-%d", stepNum)
 		}
 
-		// Substitute variables in command
+		// Substitute variables in command or script
 		cmd := substituteVars(step.Command, vars)
+
+		// If script: is specified, resolve and execute a script file
+		if step.Script != "" {
+			scriptPath := resolveScriptPath(step.Script, resolved, recipeFile)
+			if scriptPath == "" {
+				fmt.Printf("  \033[38;5;196m✖ script not found: %s (searched recipes/scripts/, recipes/<name>/scripts/, install/scripts/)\033[0m\n", step.Script)
+				failed++
+				if step.OnFailure == "" || step.OnFailure == "abort" {
+					fmt.Printf("\n  \033[38;5;196m✖ Recipe aborted at step %d: %s\033[0m\n", stepNum, displayName)
+					fmt.Printf("  \033[38;5;240m%d passed, %d skipped, %d failed\033[0m\n\n", passed, skipped, failed)
+					os.Exit(1)
+				}
+				continue
+			}
+			// Substitute vars in script args
+			scriptArgs := substituteVars(step.ScriptArgs, vars)
+			// Determine execution method based on extension or script_lang
+			lang := step.ScriptLang
+			if lang == "" {
+				lang = detectScriptLang(scriptPath)
+			}
+			switch lang {
+			case "go":
+				// Go scripts are compiled on-the-fly via `go run`
+				cmd = fmt.Sprintf("go run %s %s", shellQuote(scriptPath), scriptArgs)
+			case "bash", "sh":
+				cmd = fmt.Sprintf("bash %s %s", shellQuote(scriptPath), scriptArgs)
+			case "python", "python3":
+				cmd = fmt.Sprintf("python3 %s %s", shellQuote(scriptPath), scriptArgs)
+			default:
+				// Auto-detect: .sh → bash, .go → go run, .py → python3, otherwise try direct execution
+				cmd = fmt.Sprintf("%s %s", shellQuote(scriptPath), scriptArgs)
+			}
+		}
 
 		// OS filter
 		if step.OS != "" && step.OS != vars["os"] {
@@ -1669,6 +1857,12 @@ func parseRecipe(content string) recipe {
 			currentStep.Description = val
 		case "command":
 			currentStep.Command = val
+		case "script":
+			currentStep.Script = val
+		case "script_args":
+			currentStep.ScriptArgs = val
+		case "script_lang":
+			currentStep.ScriptLang = val
 		case "os":
 			currentStep.OS = val
 		case "arch":
@@ -1804,6 +1998,67 @@ func truncateStr(s string, maxLen int) string {
 		return s[:firstNL] + "..."
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// ── Script resolution helpers ────────────────────────────────────────────
+
+// resolveScriptPath finds a script file by searching:
+// 1. recipes/scripts/<name> (shared scripts)
+// 2. recipes/<recipe-name>/scripts/<name> (recipe-local scripts)
+// 3. install/scripts/<name> (legacy/global scripts)
+// 4. As-is (absolute or relative path)
+func resolveScriptPath(scriptName string, repoDir string, recipeFile string) string {
+	// If it's already a valid path, use it directly
+	if _, err := os.Stat(scriptName); err == nil {
+		return scriptName
+	}
+
+	// Derive recipe directory for recipe-local scripts
+	recipeDir := filepath.Dir(recipeFile)
+	recipeName := filepath.Base(recipeDir)
+	// If recipe is a flat file (not in a dir), recipeName is the filename
+	if recipeName == "recipes" {
+		recipeName = strings.TrimSuffix(filepath.Base(recipeFile), ".yaml")
+	}
+
+	candidates := []string{
+		filepath.Join(repoDir, "recipes", "scripts", scriptName),
+		filepath.Join(recipeDir, "scripts", scriptName),
+		filepath.Join(repoDir, "recipes", recipeName, "scripts", scriptName),
+		filepath.Join(repoDir, "install", "scripts", scriptName),
+	}
+
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+
+	return ""
+}
+
+// detectScriptLang determines the script language from file extension
+func detectScriptLang(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".sh":
+		return "bash"
+	case ".go":
+		return "go"
+	case ".py":
+		return "python3"
+	default:
+		return ""
+	}
+}
+
+// shellQuote wraps a path in single quotes for safe shell execution.
+// If the path contains single quotes, escapes them.
+func shellQuote(s string) string {
+	if !strings.ContainsAny(s, " 	'\"$`\\") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // ── inspect: run test modules and collect attributes ─────────────────────
@@ -2099,6 +2354,7 @@ func runDaemon(args []string) {
 	http.HandleFunc("/v1/logs", a.LogsHandler)
 	http.HandleFunc("/v1/git/pull", a.GitPullHandler)
 	http.HandleFunc("/v1/restart", a.RestartHandler)
+	http.HandleFunc("/v1/recipes/migrate", a.RecipeMigrateHandler)
 	a.SetRepoDir(*repoDir)
 	go func() {
 		log.Printf("health API listening on %s", addr)
@@ -2173,6 +2429,109 @@ func registerWithDashboard(dashURL, hostname, bindAddr string, port int, node *c
 		log.Printf("dashboard registration failed (will retry): %v", err)
 		time.Sleep(30 * time.Second)
 	}
+}
+
+// ── deploy: generate agent install snippets for a node ───────────────────
+
+func cmdDeploy(args []string) {
+	fs := flag.NewFlagSet("deploy", flag.ExitOnError)
+	host := fs.String("hostname", "<hostname>", "node name (match a nodes/*.yaml)")
+	targetOS := fs.String("os", "linux", "target OS: linux | darwin")
+	targetArch := fs.String("arch", "amd64", "target arch: amd64 | arm64")
+	bind := fs.String("bind", "0.0.0.0", "health API bind address")
+	port := fs.String("port", "7780", "health API port")
+	dash := fs.String("dashboard", "", "beacon URL (default: $GOGITOPS_DASHBOARD_URL or http://10.2.0.102:7781)")
+	format := fs.String("format", "all", "cmd | install | systemd | launchd | all")
+	fs.Parse(args)
+
+	dashURL := *dash
+	if dashURL == "" {
+		dashURL = os.Getenv("GOGITOPS_DASHBOARD_URL")
+	}
+	if dashURL == "" {
+		dashURL = "http://10.2.0.102:7781"
+	}
+
+	if *targetOS != "linux" && *targetOS != "darwin" {
+		cli.PrintError(fmt.Sprintf("unsupported target OS %q (linux and darwin only)", *targetOS))
+		os.Exit(1)
+	}
+
+	cli.Banner()
+	fmt.Printf("\n  %sDeploy snippets for %s%s — %s/%s, beacon %s\n\n",
+		"\033[1m\033[38;5;141m", *host, "\033[0m", *targetOS, *targetArch, dashURL)
+
+	daemonCmd := fmt.Sprintf("gogitops daemon \\\n  -hostname %s \\\n  -bind %s \\\n  -port %s \\\n  -interval 60 \\\n  -dashboard %s", *host, *bind, *port, dashURL)
+
+	if *format == "all" || *format == "cmd" {
+		fmt.Printf("  %s╭─ Daemon Command %s\n", "\033[38;5;240m", "\033[0m")
+		for _, l := range strings.Split(daemonCmd, "\n") {
+			fmt.Printf("  %s│%s %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;255m", l, "\033[0m")
+		}
+		fmt.Printf("  %s╰──────────────────%s\n\n", "\033[38;5;240m", "\033[0m")
+	}
+
+	if *format == "all" || *format == "install" {
+		install := fmt.Sprintf("curl -sL %s/api/binary/%s/%s -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\n%s", dashURL, *targetOS, *targetArch, daemonCmd)
+		if *targetOS == "darwin" {
+			install = fmt.Sprintf("# macOS: download binary, ad-hoc sign, then run\ncurl -sL %s/api/binary/%s/%s -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\ncodesign --force --sign - /usr/local/bin/gogitops && \\\n%s", dashURL, *targetOS, *targetArch, daemonCmd)
+		}
+		fmt.Printf("  %s╭─ One-Liner Install %s\n", "\033[38;5;240m", "\033[0m")
+		for _, l := range strings.Split(install, "\n") {
+			fmt.Printf("  %s│%s %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;255m", l, "\033[0m")
+		}
+		fmt.Printf("  %s╰──────────────────%s\n\n", "\033[38;5;240m", "\033[0m")
+	}
+
+	if (*format == "all" || *format == "systemd") && *targetOS == "linux" {
+		systemd := fmt.Sprintf("[Unit]\nDescription=GoGitOps Agent\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/gogitops daemon \\\n  -hostname %s \\\n  -bind %s \\\n  -port %s \\\n  -interval 60 \\\n  -dashboard %s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target", *host, *bind, *port, dashURL)
+		fmt.Printf("  %s╭─ Systemd Unit %s  (system service)\n", "\033[38;5;240m", "\033[0m")
+		for _, l := range strings.Split(systemd, "\n") {
+			fmt.Printf("  %s│%s %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;255m", l, "\033[0m")
+		}
+		fmt.Printf("  %s╰──────────────────%s\n\n", "\033[38;5;240m", "\033[0m")
+	}
+
+	if (*format == "all" || *format == "launchd") && *targetOS == "darwin" {
+		launchd := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.benn.gogitops</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/gogitops</string>
+        <string>daemon</string>
+        <string>-hostname</string>
+        <string>%s</string>
+        <string>-bind</string>
+        <string>%s</string>
+        <string>-port</string>
+        <string>%s</string>
+        <string>-interval</string>
+        <string>60</string>
+        <string>-dashboard</string>
+        <string>%s</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/gogitops.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/gogitops.err</string>
+</dict>
+</plist>`, *host, *bind, *port, dashURL)
+		fmt.Printf("  %s╭─ LaunchAgent (macOS) %s  ~/Library/LaunchAgents/com.benn.gogitops.plist\n", "\033[38;5;240m", "\033[0m")
+		for _, l := range strings.Split(launchd, "\n") {
+			fmt.Printf("  %s│%s %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;255m", l, "\033[0m")
+		}
+		fmt.Printf("  %s╰──────────────────%s\n\n", "\033[38;5;240m", "\033[0m")
+	}
+
+	fmt.Printf("  %sDeploy an agent on the target machine — it self-registers with the beacon.%s\n\n", "\033[38;5;245m", "\033[0m")
 }
 
 // ── Dashboard ────────────────────────────────────────────────────────────
