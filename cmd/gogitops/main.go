@@ -2420,13 +2420,20 @@ func registerWithDashboard(dashURL, hostname, bindAddr string, port int, node *c
 		url := strings.TrimRight(dashURL, "/") + "/api/register"
 		resp, err := client.Post(url, "application/json", strings.NewReader(string(payload)))
 		if err == nil {
-			resp.Body.Close()
 			if resp.StatusCode == 200 {
 				log.Printf("registered with dashboard at %s", dashURL)
-				return
+				resp.Body.Close()
+				// Re-register periodically so mesh/IP changes (wake from
+				// sleep, DHCP changes, stale repo data) self-heal instead of
+				// persisting for the daemon's lifetime.
+				time.Sleep(10 * time.Minute)
+				continue
 			}
+			log.Printf("dashboard registration failed: status %d (will retry)", resp.StatusCode)
+			resp.Body.Close()
+		} else {
+			log.Printf("dashboard registration failed (will retry): %v", err)
 		}
-		log.Printf("dashboard registration failed (will retry): %v", err)
 		time.Sleep(30 * time.Second)
 	}
 }
