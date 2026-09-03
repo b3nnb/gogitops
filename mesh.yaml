@@ -1,42 +1,65 @@
 peers:
-  - hostname: friday
-    nebula_ip: 10.200.0.2
-    lan_ip: 10.2.0.102
-    port: 7780
-    labels: [primary-compute, docker-host, hermes-host, trader-host, gpu]
-
-  - hostname: mini
-    nebula_ip: 10.200.0.3
-    lan_ip: 10.0.0.251
-    port: 7780
-    labels: [compute, gpu, llm-inference, image-gen, lora-training]
-
-  - hostname: nas
-    nebula_ip: 10.200.0.4
-    lan_ip: 10.2.0.103
-    port: 7780
-    labels: [storage, docker-host, public-edge]
-
-  - hostname: lighthouse
-    nebula_ip: 10.200.0.1
-    lan_ip: null
-    port: 7780
-    labels: [infra, nebula-lighthouse, aws]
-
-  - hostname: framework
-    nebula_ip: 10.200.0.5
-    lan_ip: null
-    port: 7780
-    labels: [compute, laptop]
-
-  - hostname: gcontrol
-    nebula_ip: 10.200.0.6
-    lan_ip: null
-    port: 7780
-    labels: [cnc, windows]
-
-  - hostname: pixel
-    nebula_ip: 10.200.0.7
-    lan_ip: null
-    port: 7780
-    labels: [mobile, android]
+    - hostname: friday
+      nebula_ip: 10.200.0.2
+      lan_ip: 10.2.0.102
+      port: 7780
+      labels:
+        - primary-compute
+        - docker-host
+        - hermes-host
+        - trader-host
+        - gpu
+    - hostname: mini
+      nebula_ip: 10.200.0.3
+      lan_ip: 10.0.0.251
+      port: 7780
+      labels:
+        - compute
+        - gpu
+        - llm-inference
+        - image-gen
+        - lora-training
+    - hostname: nas
+      nebula_ip: 10.200.0.4
+      lan_ip: 10.2.0.103
+      port: 7780
+      labels:
+        - storage
+        - docker-host
+        - public-edge
+    - hostname: lighthouse
+      nebula_ip: 10.200.0.1
+      lan_ip: ""
+      port: 7780
+      labels:
+        - infra
+        - nebula-lighthouse
+        - aws
+    - hostname: framework
+      nebula_ip: 10.200.0.6
+      lan_ip: 10.0.0.229
+      port: 7780
+      labels:
+        - compute
+        - laptop
+    - hostname: gcontrol
+      nebula_ip: 10.200.0.6
+      lan_ip: ""
+      port: 7780
+      labels:
+        - cnc
+        - windows
+    - hostname: pixel
+      nebula_ip: 10.200.0.7
+      lan_ip: ""
+      port: 7780
+      labels:
+        - mobile
+        - android
+    - hostname: test
+      nebula_ip: 10.200.0.4
+      lan_ip: 10.2.0.102
+      port: 7780
+      labels:
+        - compute
+        - linux

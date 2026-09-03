@@ -1,5 +1,5 @@
 hostname: framework
-nebula_ip: 100.2.0.5
+nebula_ip: 10.200.0.6
 lan_ip: 10.0.0.229
 
 labels:
