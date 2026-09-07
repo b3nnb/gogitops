@@ -1,6 +1,6 @@
 name: starship-terminal-setup
 description: "Install Starship prompt + Friday login splash on any node — idempotent, self-reporting"
-version: "2.0.0"
+version: "2.0.1"
 labels: []
 
 steps:
@@ -36,13 +36,13 @@ steps:
 
   - name: ensure-path-bash
     description: "Ensure ~/.local/bin is on PATH in .bashrc"
-    command: "grep -q '.local/bin' $HOME/.bashrc 2>/dev/null || printf 'export PATH=\"$HOME/.local/bin:$PATH\"\n' >> $HOME/.bashrc"
+    command: "grep -q '.local/bin' $HOME/.bashrc 2>/dev/null || printf '\nexport PATH=\"$HOME/.local/bin:$PATH\"\n' >> $HOME/.bashrc"
     os: linux
     on_failure: continue
 
   - name: ensure-path-zsh
     description: "Ensure ~/.local/bin is on PATH in .zshrc"
-    command: "grep -q '.local/bin' $HOME/.zshrc 2>/dev/null || printf 'export PATH=\"$HOME/.local/bin:$PATH\"\n' >> $HOME/.zshrc"
+    command: "grep -q '.local/bin' $HOME/.zshrc 2>/dev/null || printf '\nexport PATH=\"$HOME/.local/bin:$PATH\"\n' >> $HOME/.zshrc"
     os: darwin
     on_failure: continue
 
@@ -65,7 +65,7 @@ steps:
   # ── ASCII art renderer (best effort — degrades to plain text) ─────────
   - name: install-figlet-linux
     description: "Install figlet via apt (falls back to pip pyfiglet) — best effort"
-    command: "sudo -n apt-get install -y figlet 2>/dev/null || pip3 install --user --quiet pyfiglet 2>/dev/null || pip install --user --quiet pyfiglet 2>/dev/null || true"
+    command: "sudo -n apt-get install -y figlet 2>/dev/null || pip3 install --user --quiet pyfiglet 2>/dev/null || pip3 install --user --quiet --break-system-packages pyfiglet 2>/dev/null || pip install --user --quiet --break-system-packages pyfiglet 2>/dev/null || true"
     os: linux
     when: "! which figlet >/dev/null 2>&1"
     on_failure: continue

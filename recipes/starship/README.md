@@ -54,3 +54,4 @@ Example summary attribute:
 - Full fresh install (clean `$HOME`, starship absent): 24 passed / 5 skipped / 0 failed
 - Idempotent re-run on Friday (everything pre-existing): 23 passed / 6 skipped / 0 failed
 - Splash render verified identical on Friday (mounts auto-detect finds Bifrost + MiddleEarth)
+- Real deployment on Framework laptop (Sep 7 2026): 24 passed / 5 skipped — surfaced two gotchas fixed in v2.0.1: bashrc files without trailing newline get the PATH append concatenated onto the last line (now prepends `\n`), and Ubuntu 24.04 PEP 668 blocks `pip3 install --user` (pyfiglet fallback now retries with `--break-system-packages`).
