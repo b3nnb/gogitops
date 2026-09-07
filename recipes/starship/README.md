@@ -55,3 +55,10 @@ Example summary attribute:
 - Idempotent re-run on Friday (everything pre-existing): 23 passed / 6 skipped / 0 failed
 - Splash render verified identical on Friday (mounts auto-detect finds Bifrost + MiddleEarth)
 - Real deployment on Framework laptop (Sep 7 2026): 24 passed / 5 skipped — surfaced two gotchas fixed in v2.0.1: bashrc files without trailing newline get the PATH append concatenated onto the last line (now prepends `\n`), and Ubuntu 24.04 PEP 668 blocks `pip3 install --user` (pyfiglet fallback now retries with `--break-system-packages`).
+- Cross-distro container tests (Sep 7 2026, v2.1.0): **Fedora (dnf)** — figlet via dnf, splash renders; **Alpine (apk/musl/busybox)** — 25 passed / 0 failed, figlet via apk, LAN IP via iproute2 fallback, splash renders with art. Ubuntu proven on Friday + Framework.
+
+## Prerequisites
+
+- `bash` + `curl` (Alpine/minimal: `apk add bash curl`)
+- Optional: `python3` + `pip` (pyfiglet fallback when no package manager figlet possible), `cron` (hourly public-IP refresh — skipped gracefully without it)
+- User shell must be bash or zsh (starship init + splash hook are written to the matching rc file; fish not wired)
