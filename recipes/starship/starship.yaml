@@ -1,6 +1,6 @@
 name: starship-terminal-setup
 description: "Install Starship prompt + Friday login splash on any node — idempotent, self-reporting"
-version: "2.1.0"
+version: "2.1.1"
 labels: []
 
 steps:
@@ -148,7 +148,7 @@ steps:
 
   - name: report-private-ip
     description: "Report LAN IP"
-    command: "ip=$(hostname -I 2>/dev/null || ipconfig getifaddr en0 2>/dev/null); [[ -n $ip ]] && echo $ip | awk '{print $1}' || echo unknown"
+    command: "ip=$(hostname -I 2>/dev/null || ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr $(route -n get default 2>/dev/null | awk '/interface/{print $2}') 2>/dev/null); [[ -n $ip ]] && echo $ip | awk '{print $1}' || echo unknown"
     set_attr: private_ip
 
   - name: report-public-ip

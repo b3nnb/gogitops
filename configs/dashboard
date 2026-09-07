@@ -66,6 +66,7 @@ fi
 public_ip=$(cat ~/.cache/external_ip 2>/dev/null)
 private_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
 [ -z "$private_ip" ] && private_ip=$(ipconfig getifaddr en0 2>/dev/null)
+[ -z "$private_ip" ] && private_ip=$(ipconfig getifaddr "$(route -n get default 2>/dev/null | awk '/interface/{print $2}')" 2>/dev/null)
 [ -z "$private_ip" ] && private_ip=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2; exit}' | cut -d/ -f1)
 nebula_ip=$(ip -4 addr show nebula1 2>/dev/null | grep inet | awk '{print $2}' | cut -d/ -f1)
 ip_list=""
@@ -73,9 +74,9 @@ for seg in $public_ip $private_ip $nebula_ip; do
   ip_list="${ip_list:+$ip_list │ }$seg"
 done
 
-# ── Fleet Health (failures only, from gogitops prompt.json) ──────────────────
+# ── Fleet Health (failures only, from gogitops prompt.json; freshness-gated) ─
 fleet_line=""
-if [ -f ~/.cache/gogitops/prompt.json ]; then
+if [ -f ~/.cache/gogitops/prompt.json ] && find ~/.cache/gogitops/prompt.json -mmin -15 2>/dev/null | grep -q .; then
   svc_down=$(python3 -c "
 import json
 d = json.load(open('$HOME/.cache/gogitops/prompt.json'))
