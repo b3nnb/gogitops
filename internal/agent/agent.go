@@ -239,6 +239,111 @@ func (a *Agent) RestartHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// RecipeMigrateHandler serves POST /v1/recipes/migrate — migrates flat recipe files to directory structure
+func (a *Agent) RecipeMigrateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, `{"error": "POST required"}`, 405)
+		return
+	}
+
+	dryRun := r.URL.Query().Get("dry_run") == "true"
+
+	a.logger.Actionf("agent", "recipe migrate requested via API (dry_run=%v)", dryRun)
+
+	recipesDir := filepath.Join(a.repoDir, "recipes")
+	entries, err := os.ReadDir(recipesDir)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":    "cannot read recipes directory",
+			"hostname": a.node.Hostname,
+		})
+		return
+	}
+
+	type migration struct {
+		Name      string `json:"name"`
+		Status    string `json:"status"` // migrated, skipped, failed
+		OldPath   string `json:"old_path,omitempty"`
+		NewPath   string `json:"new_path,omitempty"`
+		Error     string `json:"error,omitempty"`
+	}
+
+	migrations := []migration{}
+	migrated, skipped, failed := 0, 0, 0
+
+	// Ensure shared scripts dir
+	sharedScripts := filepath.Join(recipesDir, "scripts")
+	if _, err := os.Stat(sharedScripts); err != nil && !dryRun {
+		os.MkdirAll(sharedScripts, 0755)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			skipped++
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+			skipped++
+			continue
+		}
+
+		recipeName := strings.TrimSuffix(name, filepath.Ext(name))
+		srcPath := filepath.Join(recipesDir, name)
+		destDir := filepath.Join(recipesDir, recipeName)
+		destPath := filepath.Join(destDir, recipeName+".yaml")
+
+		if _, err := os.Stat(destDir); err == nil {
+			migrations = append(migrations, migration{Name: name, Status: "skipped", OldPath: srcPath, NewPath: destDir})
+			skipped++
+			continue
+		}
+
+		if dryRun {
+			migrations = append(migrations, migration{Name: name, Status: "would_migrate", OldPath: srcPath, NewPath: destPath})
+			migrated++
+			continue
+		}
+
+		// Create dir structure, move file
+		if err := os.MkdirAll(destDir, 0755); err != nil {
+			migrations = append(migrations, migration{Name: name, Status: "failed", Error: err.Error()})
+			failed++
+			continue
+		}
+		os.MkdirAll(filepath.Join(destDir, "scripts"), 0755)
+
+		content, err := os.ReadFile(srcPath)
+		if err != nil {
+			migrations = append(migrations, migration{Name: name, Status: "failed", Error: err.Error()})
+			failed++
+			continue
+		}
+		if err := os.WriteFile(destPath, content, 0644); err != nil {
+			migrations = append(migrations, migration{Name: name, Status: "failed", Error: err.Error()})
+			failed++
+			continue
+		}
+		os.Remove(srcPath)
+
+		migrations = append(migrations, migration{Name: name, Status: "migrated", OldPath: srcPath, NewPath: destPath})
+		migrated++
+	}
+
+	a.logger.Actionf("agent", "recipe migrate: %d migrated, %d skipped, %d failed", migrated, skipped, failed)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"hostname":   a.node.Hostname,
+		"migrated":   migrated,
+		"skipped":    skipped,
+		"failed":     failed,
+		"dry_run":    dryRun,
+		"migrations": migrations,
+	})
+}
+
 // gitPull runs git pull in the repo directory
 func (a *Agent) gitPull() string {
 	if a.repoDir == "" {
