@@ -2307,7 +2307,7 @@ func runDaemon(args []string) {
 	var (
 		repoDir   = flag.String("repo", "/home/benn/Documents/code/GoGitOps", "path to config repo")
 		hostFlag  = flag.String("hostname", "", "override hostname (defaults to system hostname; match a nodes/*.yaml name)")
-		bindAddr  = flag.String("bind", "", "bind address for health API (default: node's nebula IP)")
+		bindAddr  = flag.String("bind", "", "bind address for health API (default: node's LAN IP, then nebula IP, then 0.0.0.0)")
 		port      = flag.Int("port", 7780, "health API port")
 		intervalS = flag.Int("interval", 60, "check interval in seconds")
 		webhook   = flag.String("webhook", "", "Discord webhook URL or nenv:<ns>/<key> (empty = no alerts)")
