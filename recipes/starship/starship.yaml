@@ -1,6 +1,6 @@
 name: starship-terminal-setup
 description: "Install Starship prompt + Friday login splash on any node — idempotent, self-reporting"
-version: "2.0.1"
+version: "2.1.0"
 labels: []
 
 steps:
@@ -23,13 +23,13 @@ steps:
   # ── Starship: check, then install only if missing ─────────────────────
   - name: check-starship
     description: "Check whether starship is already installed"
-    command: "which starship >/dev/null 2>&1 && starship --version | head -1 || echo not-installed"
+    command: "command -v starship >/dev/null 2>&1 && starship --version | head -1 || echo not-installed"
     set_attr: starship_before
 
   - name: install-starship
     description: "Install starship to ~/.local/bin via official installer (no sudo needed)"
     command: "curl -sS https://starship.rs/install.sh | sh -s -- -b $HOME/.local/bin -y"
-    when: "! which starship >/dev/null 2>&1"
+    when: "! command -v starship >/dev/null 2>&1"
     on_failure: abort
     retries: 2
     retry_delay: 5s
@@ -43,7 +43,7 @@ steps:
   - name: ensure-path-zsh
     description: "Ensure ~/.local/bin is on PATH in .zshrc"
     command: "grep -q '.local/bin' $HOME/.zshrc 2>/dev/null || printf '\nexport PATH=\"$HOME/.local/bin:$PATH\"\n' >> $HOME/.zshrc"
-    os: darwin
+    when: "test -f $HOME/.zshrc || echo $SHELL | grep -q zsh"
     on_failure: continue
 
   # ── Deploy config files from the repo ────────────────────────────────
@@ -63,23 +63,15 @@ steps:
     on_failure: abort
 
   # ── ASCII art renderer (best effort — degrades to plain text) ─────────
-  - name: install-figlet-linux
-    description: "Install figlet via apt (falls back to pip pyfiglet) — best effort"
-    command: "sudo -n apt-get install -y figlet 2>/dev/null || pip3 install --user --quiet pyfiglet 2>/dev/null || pip3 install --user --quiet --break-system-packages pyfiglet 2>/dev/null || pip install --user --quiet --break-system-packages pyfiglet 2>/dev/null || true"
-    os: linux
-    when: "! which figlet >/dev/null 2>&1"
-    on_failure: continue
-
-  - name: install-figlet-macos
-    description: "Install figlet via Homebrew (falls back to pip3 pyfiglet) — best effort"
-    command: "brew install figlet 2>/dev/null || pip3 install --user --quiet pyfiglet 2>/dev/null || true"
-    os: darwin
-    when: "! which figlet >/dev/null 2>&1"
+  - name: install-figlet
+    description: "Install figlet via detected package manager (any distro), falls back to pip pyfiglet"
+    script: install-figlet.sh
+    when: "! command -v figlet >/dev/null 2>&1"
     on_failure: continue
 
   - name: report-ascii-renderer
     description: "Report which ASCII art renderer this node will use"
-    command: "which figlet >/dev/null 2>&1 && echo figlet || (python3 -c 'import pyfiglet' 2>/dev/null && echo pyfiglet) || echo plain"
+    command: "command -v figlet >/dev/null 2>&1 && echo figlet || (python3 -c 'import pyfiglet' 2>/dev/null && echo pyfiglet) || echo plain"
     set_attr: ascii_renderer
 
   # ── Shell init (idempotent — greps before appending) ──────────────────
@@ -91,8 +83,8 @@ steps:
 
   - name: init-starship-zsh
     description: "Add starship init to .zshrc if missing"
-    command: "grep -q 'starship init' $HOME/.zshrc 2>/dev/null || printf 'eval \"$(starship init zsh)\"\n' >> $HOME/.zshrc"
-    os: darwin
+    command: "grep -q 'starship init zsh' $HOME/.zshrc 2>/dev/null || printf '\neval \"$(starship init zsh)\"\n' >> $HOME/.zshrc"
+    when: "test -f $HOME/.zshrc || echo $SHELL | grep -q zsh"
     on_failure: continue
 
   - name: init-dashboard-hook-bash
@@ -104,7 +96,7 @@ steps:
   - name: init-dashboard-hook-zsh
     description: "Add first-shell dashboard splash + alias to .zshrc if missing"
     command: "grep -q 'bin/dashboard' $HOME/.zshrc 2>/dev/null || printf '\n# Login dashboard (first shell only) + alias to re-show\nif [ -z \"$GOGITOPS_DASHBOARD_SHOWN\" ]; then\n    export GOGITOPS_DASHBOARD_SHOWN=1\n    $HOME/bin/dashboard\nfi\n' >> $HOME/.zshrc && (grep -q 'alias dashboard=' $HOME/.zshrc 2>/dev/null || printf 'alias dashboard=\"$HOME/bin/dashboard\"\n' >> $HOME/.zshrc)"
-    os: darwin
+    when: "test -f $HOME/.zshrc || echo $SHELL | grep -q zsh"
     on_failure: continue
 
   - name: init-dashboard-alias-bash
