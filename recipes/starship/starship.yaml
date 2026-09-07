@@ -1,0 +1,175 @@
+name: starship-terminal-setup
+description: "Install Starship prompt + Friday login splash on any node — idempotent, self-reporting"
+version: "2.0.0"
+labels: []
+
+steps:
+  # ── Environment (reported as attributes) ─────────────────────────────
+  - name: detect-os
+    description: "Record operating system"
+    command: "uname -s | tr '[:upper:]' '[:lower:]'"
+    set_attr: os
+
+  - name: detect-arch
+    description: "Record CPU architecture"
+    command: "uname -m"
+    set_attr: arch
+
+  # ── Create directories first (starship installer needs its bin dir) ───
+  - name: create-dirs
+    description: "Create config, bin, and cache directories"
+    command: "mkdir -p $HOME/.config $HOME/.local/bin $HOME/bin $HOME/.cache/gogitops"
+
+  # ── Starship: check, then install only if missing ─────────────────────
+  - name: check-starship
+    description: "Check whether starship is already installed"
+    command: "which starship >/dev/null 2>&1 && starship --version | head -1 || echo not-installed"
+    set_attr: starship_before
+
+  - name: install-starship
+    description: "Install starship to ~/.local/bin via official installer (no sudo needed)"
+    command: "curl -sS https://starship.rs/install.sh | sh -s -- -b $HOME/.local/bin -y"
+    when: "! which starship >/dev/null 2>&1"
+    on_failure: abort
+    retries: 2
+    retry_delay: 5s
+
+  - name: ensure-path-bash
+    description: "Ensure ~/.local/bin is on PATH in .bashrc"
+    command: "grep -q '.local/bin' $HOME/.bashrc 2>/dev/null || printf 'export PATH=\"$HOME/.local/bin:$PATH\"\n' >> $HOME/.bashrc"
+    os: linux
+    on_failure: continue
+
+  - name: ensure-path-zsh
+    description: "Ensure ~/.local/bin is on PATH in .zshrc"
+    command: "grep -q '.local/bin' $HOME/.zshrc 2>/dev/null || printf 'export PATH=\"$HOME/.local/bin:$PATH\"\n' >> $HOME/.zshrc"
+    os: darwin
+    on_failure: continue
+
+  # ── Deploy config files from the repo ────────────────────────────────
+  - name: drop-starship-config
+    description: "Deploy starship.toml from gogitops repo"
+    command: "cp {{repo}}/configs/starship.toml $HOME/.config/starship.toml"
+    on_failure: abort
+
+  - name: drop-prompt-helper
+    description: "Deploy gogitops prompt helper for fleet status module"
+    command: "cp {{repo}}/configs/gogitops_prompt.py $HOME/.local/bin/gogitops_prompt.py && chmod +x $HOME/.local/bin/gogitops_prompt.py"
+    on_failure: continue
+
+  - name: drop-dashboard
+    description: "Deploy the login splash dashboard script"
+    command: "cp {{repo}}/configs/dashboard $HOME/bin/dashboard && chmod +x $HOME/bin/dashboard"
+    on_failure: abort
+
+  # ── ASCII art renderer (best effort — degrades to plain text) ─────────
+  - name: install-figlet-linux
+    description: "Install figlet via apt (falls back to pip pyfiglet) — best effort"
+    command: "sudo -n apt-get install -y figlet 2>/dev/null || pip3 install --user --quiet pyfiglet 2>/dev/null || pip install --user --quiet pyfiglet 2>/dev/null || true"
+    os: linux
+    when: "! which figlet >/dev/null 2>&1"
+    on_failure: continue
+
+  - name: install-figlet-macos
+    description: "Install figlet via Homebrew (falls back to pip3 pyfiglet) — best effort"
+    command: "brew install figlet 2>/dev/null || pip3 install --user --quiet pyfiglet 2>/dev/null || true"
+    os: darwin
+    when: "! which figlet >/dev/null 2>&1"
+    on_failure: continue
+
+  - name: report-ascii-renderer
+    description: "Report which ASCII art renderer this node will use"
+    command: "which figlet >/dev/null 2>&1 && echo figlet || (python3 -c 'import pyfiglet' 2>/dev/null && echo pyfiglet) || echo plain"
+    set_attr: ascii_renderer
+
+  # ── Shell init (idempotent — greps before appending) ──────────────────
+  - name: init-starship-bash
+    description: "Add starship init to .bashrc if missing"
+    command: "grep -q 'starship init' $HOME/.bashrc 2>/dev/null || printf 'eval \"$(starship init bash)\"\n' >> $HOME/.bashrc"
+    os: linux
+    on_failure: continue
+
+  - name: init-starship-zsh
+    description: "Add starship init to .zshrc if missing"
+    command: "grep -q 'starship init' $HOME/.zshrc 2>/dev/null || printf 'eval \"$(starship init zsh)\"\n' >> $HOME/.zshrc"
+    os: darwin
+    on_failure: continue
+
+  - name: init-dashboard-hook-bash
+    description: "Add first-shell dashboard splash + alias to .bashrc if missing"
+    command: "grep -q 'bin/dashboard' $HOME/.bashrc 2>/dev/null || printf '\n# Login dashboard (first shell only) + alias to re-show\nif [ -z \"$GOGITOPS_DASHBOARD_SHOWN\" ]; then\n    export GOGITOPS_DASHBOARD_SHOWN=1\n    $HOME/bin/dashboard\nfi\n' >> $HOME/.bashrc"
+    os: linux
+    on_failure: continue
+
+  - name: init-dashboard-hook-zsh
+    description: "Add first-shell dashboard splash + alias to .zshrc if missing"
+    command: "grep -q 'bin/dashboard' $HOME/.zshrc 2>/dev/null || printf '\n# Login dashboard (first shell only) + alias to re-show\nif [ -z \"$GOGITOPS_DASHBOARD_SHOWN\" ]; then\n    export GOGITOPS_DASHBOARD_SHOWN=1\n    $HOME/bin/dashboard\nfi\n' >> $HOME/.zshrc && (grep -q 'alias dashboard=' $HOME/.zshrc 2>/dev/null || printf 'alias dashboard=\"$HOME/bin/dashboard\"\n' >> $HOME/.zshrc)"
+    os: darwin
+    on_failure: continue
+
+  - name: init-dashboard-alias-bash
+    description: "Add dashboard alias to .bashrc if missing"
+    command: "grep -q 'alias dashboard=' $HOME/.bashrc 2>/dev/null || printf 'alias dashboard=\"$HOME/bin/dashboard\"\n' >> $HOME/.bashrc"
+    os: linux
+    on_failure: continue
+
+  # ── External IP cache (for the splash) ────────────────────────────────
+  - name: cache-external-ip
+    description: "Cache public IP now so the splash has data immediately"
+    command: "curl -s --max-time 5 ifconfig.me > $HOME/.cache/external_ip"
+    on_failure: continue
+
+  - name: schedule-ip-refresh
+    description: "Add hourly crontab to refresh the cached public IP"
+    command: 'crontab -l 2>/dev/null | grep -q ifconfig.me || (crontab -l 2>/dev/null; echo "0 * * * * curl -s --max-time 3 ifconfig.me > $HOME/.cache/external_ip 2>/dev/null") | crontab -'
+    on_failure: continue
+
+  # ── Verify + report ───────────────────────────────────────────────────
+  - name: verify-starship
+    description: "Confirm starship binary is callable"
+    command: "PATH=$HOME/.local/bin:$PATH starship --version | head -1"
+    expect_regex: "starship"
+    set_attr: starship_version
+    assert: "starship installed and callable"
+    on_failure: abort
+
+  - name: verify-config
+    description: "Confirm starship.toml is deployed"
+    command: "test -f $HOME/.config/starship.toml"
+    assert: "starship config deployed"
+
+  - name: verify-dashboard-syntax
+    description: "Bash syntax check on the deployed dashboard"
+    command: "bash -n $HOME/bin/dashboard"
+    assert: "dashboard script syntax valid"
+
+  - name: smoke-test-dashboard
+    description: "Render the dashboard non-interactively to prove it works"
+    command: "bash $HOME/bin/dashboard > /dev/null 2>&1"
+    assert: "dashboard renders without error"
+    on_failure: continue
+
+  - name: report-nickname
+    description: "Report the node nickname the splash will display"
+    command: "cat $HOME/.config/node-nickname 2>/dev/null || echo {{hostname}}"
+    set_attr: nickname
+
+  - name: report-private-ip
+    description: "Report LAN IP"
+    command: "ip=$(hostname -I 2>/dev/null || ipconfig getifaddr en0 2>/dev/null); [[ -n $ip ]] && echo $ip | awk '{print $1}' || echo unknown"
+    set_attr: private_ip
+
+  - name: report-public-ip
+    description: "Report cached public IP"
+    command: "cat $HOME/.cache/external_ip 2>/dev/null || echo unknown"
+    set_attr: public_ip
+
+  - name: report-gpu
+    description: "Report GPU model + driver if present"
+    command: "gpu=$(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1); echo ${gpu:-none}"
+    set_attr: gpu
+
+  - name: deploy-summary
+    description: "Compile the full deployment report as one attribute"
+    command: "echo starship={{attr.starship_version}} splash={{attr.nickname}} gpu={{attr.gpu}} lan={{attr.private_ip}} wan={{attr.public_ip}} ascii={{attr.ascii_renderer}}"
+    set_attr: deploy_summary

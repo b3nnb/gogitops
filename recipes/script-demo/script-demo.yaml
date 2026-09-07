@@ -1,0 +1,67 @@
+name: script-demo
+description: "Demonstrates script execution, attribute collection, and attribute passing between steps"
+version: "1.0.0"
+labels: []
+
+steps:
+  # ── Example 1: Action script (shell) ──
+  # Runs a shell script that does a task. No output needed.
+  - name: check-docker
+    description: "Check if Docker is installed (action script)"
+    script: install-docker.sh
+    script_lang: bash
+    on_failure: continue
+
+  # ── Example 2: Info-collecting script (shell) ──
+  # Runs a shell script that outputs KEY=VALUE pairs.
+  # set_attr captures the entire output as a single attribute.
+  # The output is also available as {{1}} via parse: regex.
+  - name: collect-info
+    description: "Collect system info via shell script"
+    script: collect-system-info.sh
+    script_lang: bash
+    set_attr: system_info
+    on_failure: continue
+
+  # ── Example 3: Info-collecting script (Go) ──
+  # Runs a Go script that outputs structured JSON.
+  # set_attr captures the JSON string for API/dashboard access.
+  # parse: regex extracts specific fields for use in later steps.
+  - name: collect-attrs-go
+    description: "Collect system attributes via Go script (JSON output)"
+    script: collect-attrs.go
+    script_lang: go
+    set_attr: system_attrs_json
+    on_failure: continue
+
+  # ── Example 4: Use attributes from previous steps ──
+  # Uses {{attr.system_info}} captured in step 2.
+  # This demonstrates attributes flowing between steps.
+  - name: show-collected-info
+    description: "Display attributes collected by previous scripts"
+    command: "echo 'System info from shell:' && echo '{{attr.system_info}}' && echo 'JSON attrs from Go:' && echo '{{attr.system_attrs_json}}'"
+    on_failure: continue
+
+  # ── Example 5: Conditional execution based on attributes ──
+  # only_if_attr checks an attribute before running.
+  # Here we check if Docker is running (from Go script output).
+  - name: docker-status
+    description: "Show Docker status if available"
+    command: "docker ps --format 'table {{.Names}}\t{{.Status}}' 2>/dev/null | head -5 || echo 'Docker not running'"
+    only_if_attr: "attr.system_attrs_json contains docker_running"
+    on_failure: continue
+
+  # ── Example 6: Script with args ──
+  # Passes variables to a script as arguments.
+  - name: check-disk-usage
+    description: "Check disk usage with threshold arg"
+    script: check-disk.sh
+    script_lang: bash
+    set_attr: disk_status
+    on_failure: continue
+
+  # ── Summary: show all collected attributes ──
+  - name: summary
+    description: "Print all collected attributes"
+    command: "echo '=== Collected Attributes ===' && echo 'system_info: {{attr.system_info}}' && echo 'disk_status: {{attr.disk_status}}' && echo 'system_attrs_json: {{attr.system_attrs_json}}'"
+    on_failure: continue

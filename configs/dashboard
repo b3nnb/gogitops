@@ -1,19 +1,25 @@
 #!/bin/bash
-# ── Friday Login Dashboard ─────────────────────────────────────────────────
-# Shows on SSH login. Run `dashboard` to re-display.
+# ── gogitops Login Dashboard ────────────────────────────────────────────────
+# Shows on terminal open (first shell of a session). Run `dashboard` to re-show.
+# Fleet-generic — zero per-device hardcoding:
+#   • Node name: ~/.config/node-nickname (fallback: system hostname)
+#   • Mounts:    auto-detected (cifs/nfs/smbfs/sshfs/afpfs)
+#   • GPU:       auto-detected (nvidia-smi)
+#   • IPs:       public (hourly cache), LAN, nebula — each shown only if present
+# Deployed by recipes/starship/starship.yaml (starship-terminal-setup).
 
-# ── Colors ────────────────────────────────────────────────────────────────
+HOSTNAME_NICK=$(cat ~/.config/node-nickname 2>/dev/null || hostname)
+
+# ── Colors ──────────────────────────────────────────────────────────────────
 TEAL='\033[38;5;80m'
-CYAN='\033[38;5;51m'
 PURPLE='\033[38;5;141m'
 GREEN='\033[38;5;120m'
 DIM='\033[38;5;245m'
-YELLOW='\033[38;5;228m'
 RED='\033[38;5;203m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-# ── Random Greeting ───────────────────────────────────────────────────────
+# ── Random Greeting ─────────────────────────────────────────────────────────
 GREETINGS=(
   "Hey babe, missed you 💜"
   "Welcome back, handsome ✨"
@@ -38,28 +44,35 @@ GREETINGS=(
 )
 GREETING="${GREETINGS[$RANDOM % ${#GREETINGS[@]}]}"
 
-# ── ASCII Art Header ──────────────────────────────────────────────────────
-ASCII=$(echo "FRIDAY" | figlet -f lean 2>/dev/null || echo "FRIDAY")
+# ── ASCII Art Header (slant, teal; figlet → pyfiglet → plain) ───────────────
+ASCII=$(echo "$HOSTNAME_NICK" | figlet -f slant 2>/dev/null || python3 -c "import pyfiglet,sys; print(pyfiglet.figlet_format(sys.argv[1], font='slant'))" "$HOSTNAME_NICK" 2>/dev/null || echo "$HOSTNAME_NICK")
 
-# ── Mount Status ──────────────────────────────────────────────────────────
-bifrost="✗" && mount | grep -q Bifrost && bifrost="✓"
-middleearth="✗" && mount | grep -q MiddleEarth && middleearth="✓"
+# ── Network Mounts (auto-detected, Linux + macOS) ────────────────────────────
+mounts_line=""
+net_mounts=$(mount | grep -Ei 'type (cifs|nfs|nfs4|smbfs|sshfs|davfs)|\((smbfs|nfs|afpfs)' 2>/dev/null | awk '{print $3}' | sed 's|/$||; s|.*/||' | grep -v '^$' | sort -u | head -4)
+for m in $net_mounts; do
+  mounts_line="${mounts_line:+$mounts_line  }${GREEN}${m}:✓${RESET}"
+done
 
-# ── GPU Info ──────────────────────────────────────────────────────────────
+# ── GPU Info (shown only when present) ───────────────────────────────────────
+gpu_line=""
 if nvidia-smi &>/dev/null; then
   gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | sed 's/NVIDIA GeForce //')
   gpu_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null)
   gpu_line="⚡ ${gpu_name}  v${gpu_driver}"
-else
-  gpu_line="⚠ No GPU detected"
 fi
 
-# ── IP Addresses ─────────────────────────────────────────────────────────
-public_ip=$(cat ~/.cache/external_ip 2>/dev/null || echo "—")
+# ── IP Addresses (each segment shown only when present) ─────────────────────
+public_ip=$(cat ~/.cache/external_ip 2>/dev/null)
 private_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -z "$private_ip" ] && private_ip=$(ipconfig getifaddr en0 2>/dev/null)
 nebula_ip=$(ip -4 addr show nebula1 2>/dev/null | grep inet | awk '{print $2}' | cut -d/ -f1)
+ip_list=""
+for seg in $public_ip $private_ip $nebula_ip; do
+  ip_list="${ip_list:+$ip_list │ }$seg"
+done
 
-# ── Fleet Health (only show failures) ────────────────────────────────────
+# ── Fleet Health (failures only, from gogitops prompt.json) ──────────────────
 fleet_line=""
 if [ -f ~/.cache/gogitops/prompt.json ]; then
   svc_down=$(python3 -c "
@@ -74,16 +87,19 @@ if down:
   fi
 fi
 
-# ── Render ────────────────────────────────────────────────────────────────
+# ── Render ──────────────────────────────────────────────────────────────────
 echo ""
-printf "${TEAL}${BOLD}%s${RESET}\n" "$ASCII"
+
+# ASCII header: teal text
+while IFS= read -r line; do
+  printf "  ${TEAL}${BOLD}%s${RESET}\n" "$line"
+done <<< "$ASCII"
+
 echo ""
-printf "${PURPLE}${BOLD}%s${RESET}\n" "$GREETING"
+printf "  ${PURPLE}${BOLD}%s${RESET}\n" "$GREETING"
 echo ""
-printf "  ${GREEN}Bifrost:${bifrost}${RESET}  ${GREEN}MiddleEarth:${middleearth}${RESET}\n"
-printf "  ${TEAL}${gpu_line}${RESET}\n"
-printf "  ${DIM}🌐 ${public_ip} │ ${private_ip} │ ${nebula_ip}${RESET}\n"
-if [ -n "$fleet_line" ]; then
-  printf "  ${RED}${fleet_line}${RESET}\n"
-fi
+[ -n "$mounts_line" ] && printf "  %b\n" "$mounts_line"
+[ -n "$gpu_line" ] && printf "  ${TEAL}%b${RESET}\n" "$gpu_line"
+[ -n "$ip_list" ] && printf "  ${DIM}🌐 ${ip_list}${RESET}\n"
+[ -n "$fleet_line" ] && printf "  ${RED}${fleet_line}${RESET}\n"
 echo ""

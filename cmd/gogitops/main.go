@@ -1435,8 +1435,10 @@ func recipeRun(args []string) {
 	resolved := resolveRepoDir(*repoDir)
 
 	// Resolve recipe file path
+	// If the target is a directory (e.g. directory-based recipe name), fall
+	// through to the candidate paths below instead of failing to read it.
 	recipeFile := target
-	if _, err := os.Stat(recipeFile); err != nil {
+	if fi, err := os.Stat(recipeFile); err != nil || fi.IsDir() {
 		// Try as a name: recipes/<name>.yaml or recipes/<name>/<name>.yaml
 		candidates := []string{
 			resolved + "/recipes/" + target + ".yaml",

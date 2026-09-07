@@ -133,19 +133,19 @@ steps:
 
 ```
 recipes/
-├── README.md           # this file
-├── starship.yaml       # install starship + gogitops prompt
-├── nebula-update.yaml  # update nebula binary
-├── agent-self-update.yaml
-├── container-restart.yaml
-├── stack-migrate.yaml
-├── full-migrate.yaml
-├── script-demo.yaml    # demonstrates script execution + attributes
-└── scripts/            # shared scripts referenced by recipes
-    ├── install-docker.sh       # action script (installs Docker)
-    ├── collect-system-info.sh  # info script (KEY=VALUE output)
-    ├── collect-attrs.go        # info script (JSON output, Go)
-    └── check-disk.sh           # info script (threshold check)
+├── README.md                     # this file — recipe spec
+├── setup-ssh-access/             # bootstrap: agent SSH keys + sshd (run first)
+│   └── setup-ssh-access.yaml
+├── starship/                     # starship prompt + login splash (fleet-generic)
+│   ├── README.md
+│   └── starship.yaml
+├── script-demo/                  # demonstrates script execution + attributes
+├── test-recipe/
+└── scripts/                       # shared scripts referenced by recipes
+    ├── install-docker.sh          # action script (installs Docker)
+    ├── collect-system-info.sh     # info script (KEY=VALUE output)
+    ├── collect-attrs.go           # info script (JSON output, Go)
+    └── check-disk.sh              # info script (threshold check)
 ```
 
 Recipes are stored in the git repo and pulled by agents on every git sync.
