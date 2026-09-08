@@ -3,3 +3,4 @@ bin/
 *.key
 *.pem
 .hermes/
+.DS_Store
