@@ -1,6 +1,6 @@
 peers:
     - hostname: friday
-      nebula_ip: ""
+      nebula_ip: 10.200.0.4
       lan_ip: 10.2.0.102
       port: 7780
       labels:
@@ -19,16 +19,6 @@ peers:
         - llm-inference
         - image-gen
         - lora-training
-    # AUDIT PENDING: nas nebula IP unknown — 10.200.0.4 actually belongs to friday
-    # (observed Sep 2 via dnclient on friday). Re-add with DDN-assigned IP once probed.
-    # - hostname: nas
-    #   nebula_ip: 10.200.0.4
-    #   lan_ip: 10.2.0.103
-    #   port: 7780
-    #   labels:
-    #     - storage
-    #     - docker-host
-    #     - public-edge
     - hostname: lighthouse
       nebula_ip: ""
       lan_ip: ""
@@ -44,15 +34,6 @@ peers:
       labels:
         - compute
         - laptop
-    # AUDIT PENDING: gcontrol — 10.200.0.6 belongs to framework (observed).
-    # gcontrol's real DDN IP unknown (may not run nebula at all).
-    # - hostname: gcontrol
-    #   nebula_ip: 10.200.0.6
-    #   lan_ip: ""
-    #   port: 7780
-    #   labels:
-    #     - cnc
-    #     - windows
     - hostname: pixel
       nebula_ip: ""
       lan_ip: ""
@@ -60,10 +41,3 @@ peers:
       labels:
         - mobile
         - android
-    - hostname: test
-      nebula_ip: ""
-      lan_ip: 10.2.0.102
-      port: 7780
-      labels:
-        - compute
-        - linux
