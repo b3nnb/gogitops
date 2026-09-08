@@ -1368,6 +1368,9 @@ type recipeStep struct {
 	Script        string `yaml:"script"`
 	ScriptArgs    string `yaml:"script_args"`
 	ScriptLang    string `yaml:"script_lang"`
+	Package       string `yaml:"package"`
+	Sources       []string `yaml:"sources"`
+	Schedule      string `yaml:"schedule"`
 	OS            string `yaml:"os"`
 	Arch          string `yaml:"arch"`
 	LabelsReq     []string `yaml:"labels_required"`
@@ -1546,6 +1549,17 @@ func recipeRun(args []string) {
 				// Auto-detect: .sh → bash, .go → go run, .py → python3, otherwise try direct execution
 				cmd = fmt.Sprintf("%s %s", shellQuote(scriptPath), scriptArgs)
 			}
+		}
+
+		// Universal step types — the agent translates to local reality.
+		// package: figlet → package-manager install (brew/apt/dnf/apk/…)
+		// schedule: hourly + command: → idempotent crontab install
+		// Translated steps reuse the whole runner pipeline below.
+		if step.Package != "" {
+			cmd = translatePackage(step)
+		}
+		if step.Schedule != "" {
+			cmd = translateSchedule(step, cmd)
 		}
 
 		// OS filter
@@ -1865,6 +1879,12 @@ func parseRecipe(content string) recipe {
 			currentStep.ScriptArgs = val
 		case "script_lang":
 			currentStep.ScriptLang = val
+		case "package":
+			currentStep.Package = val
+		case "sources":
+			currentStep.Sources = parseSourceList(val)
+		case "schedule":
+			currentStep.Schedule = val
 		case "os":
 			currentStep.OS = val
 		case "arch":

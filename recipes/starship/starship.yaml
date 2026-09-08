@@ -1,6 +1,6 @@
 name: starship-terminal-setup
 description: "Install Starship prompt + Friday login splash on any node — idempotent, self-reporting"
-version: "2.1.1"
+version: "2.2.0"
 labels: []
 
 steps:
@@ -37,7 +37,7 @@ steps:
   - name: ensure-path-bash
     description: "Ensure ~/.local/bin is on PATH in .bashrc"
     command: "grep -q '.local/bin' $HOME/.bashrc 2>/dev/null || printf '\nexport PATH=\"$HOME/.local/bin:$PATH\"\n' >> $HOME/.bashrc"
-    os: linux
+    when: "test -f $HOME/.bashrc 2>/dev/null || echo $SHELL | grep -q bash"
     on_failure: continue
 
   - name: ensure-path-zsh
@@ -63,9 +63,12 @@ steps:
     on_failure: abort
 
   # ── ASCII art renderer (best effort — degrades to plain text) ─────────
+  # Universal step: the agent translates pkg: → brew/apt/dnf/zypper/pacman/apk
+  # and pip: → python3 -m pip --user. Same recipe on every OS.
   - name: install-figlet
-    description: "Install figlet via detected package manager (any distro), falls back to pip pyfiglet"
-    script: install-figlet.sh
+    description: "Install figlet (agent picks the local package manager), falls back to pip pyfiglet"
+    package: figlet
+    sources: "[pkg:figlet, pip:pyfiglet]"
     when: "! command -v figlet >/dev/null 2>&1"
     on_failure: continue
 
@@ -78,7 +81,7 @@ steps:
   - name: init-starship-bash
     description: "Add starship init to .bashrc if missing"
     command: "grep -q 'starship init' $HOME/.bashrc 2>/dev/null || printf 'eval \"$(starship init bash)\"\n' >> $HOME/.bashrc"
-    os: linux
+    when: "test -f $HOME/.bashrc 2>/dev/null || echo $SHELL | grep -q bash"
     on_failure: continue
 
   - name: init-starship-zsh
@@ -90,7 +93,7 @@ steps:
   - name: init-dashboard-hook-bash
     description: "Add first-shell dashboard splash + alias to .bashrc if missing"
     command: "grep -q 'bin/dashboard' $HOME/.bashrc 2>/dev/null || printf '\n# Login dashboard (first shell only) + alias to re-show\nif [ -z \"$GOGITOPS_DASHBOARD_SHOWN\" ]; then\n    export GOGITOPS_DASHBOARD_SHOWN=1\n    $HOME/bin/dashboard\nfi\n' >> $HOME/.bashrc"
-    os: linux
+    when: "test -f $HOME/.bashrc 2>/dev/null || echo $SHELL | grep -q bash"
     on_failure: continue
 
   - name: init-dashboard-hook-zsh
@@ -102,7 +105,7 @@ steps:
   - name: init-dashboard-alias-bash
     description: "Add dashboard alias to .bashrc if missing"
     command: "grep -q 'alias dashboard=' $HOME/.bashrc 2>/dev/null || printf 'alias dashboard=\"$HOME/bin/dashboard\"\n' >> $HOME/.bashrc"
-    os: linux
+    when: "test -f $HOME/.bashrc 2>/dev/null || echo $SHELL | grep -q bash"
     on_failure: continue
 
   # ── External IP cache (for the splash) ────────────────────────────────
@@ -112,8 +115,9 @@ steps:
     on_failure: continue
 
   - name: schedule-ip-refresh
-    description: "Add hourly crontab to refresh the cached public IP"
-    command: 'crontab -l 2>/dev/null | grep -q ifconfig.me || (crontab -l 2>/dev/null; echo "0 * * * * curl -s --max-time 3 ifconfig.me > $HOME/.cache/external_ip 2>/dev/null") | crontab -'
+    description: "Refresh the cached public IP hourly (agent installs the cron entry, idempotent)"
+    schedule: hourly
+    command: "curl -s --max-time 3 ifconfig.me > $HOME/.cache/external_ip 2>/dev/null"
     on_failure: continue
 
   # ── Verify + report ───────────────────────────────────────────────────
