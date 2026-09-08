@@ -5,8 +5,8 @@ peers:
       lan_ip: 10.2.0.102
       port: 7780
       macs:
-        - c8:7f:54:02:0a:fd
         - 2c:0d:a7:d9:87:a3
+        - c8:7f:54:02:0a:fd
       labels:
         - primary-compute
         - docker-host
