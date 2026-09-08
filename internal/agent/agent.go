@@ -405,6 +405,7 @@ func (a *Agent) Run(interval time.Duration) {
 			a.cycle(false)
 		case <-gitTicker.C:
 			a.gitPull()
+			a.maybeSelfUpdate()
 		}
 	}
 }

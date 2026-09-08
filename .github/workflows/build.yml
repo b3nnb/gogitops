@@ -56,7 +56,7 @@ jobs:
         run: |
           BINARY=gogitops
           [ "${{ matrix.goos }}" = "windows" ] && BINARY=gogitops.exe
-          go build -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+          go build -ldflags "-s -w -X main.version=${{ github.ref_name }} -X github.com/bennbanks/gogitops/internal/agent.Version=${{ github.ref_name }}" \
             -o "dist/bin/$BINARY" ./cmd/gogitops
 
       - name: Build nenv-agent
