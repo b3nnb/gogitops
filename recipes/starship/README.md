@@ -9,6 +9,24 @@ Run on any node:
 
     gogitops recipe run starship
 
+**v2.2.0 is fully OS-neutral: the same recipe file runs unmodified on Ubuntu,
+Fedora, Alpine, and macOS.** The agent on each node translates universal step
+types to local reality — the recipe never changes per-OS.
+
+## Universal step vocabulary
+
+The recipe speaks one OS-neutral (Linux-leaning) vocabulary. The agent translates:
+
+| Recipe says | Agent does |
+|---|---|
+| `command: <bash>` | runs it via `bash -c` (bash is a universal prereq) |
+| `package: figlet` + `sources: "[pkg:figlet, pip:pyfiglet]"` | tries each source in order: `pkg:` -> local package manager (brew on macOS, apt/dnf/zypper/pacman/apk on Linux, `sudo -n` when non-root); `pip:` -> `python3 -m pip install --user` with PEP 668 retry. Best-effort: exits 0 when already installed or nothing works (graceful degradation) |
+| `schedule: hourly` + `command: <bash>` | installs an idempotent crontab entry tagged `# gogitops:<step-name>` (presets hourly/daily/weekly, or raw 5-field cron). Re-runs replace, never duplicate; dedup also cleans legacy unmarked lines (expanded + literal `$HOME` forms) |
+| `when: <bash guard>` | evaluated on every OS — detect capabilities (which rc files exist, which shell is in use), never assume them from the OS name |
+
+Old agents (pre-v2.2.0 binaries) degrade gracefully on v2.2.0 recipes: unknown
+fields are ignored, translated steps run as harmless one-shot commands.
+
 ## What it does
 
 1. **Checks** whether starship is installed (`attr.starship_before` records
@@ -19,14 +37,17 @@ Run on any node:
    - `configs/starship.toml` → `~/.config/starship.toml`
    - `configs/dashboard` → `~/bin/dashboard` (login splash)
    - `configs/gogitops_prompt.py` → `~/.local/bin/` (fleet status module helper)
-4. Wires the shell rc (`.bashrc` on linux, `.zshrc` on macOS) — all greps
-   guard against duplicates, so re-running is always safe:
+4. Wires whichever shell rc files exist (`.bashrc` and/or `.zshrc`, detected
+   via `when` guards — not assumed from the OS) — all greps guard against
+   duplicates, so re-running is always safe:
    - `export PATH="$HOME/.local/bin:$PATH"`
    - `eval "$(starship init bash)"`
    - first-shell splash guard (`GOGITOPS_DASHBOARD_SHOWN`) + `dashboard` alias
-5. Installs **figlet** best-effort (apt/brew, falls back to `pip --user
-   pyfiglet`; plain hostname as last resort)
-6. Caches the public IP and adds the hourly crontab refresh (guarded)
+5. Installs **figlet** via the `package:` universal step (agent picks the
+   package manager; falls back to `pip --user pyfiglet`; plain hostname as
+   last resort)
+6. Caches the public IP and installs the hourly refresh via the `schedule:`
+   universal step (agent writes the idempotent cron entry)
 
 ## Machine-specific values — where they come from
 
@@ -56,6 +77,7 @@ Example summary attribute:
 - Splash render verified identical on Friday (mounts auto-detect finds Bifrost + MiddleEarth)
 - Real deployment on Framework laptop (Sep 7 2026): 24 passed / 5 skipped — surfaced two gotchas fixed in v2.0.1: bashrc files without trailing newline get the PATH append concatenated onto the last line (now prepends `\n`), and Ubuntu 24.04 PEP 668 blocks `pip3 install --user` (pyfiglet fallback now retries with `--break-system-packages`).
 - Cross-distro container tests (Sep 7 2026, v2.1.0): **Fedora (dnf)** — figlet via dnf, splash renders; **Alpine (apk/musl/busybox)** — 25 passed / 0 failed, figlet via apk, LAN IP via iproute2 fallback, splash renders with art. Ubuntu proven on Friday + Framework.
+- v2.2.0 universal step types (Sep 7 2026), same recipe file on every OS: Friday (26 passed, legacy cron deduped to one marked line, rerun idempotent), Fedora (package: -> dnf installs figlet, schedule tolerated in cron-less container), Alpine (package: -> apk, splash renders), Mac mini (package: -> pyfiglet fallback, schedule: replaced legacy unmarked cron line with marked one, rerun idempotent).
 
 ## Prerequisites
 
