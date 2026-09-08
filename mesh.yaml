@@ -3,6 +3,9 @@ peers:
       nebula_ip: 10.200.0.4
       lan_ip: 10.2.0.102
       port: 7780
+      macs:
+        - c8:7f:54:02:0a:fd
+        - 2c:0d:a7:d9:87:a3
       labels:
         - primary-compute
         - docker-host
@@ -13,6 +16,9 @@ peers:
       nebula_ip: ""
       lan_ip: 10.0.0.251
       port: 7780
+      macs:
+        - d0:11:e5:1a:77:5f
+        - 42:18:eb:4a:1c:ae
       labels:
         - compute
         - gpu
