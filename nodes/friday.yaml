@@ -66,8 +66,7 @@ disk:
     crit_pct: 95
 
 agent:
-  update_url: https://releases.bennbot.com/gogitops/latest.json
   check_interval: 5m
-  git_repo: git@github.com:bennbanks/gogitops.git
+  git_repo: git@github.com:b3nnb/gogitops.git
   git_branch: main
   git_pull_interval: 5m

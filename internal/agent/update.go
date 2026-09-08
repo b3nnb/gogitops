@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 )
 
 // ── Agent self-update (git binaries-branch transport) ───────────────────────
@@ -100,9 +101,21 @@ func (a *Agent) maybeSelfUpdate() {
 		return
 	}
 
-	a.logger.Actionf("update", "self-updated v%s -> v%s — restarting", Version, published)
-	// Service manager (Restart=always / cron keepalive) restarts us now.
-	os.Exit(0)
+	a.logger.Actionf("update", "self-updated v%s -> v%s — restarting in place", Version, published)
+
+		// Restart in place: syscall.Exec replaces this process with the new
+		// binary, keeping the same PID/lineage — no reliance on the service
+		// manager (or spawn context) to relaunch us. (cron/launchd-spawned
+		// restarts hang pre-main on macOS — exec sidesteps that entirely.)
+		// Fall back to exit 0 (systemd Restart=always / cron keepalive) if
+		// exec fails.
+		if runtime.GOOS != "windows" {
+			if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
+				a.logger.Errorf("update", "exec restart failed (%v) — falling back to exit", err)
+			}
+		}
+		// Service manager (Restart=always / cron keepalive) restarts us now.
+		os.Exit(0)
 }
 
 // isNewer reports whether candidate is a newer semver than current.
