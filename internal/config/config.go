@@ -17,6 +17,7 @@ type NodeConfig struct {
 	Hostname string      `yaml:"hostname"`
 	NebulaIP string      `yaml:"nebula_ip"`
 	LanIP    string      `yaml:"lan_ip"`
+	Macs     []string    `yaml:"macs,omitempty"`
 	Labels   []string    `yaml:"labels"`
 	Services []Service   `yaml:"services"`
 	Disk     []DiskCheck `yaml:"disk"`
@@ -70,6 +71,7 @@ type Peer struct {
 	NebulaIP string   `yaml:"nebula_ip"`
 	LanIP    string   `yaml:"lan_ip"`
 	Port     int      `yaml:"port"`
+	Macs     []string `yaml:"macs,omitempty"`
 	Labels   []string `yaml:"labels"`
 }
 
@@ -128,6 +130,21 @@ func LoadNode(repoDir, hostname string) (*NodeConfig, error) {
 		if os.IsNotExist(err) {
 			return autoRegister(repoDir, hostname)
 		}
+		return nil, fmt.Errorf("read node config: %w", err)
+	}
+	var cfg NodeConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse node config: %w", err)
+	}
+	return &cfg, nil
+}
+
+// LoadNodeStrict loads a node config WITHOUT the auto-registration side
+// effect — errors when the yaml is missing.
+func LoadNodeStrict(repoDir, hostname string) (*NodeConfig, error) {
+	path := filepath.Join(repoDir, "nodes", hostname+".yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return nil, fmt.Errorf("read node config: %w", err)
 	}
 	var cfg NodeConfig
@@ -296,50 +313,16 @@ func detectOSLabel() string {
 
 // autoRegister creates a node config file and adds the node to mesh.yaml.
 // This is the decentralized self-registration: a new node discovers its
-// own network identity and writes it into the mesh.
+// own network identity and writes it into the mesh. MAC identity guard:
+// a machine checking in under a NEW name (e.g. its system hostname) that
+// matches a known peer by MAC is merged into the existing entry — no
+// duplicate peers, no junk node yaml.
 func autoRegister(repoDir, hostname string) (*NodeConfig, error) {
-	nebulaIP := DetectNebulaIP()
-	lanIP := DetectLanIP()
-	osLabel := detectOSLabel()
-
-	cfg := &NodeConfig{
-		Hostname: hostname,
-		NebulaIP: nebulaIP,
-		LanIP:    lanIP,
-		Labels:   []string{"compute", osLabel},
-	}
-
-	// 1. Write nodes/<hostname>.yaml
-	nodesDir := filepath.Join(repoDir, "nodes")
-	os.MkdirAll(nodesDir, 0755)
-
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("marshal node config: %w", err)
-	}
-	nodePath := filepath.Join(nodesDir, hostname+".yaml")
-	if err := os.WriteFile(nodePath, data, 0644); err != nil {
-		return nil, fmt.Errorf("write node config: %w", err)
-	}
-
-	// 2. Add self to mesh.yaml
-	registerToMesh(repoDir, hostname, nebulaIP, lanIP, cfg.Labels)
-
-	logPrefix := "auto-registered"
-	if nebulaIP != "" {
-		logPrefix = fmt.Sprintf("auto-registered (nebula=%s", nebulaIP)
-		if lanIP != "" {
-			logPrefix += fmt.Sprintf(", lan=%s", lanIP)
-		}
-		logPrefix += ")"
-	}
-	fmt.Fprintf(os.Stderr, "[gogitops] %s as %s\n", logPrefix, hostname)
-
-	return cfg, nil
+	return autoRegisterWith(repoDir, hostname, DetectNebulaIP(), DetectLanIP(), detectOSLabel(), DetectMACs())
 }
 
 // registerToMesh adds or updates a peer entry in mesh.yaml
-func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string) {
+func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string, macs []string) {
 	meshPath := filepath.Join(repoDir, "mesh.yaml")
 	data, err := os.ReadFile(meshPath)
 	if err != nil {
@@ -361,7 +344,11 @@ func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string) 
 			if lanIP != "" {
 				mesh.Peers[i].LanIP = lanIP
 			}
-			if len(labels) > 0 {
+			if len(macs) > 0 {
+				mesh.Peers[i].Macs = unionMACs(p.Macs, macs)
+			}
+			if len(labels) > 0 && len(p.Labels) == 0 {
+				// only fill empty labels — never clobber hand-curated ones
 				mesh.Peers[i].Labels = labels
 			}
 			if out, err := yaml.Marshal(&mesh); err == nil {
@@ -377,6 +364,7 @@ func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string) 
 		NebulaIP: nebulaIP,
 		LanIP:    lanIP,
 		Port:     7780,
+		Macs:     macs,
 		Labels:   labels,
 	}
 	mesh.Peers = append(mesh.Peers, peer)
