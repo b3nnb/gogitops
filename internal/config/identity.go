@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -20,21 +21,26 @@ import (
 //
 //  1. machine_id — per-OS-install stable ID (/etc/machine-id on Linux,
 //     IOPlatformUUID on macOS). Cannot move between machines. THE key.
-//  2. macs — physical interface MAC set. Corroborates when machine-id is
-//     missing (legacy entries), and unions over time as adapters change.
+//  2. macs — BUILT-IN physical interface MACs. Corroborates when machine-id
+//     is missing (legacy entries), unions over time as adapters change.
+//  3. portable_macs — USB adapters / docks / known-shared dongles. Recorded
+//     for inventory, EXCLUDED from identity matching: a portable MAC can be
+//     plugged into a different machine without fusing identities. USB NICs
+//     are auto-detected via sysfs (Linux); thunderbolt docks present as PCI
+//     and need a manual `portable_macs:` entry in the node yaml.
 //
 // Match rules (check-in vs existing peers):
 //   - machine-ids equal            → same machine: merge, union MACs.
-//   - machine-ids differ, MAC overlaps → two machines sharing a MAC — a USB
-//     adapter that moved, or a cheap adapter with a duplicate burned-in MAC.
-//     NEVER merge; emit a conflict warning naming both sides.
-//   - peer has no machine-id (legacy) + MAC overlap → merge and backfill the
-//     machine-id (first upgrade wins).
-//   - no signal matches            → new machine: register with both ids.
+//   - machine-ids differ, identity-MAC overlaps → two machines sharing a
+//     built-in MAC (hardware reuse / spoofing) — NEVER merge; warn loudly.
+//   - peer has no machine-id (legacy) + identity-MAC overlap → merge and
+//     backfill the machine-id (first upgrade wins).
+//   - portable-MAC overlap only     → invisible to matching by design.
+//   - no signal matches            → new machine: register with all ids.
 //
-// A machine's own new adapter (dongle plugged in) unions into its own entry
-// via the machine-id merge — harmless. If that adapter later moves to another
-// machine, the differing machine-ids block the wrong merge.
+// Mesh writes are byte-stable: unmarshal → marshal → compare → write only on
+// real change. The daemon git-pulls this same repo, so a formatting-churn
+// write would dirty the tree and break its own pull.
 
 var machineIDRe = regexp.MustCompile(`"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]+)"`)
 
@@ -68,18 +74,28 @@ func DetectMachineID() string {
 var macSkipPrefixes = []string{
 	"lo", "docker", "veth", "br-", "virbr", "bridge", "vEthernet",
 	"tap", "tun", "utun", "wg", "awdl", "llw", "nebula", "tailscale",
-	"ZeroTier", "zt", "ham", "anpi", "bridge", "gpd-", "rmnet",
+	"ZeroTier", "zt", "ham", "anpi", "bridge", "gpd-", "rmnet", "ap",
 }
 
-// DetectMACs returns the sorted hardware addresses of all physical network
-// interfaces (loopback + virtual filtered, empty/zero MACs skipped).
-func DetectMACs() []string {
+// NICIdentity is a machine's split interface inventory.
+type NICIdentity struct {
+	Macs      []string // built-in / identity-grade MACs
+	Portable  []string // USB adapters + docks + declared-shared: recorded, never matched
+}
+
+// DetectNICs enumerates physical interfaces and splits them into identity
+// vs portable MACs. Linux: portable = USB-attached (sysfs device path
+// contains "usb"). Darwin: built-ins take the lowest enN indices — en0/en1
+// are identity, higher enN are adapters or system-virtual shadows (ANPI
+// holders, bridge members) and are skipped; macOS adapters rely on the
+// machine-id match instead (macOS always has an IOPlatformUUID).
+func DetectNICs() NICIdentity {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return nil
+		return NICIdentity{}
 	}
-	seen := map[string]bool{}
-	var macs []string
+	var id NICIdentity
+	seenI, seenP := map[string]bool{}, map[string]bool{}
 	for _, i := range ifaces {
 		if i.Flags&net.FlagLoopback != 0 {
 			continue
@@ -98,13 +114,39 @@ func DetectMACs() []string {
 		if skip {
 			continue
 		}
-		if !seen[mac] {
-			seen[mac] = true
-			macs = append(macs, mac)
+		if runtime.GOOS == "darwin" && strings.HasPrefix(i.Name, "en") {
+			if n, err := strconv.Atoi(i.Name[2:]); err == nil && n > 1 {
+				// higher enN: adapter or system-virtual shadow — skip
+				continue
+			}
+		}
+		if isUSBInterface(i.Name) {
+			if !seenP[mac] {
+				seenP[mac] = true
+				id.Portable = append(id.Portable, mac)
+			}
+		} else if !seenI[mac] {
+			seenI[mac] = true
+			id.Macs = append(id.Macs, mac)
 		}
 	}
-	sort.Strings(macs)
-	return macs
+	sort.Strings(id.Macs)
+	sort.Strings(id.Portable)
+	return id
+}
+
+// isUSBInterface reports whether the interface is USB-attached (portable by
+// definition — the adapter moves with the dongle). Best-effort sysfs check,
+// Linux only; false on other platforms.
+func isUSBInterface(name string) bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	link, err := os.Readlink(filepath.Join("/sys/class/net", name, "device"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(link, "usb")
 }
 
 // macOverlap reports whether any MAC appears in both sets.
@@ -138,41 +180,62 @@ func unionMACs(a, b []string) []string {
 	return out
 }
 
-// autoRegisterWith is the testable core of autoRegister: macs + machineID
-// are injected so tests don't depend on the host machine's real state.
-func autoRegisterWith(repoDir, hostname, nebulaIP, lanIP, osLabel string, macs []string, machineID string) (*NodeConfig, error) {
-	if macs != nil || machineID != "" {
-		match, conflicts := findPeerByIdentity(repoDir, macs, machineID)
+// subtractMACs returns the MACs of a that are not in b.
+func subtractMACs(a, b []string) []string {
+	remove := map[string]bool{}
+	for _, m := range b {
+		remove[m] = true
+	}
+	out := append([]string{}, a...)
+	n := 0
+	for _, m := range out {
+		if !remove[m] {
+			out[n] = m
+			n++
+		}
+	}
+	out = out[:n]
+	sort.Strings(out)
+	return out
+}
+
+// autoRegisterWith is the testable core of autoRegister. nic + machineID are
+// injected so tests don't depend on the host machine's real state.
+func autoRegisterWith(repoDir, hostname, nebulaIP, lanIP, osLabel string, nic NICIdentity, machineID string) (*NodeConfig, error) {
+	if nic.Macs != nil || nic.Portable != nil || machineID != "" {
+		match, conflicts := findPeerByIdentity(repoDir, nic, machineID)
 		if match.hostname != "" {
-			mergeIntoExistingPeer(repoDir, match.hostname, nebulaIP, lanIP, macs, machineID)
+			mergeIntoExistingPeer(repoDir, match.hostname, nebulaIP, lanIP, nic, machineID)
 			if cfg, err := LoadNodeStrict(repoDir, match.hostname); err == nil {
 				fmt.Fprintf(os.Stderr, "[gogitops] %s is a known machine (%s) — mesh entry refreshed, no duplicate created\n", hostname, match.hostname)
 				return cfg, nil
 			}
 			fmt.Fprintf(os.Stderr, "[gogitops] %s is a known machine (%s) — mesh entry refreshed, no duplicate created\n", hostname, match.hostname)
 			return &NodeConfig{
-				Hostname:  match.hostname,
-				NebulaIP:  nonEmpty(nebulaIP, match.facts.nebula),
-				LanIP:     nonEmpty(lanIP, match.facts.lan),
-				MachineID: machineID,
-				Labels:    match.facts.labels,
+				Hostname:    match.hostname,
+				NebulaIP:    nonEmpty(nebulaIP, match.facts.nebula),
+				LanIP:       nonEmpty(lanIP, match.facts.lan),
+				MachineID:   machineID,
+				PortableMacs: nic.Portable,
+				Labels:      match.facts.labels,
 			}, nil
 		}
-		// Conflicts (machine-ids differ but MACs overlap) must NOT merge —
-		// surface them so a human can see the adapter moved.
+		// Conflicts (machine-ids differ but BUILT-IN MACs overlap) must NOT
+		// merge — surface them so a human can investigate.
 		for _, c := range conflicts {
-			fmt.Fprintf(os.Stderr, "[gogitops] WARNING: %s shares MAC %s with %s but machine-ids differ — USB adapter moved between machines or duplicate adapter MAC? NOT merging; registering separately.\n",
+			fmt.Fprintf(os.Stderr, "[gogitops] WARNING: %s shares built-in MAC %s with %s but machine-ids differ — hardware reuse or spoofing? NOT merging; registering separately.\n",
 				hostname, c.mac, c.peerHostname)
 		}
 	}
 
 	cfg := &NodeConfig{
-		Hostname:  hostname,
-		NebulaIP:  nebulaIP,
-		LanIP:     lanIP,
-		Labels:    []string{"compute", osLabel},
-		Macs:      macs,
-		MachineID: machineID,
+		Hostname:     hostname,
+		NebulaIP:    nebulaIP,
+		LanIP:       lanIP,
+		Labels:      []string{"compute", osLabel},
+		MachineID:   machineID,
+		Macs:        nic.Macs,
+		PortableMacs: nic.Portable,
 	}
 
 	// 1. Write nodes/<hostname>.yaml
@@ -187,8 +250,8 @@ func autoRegisterWith(repoDir, hostname, nebulaIP, lanIP, osLabel string, macs [
 		return nil, fmt.Errorf("write node config: %w", err)
 	}
 
-	// 2. Add self to mesh.yaml (with MACs + machine-id)
-	registerToMesh(repoDir, hostname, nebulaIP, lanIP, cfg.Labels, macs, machineID)
+	// 2. Add self to mesh.yaml (with identity + portable MACs + machine-id)
+	registerToMesh(repoDir, hostname, nebulaIP, lanIP, cfg.Labels, nic, machineID)
 
 	logPrefix := "auto-registered"
 	if nebulaIP != "" {
@@ -201,6 +264,80 @@ func autoRegisterWith(repoDir, hostname, nebulaIP, lanIP, osLabel string, macs [
 	fmt.Fprintf(os.Stderr, "[gogitops] %s as %s\n", logPrefix, hostname)
 
 	return cfg, nil
+}
+
+// SyncSelfToMesh refreshes a KNOWN machine's own mesh entry at daemon
+// startup: detected IPs, identity MAC union, portable MAC union (including
+// the node yaml's declared portable_macs — the manual override for
+// thunderbolt docks etc.), machine-id backfill. Byte-stable: writes only
+// when content actually changes (the daemon git-pulls this repo — a churn
+// write would dirty the tree and break its own pull).
+func SyncSelfToMesh(repoDir, hostname, nebulaIP, lanIP string, nic NICIdentity, machineID string) {
+	meshPath := filepath.Join(repoDir, "mesh.yaml")
+	data, err := os.ReadFile(meshPath)
+	if err != nil {
+		return
+	}
+	var mesh MeshConfig
+	if err := yaml.Unmarshal(data, &mesh); err != nil {
+		return
+	}
+	changed := false
+	for i, p := range mesh.Peers {
+		if p.Hostname != hostname {
+			continue
+		}
+		// manual portable declarations win over sysfs: a MAC declared
+		// portable in the node yaml leaves the identity set
+		portable := unionMACs(p.PortableMacs, nic.Portable)
+		identity := subtractMACs(unionMACs(p.Macs, nic.Macs), portable)
+		if len(identity) != len(p.Macs) || !macEqual(identity, p.Macs) {
+			mesh.Peers[i].Macs = identity
+			changed = true
+		}
+		if !macEqual(portable, p.PortableMacs) {
+			mesh.Peers[i].PortableMacs = portable
+			changed = true
+		}
+		if machineID != "" && p.MachineID == "" {
+			mesh.Peers[i].MachineID = machineID
+			changed = true
+		}
+		if nebulaIP != "" && p.NebulaIP != nebulaIP {
+			mesh.Peers[i].NebulaIP = nebulaIP
+			changed = true
+		}
+		if lanIP != "" && p.LanIP != lanIP {
+			mesh.Peers[i].LanIP = lanIP
+			changed = true
+		}
+		break
+	}
+	if !changed {
+		return
+	}
+	if out, err := yaml.Marshal(&mesh); err == nil && string(out) != string(data) {
+		if werr := os.WriteFile(meshPath, out, 0644); werr == nil {
+			for _, p := range mesh.Peers {
+				if p.Hostname == hostname {
+					fmt.Fprintf(os.Stderr, "[gogitops] mesh entry for %s refreshed (identity MACs=%d portable MACs=%d)\n", hostname, len(p.Macs), len(p.PortableMacs))
+					break
+				}
+			}
+		}
+	}
+}
+
+func macEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type peerFacts struct {
@@ -217,10 +354,10 @@ type identityConflict struct {
 	mac, peerHostname string
 }
 
-// findPeerByIdentity resolves a check-in against existing mesh peers using
-// the identity hierarchy: machine-id first, MACs as corroboration/fallback.
-// Returns the matched peer (if any) plus any machine-id conflicts seen.
-func findPeerByIdentity(repoDir string, macs []string, machineID string) (identityMatch, []identityConflict) {
+// findPeerByIdentity resolves a check-in against existing mesh peers.
+// Portable MACs are invisible on BOTH sides — a shared dongle can never
+// fuse identities. Returns the matched peer (if any) + machine-id conflicts.
+func findPeerByIdentity(repoDir string, nic NICIdentity, machineID string) (identityMatch, []identityConflict) {
 	mesh, err := LoadMesh(repoDir)
 	if err != nil {
 		return identityMatch{}, nil
@@ -236,20 +373,18 @@ func findPeerByIdentity(repoDir string, macs []string, machineID string) (identi
 		}
 	}
 
-	// Pass 2: MACs — but a peer with a DIFFERENT machine-id is a different
-	// machine no matter what MACs are shared (moved/duplicated adapter).
+	// Pass 2: built-in MACs only. A peer with a DIFFERENT machine-id is a
+	// different machine no matter what MACs are shared.
 	for _, p := range mesh.Peers {
-		if macOverlap(macs, p.Macs) {
+		if macOverlap(nic.Macs, p.Macs) {
 			if machineID != "" && p.MachineID != "" && p.MachineID != machineID {
 				for _, m := range p.Macs {
-					if containsMAC(macs, m) {
+					if containsMAC(nic.Macs, m) {
 						conflicts = append(conflicts, identityConflict{mac: m, peerHostname: p.Hostname})
 					}
 				}
 				continue
 			}
-			// Peer without a machine-id (legacy entry): MAC match merges and
-			// the merge backfills the machine-id.
 			return identityMatch{hostname: p.Hostname, facts: peerFacts{nebula: p.NebulaIP, lan: p.LanIP, labels: p.Labels}}, conflicts
 		}
 	}
@@ -266,9 +401,9 @@ func containsMAC(macs []string, m string) bool {
 }
 
 // mergeIntoExistingPeer refreshes a known machine's mesh entry: fresh IPs,
-// MAC union, machine-id backfill. Hostname and labels are NOT touched (first
-// registration wins the name; hand-curated labels are never clobbered).
-func mergeIntoExistingPeer(repoDir, peerHostname, nebulaIP, lanIP string, macs []string, machineID string) {
+// identity + portable MAC unions, machine-id backfill. Hostname and labels
+// are NOT touched. Byte-stable write.
+func mergeIntoExistingPeer(repoDir, peerHostname, nebulaIP, lanIP string, nic NICIdentity, machineID string) {
 	meshPath := filepath.Join(repoDir, "mesh.yaml")
 	data, err := os.ReadFile(meshPath)
 	if err != nil {
@@ -286,14 +421,16 @@ func mergeIntoExistingPeer(repoDir, peerHostname, nebulaIP, lanIP string, macs [
 			if lanIP != "" {
 				mesh.Peers[i].LanIP = lanIP
 			}
-			mesh.Peers[i].Macs = unionMACs(p.Macs, macs)
+			portable := unionMACs(p.PortableMacs, nic.Portable)
+			mesh.Peers[i].PortableMacs = portable
+			mesh.Peers[i].Macs = subtractMACs(unionMACs(p.Macs, nic.Macs), portable)
 			if machineID != "" && p.MachineID == "" {
 				mesh.Peers[i].MachineID = machineID
 			}
 			break
 		}
 	}
-	if out, err := yaml.Marshal(&mesh); err == nil {
+	if out, err := yaml.Marshal(&mesh); err == nil && string(out) != string(data) {
 		os.WriteFile(meshPath, out, 0644)
 	}
 }

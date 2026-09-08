@@ -2414,6 +2414,19 @@ func runDaemon(args []string) {
 		meshCfg = &config.MeshConfig{}
 	}
 
+	// Machine identity sync: refresh our own mesh entry with live-detected
+	// truth (IPs, NICs, machine-id). Portable MACs declared in the node yaml
+	// (portable_macs:) override sysfs USB detection — they move OUT of the
+	// identity set into portable inventory. Byte-stable: only writes on
+	// real change (this repo git-pulls itself).
+	syncNIC := config.DetectNICs()
+	syncNIC.Portable = append(syncNIC.Portable, node.PortableMacs...)
+	syncMid := config.DetectMachineID()
+	if syncMid == "" {
+		syncMid = node.MachineID
+	}
+	config.SyncSelfToMesh(*repoDir, hostname, config.DetectNebulaIP(), config.DetectLanIP(), syncNIC, syncMid)
+
 	wbhook := resolveWebhook(*webhook)
 
 	bind := *bindAddr

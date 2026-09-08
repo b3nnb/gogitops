@@ -14,15 +14,16 @@ import (
 
 // NodeConfig is the per-device configuration (nodes/<hostname>.yaml)
 type NodeConfig struct {
-	Hostname string      `yaml:"hostname"`
-	NebulaIP string      `yaml:"nebula_ip"`
-	LanIP    string      `yaml:"lan_ip"`
-	MachineID string     `yaml:"machine_id,omitempty"`
-	Macs     []string    `yaml:"macs,omitempty"`
-	Labels   []string    `yaml:"labels"`
-	Services []Service   `yaml:"services"`
-	Disk     []DiskCheck `yaml:"disk"`
-	Agent    AgentConfig `yaml:"agent"`
+	Hostname     string      `yaml:"hostname"`
+	NebulaIP     string      `yaml:"nebula_ip"`
+	LanIP        string      `yaml:"lan_ip"`
+	MachineID    string      `yaml:"machine_id,omitempty"`
+	Macs         []string    `yaml:"macs,omitempty"`
+	PortableMacs []string    `yaml:"portable_macs,omitempty"`
+	Labels       []string    `yaml:"labels"`
+	Services     []Service   `yaml:"services"`
+	Disk         []DiskCheck `yaml:"disk"`
+	Agent        AgentConfig `yaml:"agent"`
 }
 
 func (n NodeConfig) Address() string {
@@ -68,13 +69,14 @@ type MeshConfig struct {
 }
 
 type Peer struct {
-	Hostname string   `yaml:"hostname"`
-	NebulaIP string   `yaml:"nebula_ip"`
-	LanIP    string   `yaml:"lan_ip"`
-	Port     int      `yaml:"port"`
-	MachineID string  `yaml:"machine_id,omitempty"`
-	Macs     []string `yaml:"macs,omitempty"`
-	Labels   []string `yaml:"labels"`
+	Hostname     string   `yaml:"hostname"`
+	MachineID    string   `yaml:"machine_id,omitempty"`
+	NebulaIP     string   `yaml:"nebula_ip"`
+	LanIP        string   `yaml:"lan_ip"`
+	Port         int      `yaml:"port"`
+	Macs         []string `yaml:"macs,omitempty"`
+	PortableMacs []string `yaml:"portable_macs,omitempty"`
+	Labels       []string `yaml:"labels"`
 }
 
 func (p Peer) Address() string {
@@ -320,11 +322,11 @@ func detectOSLabel() string {
 // matches a known peer by MAC is merged into the existing entry — no
 // duplicate peers, no junk node yaml.
 func autoRegister(repoDir, hostname string) (*NodeConfig, error) {
-	return autoRegisterWith(repoDir, hostname, DetectNebulaIP(), DetectLanIP(), detectOSLabel(), DetectMACs(), DetectMachineID())
+	return autoRegisterWith(repoDir, hostname, DetectNebulaIP(), DetectLanIP(), detectOSLabel(), DetectNICs(), DetectMachineID())
 }
 
 // registerToMesh adds or updates a peer entry in mesh.yaml
-func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string, macs []string, machineID string) {
+func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string, nic NICIdentity, machineID string) {
 	meshPath := filepath.Join(repoDir, "mesh.yaml")
 	data, err := os.ReadFile(meshPath)
 	if err != nil {
@@ -346,14 +348,19 @@ func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string, 
 			if lanIP != "" {
 				mesh.Peers[i].LanIP = lanIP
 			}
-			if len(macs) > 0 {
-				mesh.Peers[i].Macs = unionMACs(p.Macs, macs)
+			if len(nic.Macs) > 0 || len(nic.Portable) > 0 {
+				portable := unionMACs(p.PortableMacs, nic.Portable)
+				mesh.Peers[i].PortableMacs = portable
+				mesh.Peers[i].Macs = subtractMACs(unionMACs(p.Macs, nic.Macs), portable)
+			}
+			if machineID != "" && p.MachineID == "" {
+				mesh.Peers[i].MachineID = machineID
 			}
 			if len(labels) > 0 && len(p.Labels) == 0 {
 				// only fill empty labels — never clobber hand-curated ones
 				mesh.Peers[i].Labels = labels
 			}
-			if out, err := yaml.Marshal(&mesh); err == nil {
+			if out, err := yaml.Marshal(&mesh); err == nil && string(out) != string(data) {
 				os.WriteFile(meshPath, out, 0644)
 			}
 			return
@@ -362,13 +369,14 @@ func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string, 
 
 	// Not found — add new peer
 	peer := Peer{
-		Hostname:  hostname,
-		NebulaIP:  nebulaIP,
-		LanIP:     lanIP,
-		Port:      7780,
-		MachineID: machineID,
-		Macs:      macs,
-		Labels:    labels,
+		Hostname:     hostname,
+		NebulaIP:     nebulaIP,
+		LanIP:        lanIP,
+		Port:         7780,
+		MachineID:    machineID,
+		Macs:         nic.Macs,
+		PortableMacs: nic.Portable,
+		Labels:       labels,
 	}
 	mesh.Peers = append(mesh.Peers, peer)
 
