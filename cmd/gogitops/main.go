@@ -1141,6 +1141,11 @@ func recipeNew(args []string) {
 	}
 
 	template := `# GoGitOps Recipe: ` + name + `
+# Universal step vocabulary — the AGENT translates per-OS, the recipe never changes.
+#   command:   plain bash (universal prereq)
+#   package: X + sources: "[pkg:X, pip:alt]"   → agent picks apt/dnf/apk/brew/...
+#   schedule: hourly + command: Y              → agent installs idempotent cron
+#   when: guard runs on every OS (detect capabilities, don't assume them)
 name: ` + name + `
 description: "TODO: Human-readable description"
 version: "1.0.0"
