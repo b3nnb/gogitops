@@ -1379,6 +1379,7 @@ type recipeStep struct {
 	OS            string `yaml:"os"`
 	Arch          string `yaml:"arch"`
 	LabelsReq     []string `yaml:"labels_required"`
+	LabelsExcl    []string `yaml:"labels_exclude"`
 	Expect        string `yaml:"expect"`
 	ExpectRegex   string `yaml:"expect_regex"`
 	ExpectExit    *int   `yaml:"expect_exit"`
@@ -1413,14 +1414,16 @@ type recipe struct {
 func recipeRun(args []string) {
 	fs := flag.NewFlagSet("recipe run", flag.ExitOnError)
 	repoDir := fs.String("repo", ".", "path to gogitops repo")
+	hostFlag := fs.String("hostname", "", "node hostname for label scoping + {{hostname}} (default: detected system hostname)")
 	dryRun := fs.Bool("dry-run", false, "print commands without executing")
 	verbose := fs.Bool("verbose", false, "show full command output")
 
 	// Separate flags from positional args
 	var positional []string
 	var flagArgs []string
+	valueFlags := map[string]bool{"--repo": true, "--hostname": true}
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--repo" && i+1 < len(args) {
+		if valueFlags[args[i]] && i+1 < len(args) {
 			flagArgs = append(flagArgs, args[i], args[i+1])
 			i++
 		} else if strings.HasPrefix(args[i], "-") {
@@ -1485,8 +1488,13 @@ func recipeRun(args []string) {
 
 	// Build variable map for substitution
 	vars := map[string]string{
-		"repo":     resolved,
-		"hostname": config.DetectHostname(),
+		"repo": resolved,
+	}
+	// Hostname: --hostname flag wins (fleet identity), else detected system hostname
+	if *hostFlag != "" {
+		vars["hostname"] = *hostFlag
+	} else {
+		vars["hostname"] = config.DetectHostname()
 	}
 	// Detect OS/arch
 	vars["os"] = runtime.GOOS
@@ -1507,6 +1515,22 @@ func recipeRun(args []string) {
 		}
 		return ""
 	}())
+
+	// Node labels for label scoping. Only loaded when the node yaml exists —
+	// recipe runs must not trigger LoadNode's auto-registration side effect.
+	nodeLabels := []string{}
+	if _, err := os.Stat(filepath.Join(vars["repo"], "nodes", vars["hostname"]+".yaml")); err == nil {
+		if n, err := config.LoadNode(vars["repo"], vars["hostname"]); err == nil {
+			nodeLabels = n.Labels
+		}
+	}
+
+	// Recipe-level label gate (recipe labels: node must have ALL of them;
+	// empty = all nodes)
+	if len(r.Labels) > 0 && !labelsMatch(nodeLabels, r.Labels, nil) {
+		fmt.Printf("  ⊘ node labels %v don't satisfy recipe labels %v — recipe skipped\n", nodeLabels, r.Labels)
+		return
+	}
 
 	// Execute steps
 	passed := 0
@@ -1576,6 +1600,13 @@ func recipeRun(args []string) {
 		// Arch filter
 		if step.Arch != "" && step.Arch != vars["arch"] {
 			fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: arch=%s)\033[0m\n", stepNum, len(r.Steps), displayName, step.Arch)
+			skipped++
+			continue
+		}
+		// Label filters: labels_required = node must have ALL of them;
+		// labels_exclude = node must have NONE of them
+		if !labelsMatch(nodeLabels, step.LabelsReq, step.LabelsExcl) {
+			fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: labels required=%v exclude=%v)\033[0m\n", stepNum, len(r.Steps), displayName, step.LabelsReq, step.LabelsExcl)
 			skipped++
 			continue
 		}
@@ -1824,6 +1855,8 @@ func parseRecipe(content string) recipe {
 				} else if strings.HasPrefix(trimmed, "version:") {
 				r.Version = strings.TrimSpace(strings.TrimPrefix(trimmed, "version:"))
 				r.Version = unquoteYAML(r.Version)
+			} else if strings.HasPrefix(trimmed, "labels:") {
+				r.Labels = parseSourceList(strings.TrimSpace(strings.TrimPrefix(trimmed, "labels:")))
 			} else if strings.HasPrefix(trimmed, "steps:") {
 				inSteps = true
 			}
@@ -1926,7 +1959,9 @@ func parseRecipe(content string) recipe {
 		case "only_if_attr":
 			currentStep.OnlyIfAttr = val
 		case "labels_required":
-			// Simple parse: [a, b] → skip for now
+			currentStep.LabelsReq = parseSourceList(val)
+		case "labels_exclude":
+			currentStep.LabelsExcl = parseSourceList(val)
 		}
 	}
 
@@ -1935,6 +1970,26 @@ func parseRecipe(content string) recipe {
 	}
 
 	return r
+}
+
+// labelsMatch reports whether nodeLabels satisfies required (all present)
+// and exclude (none present). Empty required+exclude = always matches.
+func labelsMatch(nodeLabels, required, exclude []string) bool {
+	have := map[string]bool{}
+	for _, l := range nodeLabels {
+		have[l] = true
+	}
+	for _, l := range required {
+		if !have[l] {
+			return false
+		}
+	}
+	for _, l := range exclude {
+		if have[l] {
+			return false
+		}
+	}
+	return true
 }
 
 // unquoteYAML removes wrapping quotes from a YAML value.
