@@ -1,5 +1,6 @@
 peers:
     - hostname: friday
+      machine_id: 0977c274f3c54f2c87bd59e763c2ca26
       nebula_ip: 10.200.0.4
       lan_ip: 10.2.0.102
       port: 7780
@@ -13,6 +14,7 @@ peers:
         - trader-host
         - gpu
     - hostname: mini
+      machine_id: adf8cc28-824e-5092-a251-6ca1fa10d181
       nebula_ip: ""
       lan_ip: 10.0.0.251
       port: 7780

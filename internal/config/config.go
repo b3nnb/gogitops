@@ -17,6 +17,7 @@ type NodeConfig struct {
 	Hostname string      `yaml:"hostname"`
 	NebulaIP string      `yaml:"nebula_ip"`
 	LanIP    string      `yaml:"lan_ip"`
+	MachineID string     `yaml:"machine_id,omitempty"`
 	Macs     []string    `yaml:"macs,omitempty"`
 	Labels   []string    `yaml:"labels"`
 	Services []Service   `yaml:"services"`
@@ -71,6 +72,7 @@ type Peer struct {
 	NebulaIP string   `yaml:"nebula_ip"`
 	LanIP    string   `yaml:"lan_ip"`
 	Port     int      `yaml:"port"`
+	MachineID string  `yaml:"machine_id,omitempty"`
 	Macs     []string `yaml:"macs,omitempty"`
 	Labels   []string `yaml:"labels"`
 }
@@ -318,11 +320,11 @@ func detectOSLabel() string {
 // matches a known peer by MAC is merged into the existing entry — no
 // duplicate peers, no junk node yaml.
 func autoRegister(repoDir, hostname string) (*NodeConfig, error) {
-	return autoRegisterWith(repoDir, hostname, DetectNebulaIP(), DetectLanIP(), detectOSLabel(), DetectMACs())
+	return autoRegisterWith(repoDir, hostname, DetectNebulaIP(), DetectLanIP(), detectOSLabel(), DetectMACs(), DetectMachineID())
 }
 
 // registerToMesh adds or updates a peer entry in mesh.yaml
-func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string, macs []string) {
+func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string, macs []string, machineID string) {
 	meshPath := filepath.Join(repoDir, "mesh.yaml")
 	data, err := os.ReadFile(meshPath)
 	if err != nil {
@@ -360,12 +362,13 @@ func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string, 
 
 	// Not found — add new peer
 	peer := Peer{
-		Hostname: hostname,
-		NebulaIP: nebulaIP,
-		LanIP:    lanIP,
-		Port:     7780,
-		Macs:     macs,
-		Labels:   labels,
+		Hostname:  hostname,
+		NebulaIP:  nebulaIP,
+		LanIP:     lanIP,
+		Port:      7780,
+		MachineID: machineID,
+		Macs:      macs,
+		Labels:    labels,
 	}
 	mesh.Peers = append(mesh.Peers, peer)
 

@@ -4,26 +4,64 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-// ── MAC-based machine identity ──────────────────────────────────────────────
+// ── Machine identity: machine-id primary, MACs corroboration ────────────────
 //
-// A machine's identity is the SET of its physical interface MACs (wifi +
-// ethernet + any other real NICs) — stable across IP changes, DHCP churn and
-// hostname changes. LAN IPs are NOT identity: they move with the network.
+// Identity hierarchy:
 //
-// autoRegister probes the local MACs and checks them against every mesh peer.
-// Any overlap = known machine (possibly checking in under a different name,
-// e.g. the system hostname instead of the fleet name) → the existing entry is
-// refreshed (IPs + MAC union) and NO duplicate is created. First registration
-// wins the hostname, so accidental identities can't rename a fleet node.
-// No overlap = genuinely new machine → normal registration, now recording
-// its MACs so future check-ins match it.
+//  1. machine_id — per-OS-install stable ID (/etc/machine-id on Linux,
+//     IOPlatformUUID on macOS). Cannot move between machines. THE key.
+//  2. macs — physical interface MAC set. Corroborates when machine-id is
+//     missing (legacy entries), and unions over time as adapters change.
+//
+// Match rules (check-in vs existing peers):
+//   - machine-ids equal            → same machine: merge, union MACs.
+//   - machine-ids differ, MAC overlaps → two machines sharing a MAC — a USB
+//     adapter that moved, or a cheap adapter with a duplicate burned-in MAC.
+//     NEVER merge; emit a conflict warning naming both sides.
+//   - peer has no machine-id (legacy) + MAC overlap → merge and backfill the
+//     machine-id (first upgrade wins).
+//   - no signal matches            → new machine: register with both ids.
+//
+// A machine's own new adapter (dongle plugged in) unions into its own entry
+// via the machine-id merge — harmless. If that adapter later moves to another
+// machine, the differing machine-ids block the wrong merge.
+
+var machineIDRe = regexp.MustCompile(`"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]+)"`)
+
+// DetectMachineID returns a per-install machine identifier. Linux:
+// /etc/machine-id (fallback /var/lib/dbus/machine-id). macOS: platform UUID
+// via ioreg. Empty string when unavailable (identity falls back to MACs).
+func DetectMachineID() string {
+	if data, err := os.ReadFile("/etc/machine-id"); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id
+		}
+	}
+	if data, err := os.ReadFile("/var/lib/dbus/machine-id"); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		out, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output()
+		if err == nil {
+			if m := machineIDRe.FindStringSubmatch(string(out)); m != nil {
+				return strings.ToLower(m[1])
+			}
+		}
+	}
+	return ""
+}
 
 // macSkipPrefixes are virtual interface name prefixes whose MACs are
 // random-per-boot or meaningless for identity (containers, bridges, VPNs).
@@ -100,35 +138,41 @@ func unionMACs(a, b []string) []string {
 	return out
 }
 
-// autoRegisterWith is the testable core of autoRegister: macs are injected so
-// tests don't depend on the host machine's real interfaces.
-func autoRegisterWith(repoDir, hostname, nebulaIP, lanIP, osLabel string, macs []string) (*NodeConfig, error) {
-	// MAC identity guard: known machine → merge into its existing entry.
-	if macs != nil {
-		if peerHostname, peerLabels, ok := findPeerByMAC(repoDir, macs); ok {
-			mergeIntoExistingPeer(repoDir, peerHostname, nebulaIP, lanIP, macs)
-			// Return the machine's REAL config: its existing node yaml when
-			// present, else a config synthesized from the peer entry.
-			if cfg, err := LoadNodeStrict(repoDir, peerHostname); err == nil {
-				fmt.Fprintf(os.Stderr, "[gogitops] %s is a known machine (%s) — mesh entry refreshed, no duplicate created\n", hostname, peerHostname)
+// autoRegisterWith is the testable core of autoRegister: macs + machineID
+// are injected so tests don't depend on the host machine's real state.
+func autoRegisterWith(repoDir, hostname, nebulaIP, lanIP, osLabel string, macs []string, machineID string) (*NodeConfig, error) {
+	if macs != nil || machineID != "" {
+		match, conflicts := findPeerByIdentity(repoDir, macs, machineID)
+		if match.hostname != "" {
+			mergeIntoExistingPeer(repoDir, match.hostname, nebulaIP, lanIP, macs, machineID)
+			if cfg, err := LoadNodeStrict(repoDir, match.hostname); err == nil {
+				fmt.Fprintf(os.Stderr, "[gogitops] %s is a known machine (%s) — mesh entry refreshed, no duplicate created\n", hostname, match.hostname)
 				return cfg, nil
 			}
-			fmt.Fprintf(os.Stderr, "[gogitops] %s is a known machine (%s) — mesh entry refreshed, no duplicate created\n", hostname, peerHostname)
+			fmt.Fprintf(os.Stderr, "[gogitops] %s is a known machine (%s) — mesh entry refreshed, no duplicate created\n", hostname, match.hostname)
 			return &NodeConfig{
-				Hostname: peerHostname,
-				NebulaIP: nonEmpty(nebulaIP, peerLabels.nebula),
-				LanIP:    nonEmpty(lanIP, peerLabels.lan),
-				Labels:   peerLabels.labels,
+				Hostname:  match.hostname,
+				NebulaIP:  nonEmpty(nebulaIP, match.facts.nebula),
+				LanIP:     nonEmpty(lanIP, match.facts.lan),
+				MachineID: machineID,
+				Labels:    match.facts.labels,
 			}, nil
+		}
+		// Conflicts (machine-ids differ but MACs overlap) must NOT merge —
+		// surface them so a human can see the adapter moved.
+		for _, c := range conflicts {
+			fmt.Fprintf(os.Stderr, "[gogitops] WARNING: %s shares MAC %s with %s but machine-ids differ — USB adapter moved between machines or duplicate adapter MAC? NOT merging; registering separately.\n",
+				hostname, c.mac, c.peerHostname)
 		}
 	}
 
 	cfg := &NodeConfig{
-		Hostname: hostname,
-		NebulaIP: nebulaIP,
-		LanIP:    lanIP,
-		Labels:   []string{"compute", osLabel},
-		Macs:     macs,
+		Hostname:  hostname,
+		NebulaIP:  nebulaIP,
+		LanIP:     lanIP,
+		Labels:    []string{"compute", osLabel},
+		Macs:      macs,
+		MachineID: machineID,
 	}
 
 	// 1. Write nodes/<hostname>.yaml
@@ -143,8 +187,8 @@ func autoRegisterWith(repoDir, hostname, nebulaIP, lanIP, osLabel string, macs [
 		return nil, fmt.Errorf("write node config: %w", err)
 	}
 
-	// 2. Add self to mesh.yaml (with MACs)
-	registerToMesh(repoDir, hostname, nebulaIP, lanIP, cfg.Labels, macs)
+	// 2. Add self to mesh.yaml (with MACs + machine-id)
+	registerToMesh(repoDir, hostname, nebulaIP, lanIP, cfg.Labels, macs, machineID)
 
 	logPrefix := "auto-registered"
 	if nebulaIP != "" {
@@ -164,25 +208,67 @@ type peerFacts struct {
 	labels      []string
 }
 
-// findPeerByMAC scans mesh.yaml for a peer sharing any MAC with macs.
-// Returns the matched peer's hostname + its recorded facts.
-func findPeerByMAC(repoDir string, macs []string) (string, peerFacts, bool) {
+type identityMatch struct {
+	hostname string
+	facts    peerFacts
+}
+
+type identityConflict struct {
+	mac, peerHostname string
+}
+
+// findPeerByIdentity resolves a check-in against existing mesh peers using
+// the identity hierarchy: machine-id first, MACs as corroboration/fallback.
+// Returns the matched peer (if any) plus any machine-id conflicts seen.
+func findPeerByIdentity(repoDir string, macs []string, machineID string) (identityMatch, []identityConflict) {
 	mesh, err := LoadMesh(repoDir)
 	if err != nil {
-		return "", peerFacts{}, false
+		return identityMatch{}, nil
 	}
-	for _, p := range mesh.Peers {
-		if macOverlap(macs, p.Macs) {
-			return p.Hostname, peerFacts{nebula: p.NebulaIP, lan: p.LanIP, labels: p.Labels}, true
+	var conflicts []identityConflict
+
+	// Pass 1: machine-id — definitive when both sides have one.
+	if machineID != "" {
+		for _, p := range mesh.Peers {
+			if p.MachineID == machineID {
+				return identityMatch{hostname: p.Hostname, facts: peerFacts{nebula: p.NebulaIP, lan: p.LanIP, labels: p.Labels}}, nil
+			}
 		}
 	}
-	return "", peerFacts{}, false
+
+	// Pass 2: MACs — but a peer with a DIFFERENT machine-id is a different
+	// machine no matter what MACs are shared (moved/duplicated adapter).
+	for _, p := range mesh.Peers {
+		if macOverlap(macs, p.Macs) {
+			if machineID != "" && p.MachineID != "" && p.MachineID != machineID {
+				for _, m := range p.Macs {
+					if containsMAC(macs, m) {
+						conflicts = append(conflicts, identityConflict{mac: m, peerHostname: p.Hostname})
+					}
+				}
+				continue
+			}
+			// Peer without a machine-id (legacy entry): MAC match merges and
+			// the merge backfills the machine-id.
+			return identityMatch{hostname: p.Hostname, facts: peerFacts{nebula: p.NebulaIP, lan: p.LanIP, labels: p.Labels}}, conflicts
+		}
+	}
+	return identityMatch{}, conflicts
+}
+
+func containsMAC(macs []string, m string) bool {
+	for _, x := range macs {
+		if x == m {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeIntoExistingPeer refreshes a known machine's mesh entry: fresh IPs,
-// MAC union. Hostname and labels are NOT touched (first registration wins
-// the name; hand-curated labels are never clobbered by generic ones).
-func mergeIntoExistingPeer(repoDir, peerHostname, nebulaIP, lanIP string, macs []string) {
+// MAC union, machine-id backfill. Hostname and labels are NOT touched (first
+// registration wins the name; hand-curated labels are never clobbered).
+func mergeIntoExistingPeer(repoDir, peerHostname, nebulaIP, lanIP string, macs []string, machineID string) {
 	meshPath := filepath.Join(repoDir, "mesh.yaml")
 	data, err := os.ReadFile(meshPath)
 	if err != nil {
@@ -201,6 +287,9 @@ func mergeIntoExistingPeer(repoDir, peerHostname, nebulaIP, lanIP string, macs [
 				mesh.Peers[i].LanIP = lanIP
 			}
 			mesh.Peers[i].Macs = unionMACs(p.Macs, macs)
+			if machineID != "" && p.MachineID == "" {
+				mesh.Peers[i].MachineID = machineID
+			}
 			break
 		}
 	}
