@@ -1,0 +1,46 @@
+# GoGitOps Test Module — Recipe Engine Selftest
+# The first YAML-written test: validates the script resolution order
+# (self-contained-first, Sep 2026) end-to-end through a temp fixture,
+# plus the recipe engine's core script-execution path.
+# Written by Friday, no Go required — tests are YAML now. ✨
+name: recipe-selftest
+description: "Recipe engine self-tests — script resolution order + script execution"
+test_module: true
+
+steps:
+  - name: engine-binary-available
+    description: "gogitops binary resolvable (self or installed)"
+    command: "test -n '{{self}}' && echo ok || echo missing"
+    assert: "gogitops binary available"
+    expect: "ok"
+
+  - name: fixture-prep
+    description: "Build fixture repo: recipe-local probe + same-named shared probe"
+    command: "rm -rf /tmp/gogitops-selftest && mkdir -p /tmp/gogitops-selftest/recipes/flip-fixture/scripts /tmp/gogitops-selftest/recipes/scripts && rm -f /tmp/gogitops-selftest-marker"
+    assert: "fixture directories created"
+
+  - name: fixture-recipe-local-probe
+    description: "Recipe-local probe writes recipe-local-wins marker"
+    command: "echo 'echo recipe-local-wins > /tmp/gogitops-selftest-marker' > /tmp/gogitops-selftest/recipes/flip-fixture/scripts/probe.sh"
+    assert: "recipe-local probe installed"
+
+  - name: fixture-shared-probe
+    description: "Shared probe (same filename) writes shared-shadowed marker — must NOT win"
+    command: "echo 'echo shared-shadowed > /tmp/gogitops-selftest-marker' > /tmp/gogitops-selftest/recipes/scripts/probe.sh"
+    assert: "shared probe installed"
+
+  - name: fixture-recipe-yaml
+    description: "Fixture recipe that runs the probe via script:"
+    command: "printf 'name: flip-fixture\ndescription: resolution fixture\nversion: \"1.0.0\"\nlabels: []\nsteps:\n  - name: probe\n    script: probe.sh\n' > /tmp/gogitops-selftest/recipes/flip-fixture/flip-fixture.yaml"
+    assert: "fixture recipe written"
+
+  - name: resolution-recipe-local-wins
+    description: "Run fixture recipe; the recipe-local probe must run (not the shared shadow)"
+    command: "{{self}} recipe run flip-fixture --repo /tmp/gogitops-selftest >/dev/null 2>&1; cat /tmp/gogitops-selftest-marker 2>/dev/null || echo no-marker"
+    expect: "recipe-local-wins"
+    assert: "recipe-local scripts resolve before shared (self-contained-first)"
+
+  - name: fixture-cleanup
+    description: "Remove fixture"
+    command: "rm -rf /tmp/gogitops-selftest /tmp/gogitops-selftest-marker"
+    assert: "fixture cleaned up"

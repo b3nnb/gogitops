@@ -60,6 +60,8 @@ func main() {
 			cmdRecipe(os.Args[2:])
 		case "inspect":
 			cmdInspect(os.Args[2:])
+		case "test":
+			cmdTest(os.Args[2:])
 		case "deploy":
 			cmdDeploy(os.Args[2:])
 		case "help", "--help", "-h":
@@ -100,6 +102,7 @@ func printHelp() {
     dashboard  Fleet status dashboard (web UI on :7781)
     recipe     Recipe management (new, list, validate)
     inspect    Run test modules and collect node attributes
+    test       Run test modules as a test suite (list, run, run-all — CI exit codes)
     deploy     Generate agent install snippets (one-liner, systemd, launchd)
     version    Print version
 
@@ -1718,6 +1721,9 @@ func parseRecipe(content string) recipe {
 				r.Version = unquoteYAML(r.Version)
 			} else if strings.HasPrefix(trimmed, "labels:") {
 				r.Labels = parseSourceList(strings.TrimSpace(strings.TrimPrefix(trimmed, "labels:")))
+			} else if strings.HasPrefix(trimmed, "test_module:") {
+				v := strings.TrimSpace(strings.TrimPrefix(trimmed, "test_module:"))
+				r.TestModule = v == "true" || v == "yes"
 			} else if strings.HasPrefix(trimmed, "steps:") {
 				inSteps = true
 			}
@@ -2000,6 +2006,335 @@ func shellQuote(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// ── test: run test modules as a real test suite ───────────────────────────
+//
+// gogitops test promotes the inspect-style test modules into a real test
+// runner: pass/fail/skip counts, red/green output, non-zero exit on any
+// failure (CI-able). Test files are YAML with `test_module: true` — the same
+// recipe vocabulary (command/script/expect/assert/when/...), so tests are
+// written by operators and agents, not Go devs. Reusable Go modules plug in
+// via `script: <name>.go` from recipe-local scripts/ dirs.
+//
+// Discovery:
+//   test_modules/*.yaml          — fleet-wide test modules (common, per-OS)
+//   recipes/<r>/tests/*.yaml    — recipe-scoped test suites
+// Only files with `test_module: true` run — normal recipes are NEVER executed
+// by the test runner (they can install things).
+
+type testResult struct {
+	module string
+	name   string
+	status string // pass, fail, skip
+}
+
+func runTestModule(r recipe, modPath string, currentOS, currentArch, resolved string, verbose bool) []testResult {
+	var results []testResult
+	vars := map[string]string{
+		"repo":     resolved,
+		"hostname": config.DetectHostname(),
+		"os":       currentOS,
+		"arch":     currentArch,
+	}
+	// {{self}} = the binary running the tests — selftests exercise the CURRENT
+	// engine, never a stale installed copy that might shadow it on PATH.
+	if selfPath, err := os.Executable(); err == nil {
+		vars["self"] = selfPath
+	}
+	allAttrs := map[string]string{}
+
+	for i, step := range r.Steps {
+		displayName := step.Name
+		if displayName == "" {
+			displayName = fmt.Sprintf("step-%d", i+1)
+		}
+
+		// Filters → skip
+		if step.OS != "" && step.OS != currentOS {
+			results = append(results, testResult{r.Name, displayName, "skip"})
+			continue
+		}
+		if step.Arch != "" && step.Arch != currentArch {
+			results = append(results, testResult{r.Name, displayName, "skip"})
+			continue
+		}
+		if step.WhenAttr != "" || step.OnlyIfAttr != "" {
+			cond := substituteVars(step.WhenAttr+step.OnlyIfAttr, vars)
+			if !evalAttrCondition(cond, allAttrs) {
+				results = append(results, testResult{r.Name, displayName, "skip"})
+				continue
+			}
+		}
+		if step.When != "" {
+			guard := substituteVars(step.When, vars)
+			if out, err := exec.Command("bash", "-c", guard).CombinedOutput(); err != nil {
+				_ = out
+				results = append(results, testResult{r.Name, displayName, "skip"})
+				continue
+			}
+		}
+
+		// Execute — command: or script: (reusable Go/shell/python modules)
+		var output string
+		exitCode := 0
+		if step.Script != "" {
+			scriptPath := resolveScriptPath(step.Script, resolved, modPath)
+			if scriptPath == "" {
+				results = append(results, testResult{r.Name, displayName, "fail"})
+				continue
+			}
+			lang := step.ScriptLang
+			if lang == "" {
+				lang = detectScriptLang(scriptPath)
+			}
+			var cmdArgs []string
+			switch lang {
+			case "go":
+				cmdArgs = []string{"go", "run", scriptPath}
+			case "python3":
+				cmdArgs = []string{"python3", scriptPath}
+			case "bash":
+				cmdArgs = []string{"bash", scriptPath}
+			default:
+				cmdArgs = []string{scriptPath}
+			}
+			if step.ScriptArgs != "" {
+				cmdArgs = append(cmdArgs, step.ScriptArgs)
+			}
+			out, err := exec.Command(cmdArgs[0], cmdArgs[1:]...).CombinedOutput()
+			output = strings.TrimSpace(string(out))
+			if err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					exitCode = exitErr.ExitCode()
+				} else {
+					exitCode = 1
+				}
+			}
+		} else {
+			cmd := substituteVars(step.Command, vars)
+			out, err := exec.Command("bash", "-c", cmd).CombinedOutput()
+			output = strings.TrimSpace(string(out))
+			if err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					exitCode = exitErr.ExitCode()
+				} else {
+					exitCode = 1
+				}
+			}
+		}
+
+		// Validation
+		success := exitCode == 0
+		if step.Expect != "" && !strings.Contains(output, step.Expect) {
+			success = false
+		}
+		if step.ExpectRegex != "" {
+			matched, _ := regexp.MatchString(step.ExpectRegex, output)
+			if !matched {
+				success = false
+			}
+		}
+		if step.ExpectExit != nil && exitCode != *step.ExpectExit {
+			success = false
+		}
+
+		// Captures + attributes (for cross-step flow)
+		if step.Parse == "regex" && step.Pattern != "" {
+			re, compileErr := regexp.Compile(step.Pattern)
+			if compileErr == nil {
+				matches := re.FindStringSubmatch(output)
+				if len(matches) > 1 {
+					for idx, m := range matches[1:] {
+						vars[fmt.Sprintf("%d", idx+1)] = strings.TrimSpace(m)
+					}
+				}
+			}
+		}
+		if step.SetAttr != "" {
+			allAttrs[step.SetAttr] = output
+		}
+		if step.AttrPrefix != "" {
+			for k, v := range vars {
+				if regexp.MustCompile(`^\d+$`).MatchString(k) {
+					allAttrs[step.AttrPrefix+"."+k] = v
+				}
+			}
+		}
+
+		label := step.Assert
+		if label == "" {
+			label = displayName
+		}
+		status := "pass"
+		if !success {
+			status = "fail"
+		}
+		results = append(results, testResult{r.Name, label, status})
+		if verbose {
+			fmt.Printf("    \033[38;5;240m%s\033[0m\n", output)
+		}
+	}
+	return results
+}
+
+func discoverTestModules(resolved string) []string {
+	var found []string
+	tmDir := filepath.Join(resolved, "test_modules")
+	if entries, err := os.ReadDir(tmDir); err == nil {
+		for _, e := range entries {
+			n := e.Name()
+			if strings.HasSuffix(n, ".yaml") || strings.HasSuffix(n, ".yml") {
+				found = append(found, filepath.Join(tmDir, n))
+			}
+		}
+	}
+	// recipe-scoped suites: recipes/<r>/tests/*.yaml
+	rDir := filepath.Join(resolved, "recipes")
+	recipes, err := os.ReadDir(rDir)
+	if err == nil {
+		for _, rc := range recipes {
+			if !rc.IsDir() {
+				continue
+			}
+			tDir := filepath.Join(rDir, rc.Name(), "tests")
+			if entries, err := os.ReadDir(tDir); err == nil {
+				for _, e := range entries {
+					n := e.Name()
+					if strings.HasSuffix(n, ".yaml") || strings.HasSuffix(n, ".yml") {
+						found = append(found, filepath.Join(tDir, n))
+					}
+				}
+			}
+		}
+	}
+	return found
+}
+
+func cmdTest(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: gogitops test <subcommand>\n\nSubcommands:\n  list                     List available test modules\n  run <name-or-path>       Run one test module (by name or YAML path)\n  run-all                  Run every test_module: true YAML (test_modules/ + recipes/*/tests/)\n\nFlags: --repo path, --verbose\n")
+		os.Exit(1)
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("test "+sub, flag.ExitOnError)
+	repoDir := fs.String("repo", ".", "path to gogitops repo")
+	verbose := fs.Bool("verbose", false, "show full command output")
+	// split flags from positional args
+	var positional []string
+	var flagArgs []string
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--repo" && i+1 < len(args) {
+			flagArgs = append(flagArgs, args[i], args[i+1])
+			i++
+		} else if strings.HasPrefix(args[i], "-") {
+			flagArgs = append(flagArgs, args[i])
+		} else {
+			positional = append(positional, args[i])
+		}
+	}
+	fs.Parse(flagArgs)
+
+	resolved := resolveRepoDir(*repoDir)
+	currentOS := runtime.GOOS
+	currentArch := runtime.GOARCH
+
+	switch sub {
+	case "list":
+		cli.Banner()
+		fmt.Printf("\n  \033[1m\033[38;5;141mAvailable test modules\033[0m\n\n")
+		any := false
+		for _, p := range discoverTestModules(resolved) {
+			data, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			r := parseRecipe(string(data))
+			if !r.TestModule {
+				continue
+			}
+			any = true
+			rel, _ := filepath.Rel(resolved, p)
+			fmt.Printf("  \033[38;5;46m●\033[0m %-24s \033[38;5;240m%s\033[0m\n", r.Name, rel)
+		}
+		if !any {
+			fmt.Printf("  \033[38;5;240m(none found)\033[0m\n")
+		}
+		fmt.Println()
+
+	case "run":
+		if len(positional) == 0 {
+			fmt.Fprintf(os.Stderr, "usage: gogitops test run <name-or-path>\n")
+			os.Exit(1)
+		}
+		target := positional[0]
+		var path string
+		if _, err := os.Stat(target); err == nil {
+			path = target
+		} else {
+			path = filepath.Join(resolved, "test_modules", target+".yaml")
+			if _, err := os.Stat(path); err != nil {
+				fmt.Fprintf(os.Stderr, "\u274c test module not found: %s\n", target)
+				os.Exit(1)
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\u274c cannot read %s: %v\n", path, err)
+			os.Exit(1)
+		}
+		r := parseRecipe(string(data))
+		if !r.TestModule {
+			fmt.Fprintf(os.Stderr, "\u274c %s is not a test module (missing `test_module: true`) — refusing to run\n", path)
+			os.Exit(1)
+		}
+		cli.Banner()
+		results := runTestModule(r, path, currentOS, currentArch, resolved, *verbose)
+		os.Exit(printTestSummary(results))
+
+	case "run-all":
+		cli.Banner()
+		var all []testResult
+		for _, p := range discoverTestModules(resolved) {
+			data, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			r := parseRecipe(string(data))
+			if !r.TestModule {
+				continue
+			}
+			fmt.Printf("\n  \033[1m\033[38;5;141mModule: %s\033[0m \033[38;5;240m(%s)\033[0m\n", r.Name, p)
+			all = append(all, runTestModule(r, p, currentOS, currentArch, resolved, *verbose)...)
+		}
+		os.Exit(printTestSummary(all))
+
+	default:
+		fmt.Fprintf(os.Stderr, "unknown test subcommand: %s\n", sub)
+		os.Exit(1)
+	}
+}
+
+func printTestSummary(results []testResult) int {
+	pass, fail, skip := 0, 0, 0
+	for _, r := range results {
+		switch r.status {
+		case "pass":
+			pass++
+			fmt.Printf("  \033[38;5;46m\u2713\033[0m %s\n", r.name)
+		case "fail":
+			fail++
+			fmt.Printf("  \033[38;5;196m\u2716\033[0m %s\n", r.name)
+		default:
+			skip++
+			fmt.Printf("  \033[38;5;240m\u2b1c\033[0m %s\n", r.name)
+		}
+	}
+	fmt.Printf("\n  \033[1m%d passed\033[0m, \033[38;5;196m%d failed\033[0m, \033[38;5;240m%d skipped\033[0m\n\n", pass, fail, skip)
+	if fail > 0 {
+		return 1
+	}
+	return 0
 }
 
 // ── inspect: run test modules and collect attributes ─────────────────────

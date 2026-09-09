@@ -151,6 +151,26 @@ recipes/
 Recipes are stored in the git repo and pulled by agents on every git sync.
 Any node can execute any recipe it matches (by label filter).
 
+## Testing — YAML test suites (`gogitops test`)
+
+Tests are YAML files with `test_module: true` — the same recipe vocabulary
+(command/script/expect/assert/when/...), so tests are written by operators
+and agents, not Go devs. Only `test_module: true` files run — the test runner
+never executes normal recipes (they can install things).
+
+    gogitops test list               # available test modules
+    gogitops test run <name-or-path> # one module
+    gogitops test run-all           # full suite; exits 1 on any failure (CI-able)
+
+Locations:
+- `test_modules/*.yaml` — fleet-wide suites (common, per-OS, docker, recipe-selftest)
+- `recipes/<name>/tests/*.yaml` — recipe-scoped suites
+
+Every step records pass/fail/skip (steps filtered by os/arch/when count as
+skips). `{{self}}` substitutes the running binary's path — selftests always
+exercise the CURRENT engine, never a stale PATH shadow. Reusable Go/shell/
+Python modules plug in via `script:` from recipe-local `scripts/` dirs.
+
 ## Scripts
 
 Scripts live in `recipes/<name>/scripts/` (recipe-local — the primary location,
