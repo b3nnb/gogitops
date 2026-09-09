@@ -174,8 +174,8 @@ Python modules plug in via `script:` from recipe-local `scripts/` dirs.
 ## Scripts
 
 Scripts live in `recipes/<name>/scripts/` (recipe-local — the primary location,
-so every recipe is self-contained) with `recipes/scripts/` as a fallback for
-genuinely shared utilities only. They keep complex logic out of YAML and make
+so every recipe is self-contained) with `modules/` as the fleet library for
+cross-recipe shared modules. They keep complex logic out of YAML and make
 procedures independently testable. `gogitops recipe new <name>` scaffolds the
 recipe-local `scripts/` dir automatically.
 
@@ -193,8 +193,22 @@ Override detection with `script_lang: bash|go|python3`.
 ### Script Resolution Order
 
 1. `recipes/<recipe-name>/scripts/<name>` — recipe-local scripts (preferred: self-contained recipes)
-2. `recipes/scripts/<name>` — shared fallback, for genuinely shared utilities only
+2. `modules/<name>` — fleet library (cross-recipe shared modules)
 3. As-is (absolute or relative path)
+
+## Modules — the fleet library (`modules/`)
+
+Reusable modules shared across recipes live in top-level `modules/` — the
+fleet library. Any recipe or test module can reference them with `script:
+<name>`; a same-named recipe-local script always wins (self-contained-first).
+
+**Go modules are compiled + cached.** The agent builds each `.go` module once
+to `~/.cache/gogitops/modules/<name>-<source-hash>` and reuses the binary —
+recompiled automatically when the source changes. No `go run` recompile tax
+on every step. (Verified: first run compiles, second run ~0s.)
+
+Founding module: `modules/collect-attrs.go` — the general-purpose system
+attribute collector (moved out of script-demo; any recipe can use it).
 
 ### Script Types
 

@@ -2,6 +2,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -1414,7 +1416,7 @@ func recipeRun(args []string) {
 		if step.Script != "" {
 			scriptPath := resolveScriptPath(step.Script, resolved, recipeFile)
 			if scriptPath == "" {
-				fmt.Printf("  \033[38;5;196m✖ script not found: %s (searched recipes/scripts/, recipes/<name>/scripts/, install/scripts/)\033[0m\n", step.Script)
+				fmt.Printf("  \033[38;5;196m✖ script not found: %s (searched recipes/<name>/scripts/, modules/)\033[0m\n", step.Script)
 				failed++
 				if step.OnFailure == "" || step.OnFailure == "abort" {
 					fmt.Printf("\n  \033[38;5;196m✖ Recipe aborted at step %d: %s\033[0m\n", stepNum, displayName)
@@ -1432,8 +1434,8 @@ func recipeRun(args []string) {
 			}
 			switch lang {
 			case "go":
-				// Go scripts are compiled on-the-fly via `go run`
-				cmd = fmt.Sprintf("go run %s %s", shellQuote(scriptPath), scriptArgs)
+				// Go modules: compiled once + cached (rebuilt on source change)
+				cmd = fmt.Sprintf("%s %s", shellQuote(compiledGoModule(scriptPath)), scriptArgs)
 			case "bash", "sh":
 				cmd = fmt.Sprintf("bash %s %s", shellQuote(scriptPath), scriptArgs)
 			case "python", "python3":
@@ -1953,7 +1955,7 @@ func truncateStr(s string, maxLen int) string {
 
 // resolveScriptPath finds a script file by searching (self-containment first):
 // 1. recipes/<recipe-name>/scripts/<name> (recipe-local — the primary location)
-// 2. recipes/scripts/<name> (shared fallback, for genuinely shared utilities)
+// 2. modules/<name> (fleet library — cross-recipe shared modules)
 // 3. As-is (absolute or relative path)
 func resolveScriptPath(scriptName string, repoDir string, recipeFile string) string {
 	// If it's already a valid path, use it directly
@@ -1972,7 +1974,7 @@ func resolveScriptPath(scriptName string, repoDir string, recipeFile string) str
 	candidates := []string{
 		filepath.Join(recipeDir, "scripts", scriptName),
 		filepath.Join(repoDir, "recipes", recipeName, "scripts", scriptName),
-		filepath.Join(repoDir, "recipes", "scripts", scriptName),
+		filepath.Join(repoDir, "modules", scriptName), // fleet library — cross-recipe shared modules
 	}
 
 	for _, c := range candidates {
@@ -1982,6 +1984,34 @@ func resolveScriptPath(scriptName string, repoDir string, recipeFile string) str
 	}
 
 	return ""
+}
+
+// compiledGoModule returns the path of a cached compiled binary for a .go
+// module, rebuilding when the source hash changes. `go run` recompiles on
+// every call (~1-2s each); cached binaries make fleet modules instant.
+// Falls back to the source path if compilation fails (callers use go run).
+func compiledGoModule(srcPath string) string {
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		return srcPath
+	}
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])[:12]
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return srcPath
+	}
+	cacheDir := filepath.Join(home, ".cache", "gogitops", "modules")
+	binPath := filepath.Join(cacheDir, strings.TrimSuffix(filepath.Base(srcPath), ".go")+"-"+hash)
+	if _, err := os.Stat(binPath); err == nil {
+		return binPath // cached, still fresh
+	}
+	_ = os.MkdirAll(cacheDir, 0755)
+	build := exec.Command("go", "build", "-o", binPath, srcPath)
+	if err := build.Run(); err != nil {
+		return srcPath // let go run surface the compile error
+	}
+	return binPath
 }
 
 // detectScriptLang determines the script language from file extension
@@ -2091,7 +2121,7 @@ func runTestModule(r recipe, modPath string, currentOS, currentArch, resolved st
 			var cmdArgs []string
 			switch lang {
 			case "go":
-				cmdArgs = []string{"go", "run", scriptPath}
+				cmdArgs = []string{compiledGoModule(scriptPath)}
 			case "python3":
 				cmdArgs = []string{"python3", scriptPath}
 			case "bash":
