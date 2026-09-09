@@ -37,7 +37,7 @@ steps:
     
     # Execution — one of:
     command: "<shell command>"   # run a shell command
-    script: "<filename>"         # run a script file (from recipes/scripts/)
+    script: "<filename>"         # run a script (recipe-local scripts/, recipes/scripts/ fallback)
     action: <built-in>           # built-in action (see below)
     
     # Script options (only used with script:)
@@ -153,8 +153,11 @@ Any node can execute any recipe it matches (by label filter).
 
 ## Scripts
 
-Scripts are standalone files in `recipes/scripts/` (shared) or `recipes/<name>/scripts/` (recipe-local).
-They keep complex logic out of YAML and make procedures independently testable.
+Scripts live in `recipes/<name>/scripts/` (recipe-local — the primary location,
+so every recipe is self-contained) with `recipes/scripts/` as a fallback for
+genuinely shared utilities only. They keep complex logic out of YAML and make
+procedures independently testable. `gogitops recipe new <name>` scaffolds the
+recipe-local `scripts/` dir automatically.
 
 ### Supported Languages
 
@@ -169,10 +172,9 @@ Override detection with `script_lang: bash|go|python3`.
 
 ### Script Resolution Order
 
-1. `recipes/scripts/<name>` — shared scripts (preferred)
-2. `recipes/<recipe-name>/scripts/<name>` — recipe-local scripts
-3. `install/scripts/<name>` — legacy/global scripts
-4. As-is (absolute or relative path)
+1. `recipes/<recipe-name>/scripts/<name>` — recipe-local scripts (preferred: self-contained recipes)
+2. `recipes/scripts/<name>` — shared fallback, for genuinely shared utilities only
+3. As-is (absolute or relative path)
 
 ### Script Types
 

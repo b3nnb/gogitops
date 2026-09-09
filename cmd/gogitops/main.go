@@ -141,7 +141,6 @@ func printHelp() {
     GET  /v1/logs?limit=N    Recent activity log entries
     POST /v1/git/pull        Force immediate git pull
     POST /v1/restart         Restart agent (systemd auto-restarts)
-    POST /v1/recipes/migrate Migrate flat recipe YAML to directory structure (?dry_run=true)
 
 `)
 }
@@ -1084,7 +1083,7 @@ func resolveRepoDir(flagVal string) string {
 
 func cmdRecipe(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n  migrate           Migrate flat .yaml recipes to directory structure\n")
+		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n")
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -1096,8 +1095,6 @@ func cmdRecipe(args []string) {
 		recipeValidate(args[1:])
 	case "run":
 		recipeRun(args[1:])
-	case "migrate":
-		recipeMigrate(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown recipe subcommand: %s\n", args[0])
 		os.Exit(1)
@@ -1159,153 +1156,17 @@ steps: []
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ Created recipe: %s\n", recipeDir)
-	fmt.Printf("   %s  — YAML template\n", recipeFile)
-}
-
-// recipeMigrate moves flat .yaml recipe files into directory structure.
-// For each recipes/<name>.yaml:
-//   - Creates recipes/<name>/ directory
-//   - Moves the .yaml to recipes/<name>/<name>.yaml
-//   - Creates recipes/<name>/scripts/ directory (empty)
-// Does NOT modify YAML content. Skips files already in directories.
-// Also ensures recipes/scripts/ exists (shared scripts dir).
-func recipeMigrate(args []string) {
-	fs := flag.NewFlagSet("recipe migrate", flag.ExitOnError)
-	repoDir := fs.String("repo", ".", "path to gogitops repo")
-	dryRun := fs.Bool("dry-run", false, "show what would change without moving anything")
-	verbose := fs.Bool("verbose", false, "show details for each file")
-	fs.Parse(args)
-
-	resolved := resolveRepoDir(*repoDir)
-	recipesDir := resolved + "/recipes"
-
-	entries, err := os.ReadDir(recipesDir)
-	if err != nil {
-		cli.PrintError(fmt.Sprintf("cannot read recipes directory: %v", err))
+	// Recipe-local scripts dir — the PRIMARY script location (self-contained
+	// recipes; shared recipes/scripts/ is only a fallback for shared utilities)
+	scriptsDir := recipeDir + "/scripts"
+	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ failed to create scripts dir: %v\n", err)
 		os.Exit(1)
 	}
 
-	cli.Banner()
-	fmt.Printf("\n  \033[1m\033[38;5;141mRecipe Migration\033[0m\n")
-	if *dryRun {
-		fmt.Printf("  \033[38;5;226m(DRY RUN — no changes will be made)\033[0m\n")
-	}
-	fmt.Printf("  \033[38;5;240mScanning %s/\033[0m\n\n", recipesDir)
-
-	migrated := 0
-	skipped := 0
-	failed := 0
-
-	// Ensure shared scripts directory exists
-	sharedScriptsDir := filepath.Join(recipesDir, "scripts")
-	if _, err := os.Stat(sharedScriptsDir); err != nil {
-		if *dryRun {
-			fmt.Printf("  \033[38;5;38m▸ would create recipes/scripts/ (shared scripts)\033[0m\n")
-		} else {
-			if err := os.MkdirAll(sharedScriptsDir, 0755); err != nil {
-				fmt.Printf("  \033[38;5;196m✖ failed to create recipes/scripts/: %v\033[0m\n", err)
-				failed++
-			} else {
-				fmt.Printf("  \033[38;5;46m✓ created recipes/scripts/ (shared scripts)\033[0m\n")
-			}
-		}
-	} else {
-		fmt.Printf("  \033[38;5;240m⊘ recipes/scripts/ already exists\033[0m\n")
-	}
-	fmt.Println()
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			// Skip directories — they're either already migrated or subdirs like test-recipe/
-			if *verbose {
-				fmt.Printf("  \033[38;5;240m⊘ %s/ (directory, already structured)\033[0m\n", entry.Name())
-			}
-			skipped++
-			continue
-		}
-
-		name := entry.Name()
-		// Only process .yaml files
-		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
-			if *verbose {
-				fmt.Printf("  \033[38;5;240m⊘ %s (not a YAML file)\033[0m\n", name)
-			}
-			skipped++
-			continue
-		}
-
-		// Derive recipe name from filename
-		recipeName := strings.TrimSuffix(name, filepath.Ext(name))
-		srcPath := filepath.Join(recipesDir, name)
-		destDir := filepath.Join(recipesDir, recipeName)
-		destPath := filepath.Join(destDir, recipeName+".yaml")
-		scriptsDir := filepath.Join(destDir, "scripts")
-
-		// Check if destination already exists
-		if _, err := os.Stat(destDir); err == nil {
-			fmt.Printf("  \033[38;5;226m⚠ %s → %s/ (already exists, skipping)\033[0m\n", name, recipeName)
-			skipped++
-			continue
-		}
-
-		if *dryRun {
-			fmt.Printf("  \033[38;5;38m▸ %s → %s/%s.yaml + scripts/\033[0m\n", name, recipeName, recipeName)
-			migrated++
-			continue
-		}
-
-		// Create directory structure
-		if err := os.MkdirAll(destDir, 0755); err != nil {
-			fmt.Printf("  \033[38;5;196m✖ %s: failed to create dir: %v\033[0m\n", name, err)
-			failed++
-			continue
-		}
-		if err := os.MkdirAll(scriptsDir, 0755); err != nil {
-			fmt.Printf("  \033[38;5;196m✖ %s: failed to create scripts/: %v\033[0m\n", name, err)
-			failed++
-			continue
-		}
-
-		// Read original content, write to new location, delete original
-		// (Using read+write instead of os.Rename to ensure content is preserved exactly)
-		content, err := os.ReadFile(srcPath)
-		if err != nil {
-			fmt.Printf("  \033[38;5;196m✖ %s: failed to read: %v\033[0m\n", name, err)
-			failed++
-			continue
-		}
-		if err := os.WriteFile(destPath, content, 0644); err != nil {
-			fmt.Printf("  \033[38;5;196m✖ %s: failed to write: %v\033[0m\n", name, err)
-			failed++
-			continue
-		}
-		if err := os.Remove(srcPath); err != nil {
-			fmt.Printf("  \033[38;5;226m⚠ %s: moved but failed to remove original: %v\033[0m\n", name, err)
-		}
-
-		fmt.Printf("  \033[38;5;46m✓ %s → %s/%s.yaml + scripts/\033[0m\n", name, recipeName, recipeName)
-		migrated++
-	}
-
-	// Summary
-	fmt.Printf("\n  ")
-	if failed > 0 {
-		fmt.Printf("\033[38;5;226m⚠ migration complete: %d migrated, %d skipped, %d failed\033[0m\n\n", migrated, skipped, failed)
-	} else {
-		fmt.Printf("\033[38;5;46m✓ migration complete: %d migrated, %d skipped\033[0m\n\n", migrated, skipped)
-	}
-
-	// Show new structure
-	if migrated > 0 || *dryRun {
-		fmt.Printf("  \033[38;5;240mNew structure:\033[0m\n")
-		fmt.Printf("  \033[38;5;240mrecipes/\033[0m\n")
-		fmt.Printf("  \033[38;5;240m├── scripts/          # shared scripts\033[0m\n")
-		fmt.Printf("  \033[38;5;240m├── <name>/\033[0m\n")
-		fmt.Printf("  \033[38;5;240m│   ├── <name>.yaml   # recipe (unchanged content)\033[0m\n")
-		fmt.Printf("  \033[38;5;240m│   └── scripts/       # recipe-local scripts\033[0m\n")
-		fmt.Printf("  \033[38;5;240m└── ...\033[0m\n\n")
-	}
+	fmt.Printf("✅ Created recipe: %s\n", recipeDir)
+	fmt.Printf("   %s  — YAML template\n", recipeFile)
+	fmt.Printf("   %s  — recipe-local scripts (primary script location)\n", scriptsDir)
 }
 
 func recipeList() {
@@ -2084,11 +1945,10 @@ func truncateStr(s string, maxLen int) string {
 
 // ── Script resolution helpers ────────────────────────────────────────────
 
-// resolveScriptPath finds a script file by searching:
-// 1. recipes/scripts/<name> (shared scripts)
-// 2. recipes/<recipe-name>/scripts/<name> (recipe-local scripts)
-// 3. install/scripts/<name> (legacy/global scripts)
-// 4. As-is (absolute or relative path)
+// resolveScriptPath finds a script file by searching (self-containment first):
+// 1. recipes/<recipe-name>/scripts/<name> (recipe-local — the primary location)
+// 2. recipes/scripts/<name> (shared fallback, for genuinely shared utilities)
+// 3. As-is (absolute or relative path)
 func resolveScriptPath(scriptName string, repoDir string, recipeFile string) string {
 	// If it's already a valid path, use it directly
 	if _, err := os.Stat(scriptName); err == nil {
@@ -2104,10 +1964,9 @@ func resolveScriptPath(scriptName string, repoDir string, recipeFile string) str
 	}
 
 	candidates := []string{
-		filepath.Join(repoDir, "recipes", "scripts", scriptName),
 		filepath.Join(recipeDir, "scripts", scriptName),
 		filepath.Join(repoDir, "recipes", recipeName, "scripts", scriptName),
-		filepath.Join(repoDir, "install", "scripts", scriptName),
+		filepath.Join(repoDir, "recipes", "scripts", scriptName),
 	}
 
 	for _, c := range candidates {
@@ -2449,7 +2308,6 @@ func runDaemon(args []string) {
 	http.HandleFunc("/v1/logs", a.LogsHandler)
 	http.HandleFunc("/v1/git/pull", a.GitPullHandler)
 	http.HandleFunc("/v1/restart", a.RestartHandler)
-	http.HandleFunc("/v1/recipes/migrate", a.RecipeMigrateHandler)
 	a.SetRepoDir(*repoDir)
 	go func() {
 		log.Printf("health API listening on %s", addr)
