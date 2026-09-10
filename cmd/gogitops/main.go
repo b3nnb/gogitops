@@ -110,7 +110,7 @@ func printHelp() {
     recipe     Recipe management (new, list, validate)
     inspect    Run test modules and collect node attributes
     test       Run test modules as a test suite (list, run, run-all — CI exit codes)
-    attrs      Universal attribute catalog (scan the repo for every attr)
+    attrs      Attribute catalog: attrs scan (vocabulary), attrs verify (recipes)
     deploy     Generate agent install snippets (one-liner, systemd, launchd)
     version    Print version
 
@@ -1263,14 +1263,20 @@ func extractAttrRefs(r recipe) []string {
 }
 
 func cmdAttrs(args []string) {
-	// optional "scan" subcommand reads nicer: gogitops attrs scan --repo .
-	if len(args) > 0 && args[0] == "scan" {
+	// optional subcommands read nicer: gogitops attrs scan / attrs verify
+	sub := ""
+	if len(args) > 0 && (args[0] == "scan" || args[0] == "verify") {
+		sub = args[0]
 		args = args[1:]
 	}
 	fs := flag.NewFlagSet("attrs", flag.ExitOnError)
 	repoDir := fs.String("repo", ".", "path to gogitops repo")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON")
 	fs.Parse(args)
+
+	if sub == "verify" {
+		os.Exit(cmdAttrsVerify(resolveRepoDir(*repoDir), false, *jsonOut))
+	}
 
 	defs := scanRepoAttrs(*repoDir)
 	if *jsonOut {
@@ -1306,6 +1312,56 @@ func cmdAttrs(args []string) {
 		}
 	}
 	fmt.Printf("\n  \033[1m%d attributes\033[0m across %d sources\n\n", len(defs), len(sources))
+}
+
+func cmdAttrsVerify(resolved string, verbose bool, jsonOut bool) int {
+	results, attrs, setKeys := verifyRepoRecipes(resolved, verbose)
+	if jsonOut {
+		type verdict struct {
+			Recipe string `json:"recipe"`
+			Valid  bool   `json:"valid"`
+		}
+		var out []verdict
+		for _, r := range results {
+			out = append(out, verdict{strings.TrimPrefix(r.name, "validate:"), r.status == "pass"})
+		}
+		w := json.NewEncoder(os.Stdout)
+		w.SetIndent("", "  ")
+		_ = w.Encode(out)
+	} else {
+		cli.Banner()
+		fmt.Printf("\n  \033[1m\033[38;5;141mRecipe verification\033[0m \033[38;5;240m(parse + attr refs, never executed)\033[0m\n\n")
+		for _, r := range results {
+			if r.status == "pass" {
+				fmt.Printf("  \033[38;5;46m✓\033[0m %s\n", strings.TrimPrefix(r.name, "validate:"))
+			} else {
+				fmt.Printf("  \033[38;5;196m✖\033[0m %s\n", strings.TrimPrefix(r.name, "validate:"))
+			}
+		}
+		failed := 0
+		for _, r := range results {
+			if r.status == "fail" {
+				failed++
+			}
+		}
+		fmt.Printf("\n  \033[1m%d recipes\033[0m verified, \033[38;5;196m%d failed\033[0m\n\n", len(results), failed)
+	}
+	// persist verdicts as local attrs (decentralized, private — stays on node)
+	persistTestAttrs(attrs, setKeys, results, "recipe-verification")
+	if failed := countFailed(results); failed > 0 {
+		return 1
+	}
+	return 0
+}
+
+func countFailed(results []testResult) int {
+	n := 0
+	for _, r := range results {
+		if r.status == "fail" {
+			n++
+		}
+	}
+	return n
 }
 
 func cmdRecipe(args []string) {
@@ -1474,6 +1530,72 @@ func recipeValidate(args []string) {
 		return
 	}
 	fmt.Printf("✅ %s looks valid\n", file)
+}
+
+// verifyRepoRecipes validates every recipe in the repo — parse + attribute
+// references — WITHOUT running them. Runs on the agent cycle (decentralized:
+// each node computes verdicts from its own checkout) and via `attrs verify`.
+// Verdicts persist as local attrs: recipe.<name>.valid / .warnings —
+// readable by other recipes via {{attr.recipe.<name>.valid}}.
+func verifyRepoRecipes(resolved string, verbose bool) ([]testResult, map[string]string, map[string]bool) {
+	var results []testResult
+	attrs := map[string]string{}
+	setKeys := map[string]bool{}
+	store := readDeviceAttrs()
+	defs := scanRepoAttrs(resolved)
+
+	recipesDir := filepath.Join(resolved, "recipes")
+	entries, err := os.ReadDir(recipesDir)
+	if err != nil {
+		return results, attrs, setKeys
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		file := filepath.Join(recipesDir, name, name+".yaml")
+		content, err := os.ReadFile(file)
+		if err != nil {
+			continue // no recipe file in this dir
+		}
+		r := parseRecipe(string(content))
+		if r.Name == "" || r.TestModule {
+			continue
+		}
+
+		// attribute references: known = repo catalog ∪ device store
+		var warnings []string
+		for _, ref := range extractAttrRefs(r) {
+			plain := strings.TrimPrefix(ref, "attr.")
+			if attrKnown(plain, defs, store) {
+				continue
+			}
+			warnings = append(warnings, fmt.Sprintf("unknown attribute \"attr.%s\"%s", plain, suggestAttr(plain, defs)))
+		}
+
+		valid := len(warnings) == 0
+		key := "attr.recipe." + name + ".valid"
+		attrs[key] = strconv.FormatBool(valid)
+		setKeys[key] = true
+		if len(warnings) > 0 {
+			wkey := "attr.recipe." + name + ".warnings"
+			attrs[wkey] = strings.Join(warnings, "; ")
+			setKeys[wkey] = true
+		}
+
+		status := "pass"
+		if !valid {
+			status = "fail"
+		}
+		results = append(results, testResult{"recipes", "validate:" + name, status})
+		if verbose {
+			for _, w := range warnings {
+				fmt.Printf("    \033[38;5;214m⚠ %s: %s\033[0m\n", name, w)
+			}
+		}
+	}
+	return results, attrs, setKeys
 }
 
 // repoRootFromFile walks up from a recipe file to find the repo root
@@ -2625,6 +2747,12 @@ func cmdTest(args []string) {
 				mergedSetKeys[k] = mergedSetKeys[k] || setKeys[k]
 			}
 		}
+		vr, va, vk := verifyRepoRecipes(resolved, *verbose)
+		all = append(all, vr...)
+		for k, v := range va {
+			mergedAttrs[k] = v
+			mergedSetKeys[k] = mergedSetKeys[k] || vk[k]
+		}
 		persistTestAttrs(mergedAttrs, mergedSetKeys, all, "suite")
 		os.Exit(printTestSummary(all))
 
@@ -3090,6 +3218,16 @@ func runFleetTests(repoDir, hostname, webhook string, nodeLabels []string) {
 			mergedSetKeys[k] = mergedSetKeys[k] || setKeys[k]
 		}
 	}
+
+	// Recipe verification: the agent validates every recipe in its checkout
+	// (decentralized — verdicts computed on-node, stored locally, never pushed)
+	vr, va, vk := verifyRepoRecipes(resolved, false)
+	all = append(all, vr...)
+	for k, v := range va {
+		mergedAttrs[k] = v
+		mergedSetKeys[k] = mergedSetKeys[k] || vk[k]
+	}
+
 	persistTestAttrs(mergedAttrs, mergedSetKeys, all, "suite")
 	pass, fail, skip := 0, 0, 0
 	nowFailing := map[string]bool{}

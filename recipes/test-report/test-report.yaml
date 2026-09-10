@@ -38,6 +38,11 @@ steps:
     command: "echo 'docker on this node: {{attr.docker_version}}'"
     when_attr: "attr.docker_version"
 
+  - name: recipe-verdicts
+    description: "Per-recipe verification verdicts from the agent — computed locally, stored locally"
+    command: "echo 'script-demo recipe verified on this node: {{attr.recipe.script-demo.valid}}'"
+    when_attr: "attr.recipe.script-demo.valid"
+
   - name: load-reference
     description: "References a parsed capture attribute from the common module"
     command: "echo 'current load average: {{attr.load.1}}'"
