@@ -138,6 +138,40 @@ jobs:
             ${{ env.TARBALL }}
             ${{ env.ZIP_FILE }}
 
+  binaries-branch:
+    # THE self-update link: publish VERSION + raw binaries to the `binaries`
+    # branch on every v* tag. Agents fetch this branch (git transport) and
+    # hot-swap themselves — see internal/agent/update.go.
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build all platform binaries
+        run: |
+          mkdir -p binout/bin
+          platforms="linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64"
+          for p in $platforms; do
+            os="${p%-*}"; arch="${p#*-}"
+            name="gogitops-$p"
+            [ "$os" = "windows" ] && name="$name.exe"
+            GOOS=$os GOARCH=$arch go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME} -X github.com/bennbanks/gogitops/internal/agent.Version=${GITHUB_REF_NAME}" -o "binout/bin/$name" ./cmd/gogitops
+          done
+          echo "${GITHUB_REF_NAME}" > binout/VERSION
+          ls -la binout/bin/
+
+      - name: Force-push binaries branch
+        run: |
+          cd binout
+          git init -q
+          git config user.name "ci"
+          git config user.email "ci@bennbot.com"
+          git checkout -q -b binaries
+          git add -A
+          git commit -qm "agent binaries ${GITHUB_REF_NAME}"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" binaries:binaries
+
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')

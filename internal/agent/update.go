@@ -103,20 +103,43 @@ func (a *Agent) maybeSelfUpdate() {
 
 	a.logger.Actionf("update", "self-updated v%s -> v%s — restarting in place", Version, published)
 
-		// Restart in place: syscall.Exec replaces this process with the new
-		// binary, keeping the same PID/lineage — no reliance on the service
-		// manager (or spawn context) to relaunch us. (cron/launchd-spawned
-		// restarts hang pre-main on macOS — exec sidesteps that entirely.)
-		// Fall back to exit 0 (systemd Restart=always / cron keepalive) if
-		// exec fails.
-		if runtime.GOOS != "windows" {
-			if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
-				a.logger.Errorf("update", "exec restart failed (%v) — falling back to exit", err)
-			}
+	// Restart in place: syscall.Exec replaces this process with the new
+	// binary, keeping the same PID/lineage — no reliance on the service
+	// manager (or spawn context) to relaunch us. (cron/launchd-spawned
+	// restarts hang pre-main on macOS — exec sidesteps that entirely.)
+	// Fall back to exit 0 (systemd Restart=always / cron keepalive) if
+	// exec fails.
+	if runtime.GOOS != "windows" {
+		if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
+			a.logger.Errorf("update", "exec restart failed (%v) — falling back to exit", err)
 		}
-		// Service manager (Restart=always / cron keepalive) restarts us now.
-		os.Exit(0)
+	}
+	// Service manager (Restart=always / cron keepalive) restarts us now.
+	os.Exit(0)
 }
+
+// CheckBinaryUpdate returns the VERSION published on the binaries branch
+// ("" if absent). Shared by the CLI update check.
+func CheckBinaryUpdate(repoDir string) (string, error) {
+	if repoDir == "" {
+		return "", fmt.Errorf("no repo directory")
+	}
+	fetch := exec.Command("git", "fetch", "-q", "origin", BinariesBranch)
+	fetch.Dir = repoDir
+	if err := fetch.Run(); err != nil {
+		return "", fmt.Errorf("fetch %s branch: %v", BinariesBranch, err)
+	}
+	show := exec.Command("git", "show", "origin/"+BinariesBranch+":VERSION")
+	show.Dir = repoDir
+	out, err := show.Output()
+	if err != nil {
+		return "", nil // branch without VERSION = dormant
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// IsNewer exposes the semver comparison for the CLI.
+func IsNewer(candidate, current string) bool { return isNewer(candidate, current) }
 
 // isNewer reports whether candidate is a newer semver than current.
 // "dev" / empty parses to 0.0.0 — dev builds always adopt the release.
@@ -142,7 +165,7 @@ func parseSemVer(s string) [3]int {
 			if ch < '0' || ch > '9' {
 				break
 			}
-			n = n*10 + int(ch - '0')
+			n = n*10 + int(ch-'0')
 		}
 		out[i] = n
 	}

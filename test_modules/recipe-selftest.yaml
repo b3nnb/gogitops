@@ -89,6 +89,11 @@ steps:
     expect: "0 failed"
     assert: "agent verifies repo recipes locally (verdicts stay on-node)"
 
+  - name: update-check-visible
+    description: "update check reports running vs binaries-branch version (check-only, never swaps)"
+    command: "{{self}} update --repo {{repo}} 2>&1 | grep 'update check'"
+    assert: "self-update state is visible from the CLI"
+
   - name: fixture-cleanup
     description: "Remove fixture"
     command: "rm -rf /tmp/gogitops-selftest /tmp/gogitops-selftest-marker"

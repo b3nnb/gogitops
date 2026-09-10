@@ -28,14 +28,14 @@ var Version = "dev"
 
 // Agent is the running agent instance
 type Agent struct {
-	node     *config.NodeConfig
-	mesh     *config.MeshConfig
-	pinger   *mesh.Pinger
-	sender   *alert.Sender
-	started  time.Time
-	webhook  string
-	repoDir  string
-	logger   *agentlog.Logger
+	node    *config.NodeConfig
+	mesh    *config.MeshConfig
+	pinger  *mesh.Pinger
+	sender  *alert.Sender
+	started time.Time
+	webhook string
+	repoDir string
+	logger  *agentlog.Logger
 
 	mu               sync.RWMutex
 	lastReachable    []string
@@ -50,13 +50,13 @@ type Agent struct {
 // New creates an agent from config
 func New(node *config.NodeConfig, m *config.MeshConfig, webhook string) *Agent {
 	return &Agent{
-		node:     node,
-		mesh:     m,
-		pinger:   mesh.NewPinger(m),
-		sender:   alert.NewSender(webhook),
-		started:  time.Now(),
-		webhook:  webhook,
-		logger:   agentlog.Default(),
+		node:             node,
+		mesh:             m,
+		pinger:           mesh.NewPinger(m),
+		sender:           alert.NewSender(webhook),
+		started:          time.Now(),
+		webhook:          webhook,
+		logger:           agentlog.Default(),
 		lastServiceState: map[string]string{},
 		lastPeerState:    map[string]bool{},
 	}
@@ -108,21 +108,21 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 // ConfigHandler serves GET /v1/config — returns the agent's config info
 func (a *Agent) ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	type configResp struct {
-		Hostname   string   `json:"hostname"`
-		RepoDir    string   `json:"repo_dir"`
-		GitRepo    string   `json:"git_repo"`
-		GitBranch  string   `json:"git_branch"`
-		GitPullInt string   `json:"git_pull_interval"`
-		Labels     []string `json:"labels"`
-		Services   []string `json:"services"`
-		DiskChecks []string `json:"disk_checks"`
-		Groups     []string `json:"groups"`
-		Recipes    []string `json:"recipes"`
-		Webhook    string   `json:"webhook_configured"`
-		Uptime     int64    `json:"uptime_seconds"`
-		Cycles     int64    `json:"cycle_count"`
-		LastGitPull string  `json:"last_git_pull"`
-		LastGitResult string `json:"last_git_result"`
+		Hostname      string   `json:"hostname"`
+		RepoDir       string   `json:"repo_dir"`
+		GitRepo       string   `json:"git_repo"`
+		GitBranch     string   `json:"git_branch"`
+		GitPullInt    string   `json:"git_pull_interval"`
+		Labels        []string `json:"labels"`
+		Services      []string `json:"services"`
+		DiskChecks    []string `json:"disk_checks"`
+		Groups        []string `json:"groups"`
+		Recipes       []string `json:"recipes"`
+		Webhook       string   `json:"webhook_configured"`
+		Uptime        int64    `json:"uptime_seconds"`
+		Cycles        int64    `json:"cycle_count"`
+		LastGitPull   string   `json:"last_git_pull"`
+		LastGitResult string   `json:"last_git_result"`
 	}
 
 	// Collect service names

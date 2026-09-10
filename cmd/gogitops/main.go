@@ -65,6 +65,9 @@ func main() {
 			cmdRecipe(os.Args[2:])
 		case "inspect":
 			cmdInspect(os.Args[2:])
+		case "update":
+			cmdUpdate(os.Args[2:])
+
 		case "test":
 			cmdTest(os.Args[2:])
 		case "attrs":
@@ -111,6 +114,7 @@ func printHelp() {
     inspect    Run test modules and collect node attributes
     test       Run test modules as a test suite (list, run, run-all — CI exit codes)
     attrs      Attribute catalog: attrs scan (vocabulary), attrs verify (recipes)
+    update     Self-update check: running vs binaries-branch version
     deploy     Generate agent install snippets (one-liner, systemd, launchd)
     version    Print version
 
@@ -930,8 +934,8 @@ func cmdSet(args []string) {
 								cli.PrintError(fmt.Sprintf("git fetch failed: %s", strings.TrimSpace(string(fetchOut))))
 							} else {
 								checkoutCmd := exec.Command("git", "checkout", branch)
-							checkoutCmd.Dir = repoDir
-							checkoutCmd.CombinedOutput()
+								checkoutCmd.Dir = repoDir
+								checkoutCmd.CombinedOutput()
 								cli.PrintSuccess(fmt.Sprintf("initialized and fetched to %s", repoDir))
 							}
 						}
@@ -1260,6 +1264,34 @@ func extractAttrRefs(r recipe) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// cmdUpdate reports the self-update state: running version vs the binaries
+// branch. Check-only — the daemon hot-swaps itself (internal/agent/update.go).
+func cmdUpdate(args []string) {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	repoDir := fs.String("repo", ".", "path to the config repo (needs the binaries branch remote)")
+	fs.Parse(args)
+	resolved := resolveRepoDir(*repoDir)
+
+	published, err := agent.CheckBinaryUpdate(resolved)
+	cli.Banner()
+	running := agent.Version
+	pub := strings.TrimPrefix(published, "v") // normalize display
+	switch {
+	case err != nil:
+		fmt.Printf("  update check: unreachable — %v\n", err)
+		fmt.Printf("  running: v%s | binaries branch: unknown (feature off until reachable)\n", running)
+	case published == "":
+		fmt.Printf("  update check: no VERSION on the binaries branch — self-update dormant\n")
+		fmt.Printf("  running: v%s\n", running)
+	case agent.IsNewer(published, running):
+		fmt.Printf("  update check: AVAILABLE — v%s → v%s (daemon swaps + exec-restarts on its git tick)\n", running, pub)
+	case published == running:
+		fmt.Printf("  update check: up to date (v%s)\n", running)
+	default:
+		fmt.Printf("  update check: binaries branch older (v%s) than running (v%s) — no action\n", pub, running)
+	}
 }
 
 func cmdAttrs(args []string) {
@@ -1619,42 +1651,42 @@ func repoRootFromFile(file string) string {
 // ── Recipe runner ─────────────────────────────────────────────────────────
 
 type recipeStep struct {
-	Name          string `yaml:"name"`
-	Description   string `yaml:"description"`
-	Command       string `yaml:"command"`
-	Script        string `yaml:"script"`
-	ScriptArgs    string `yaml:"script_args"`
-	ScriptLang    string `yaml:"script_lang"`
-	Package       string `yaml:"package"`
-	Sources       []string `yaml:"sources"`
-	Schedule      string `yaml:"schedule"`
-	OS            string `yaml:"os"`
-	Arch          string `yaml:"arch"`
-	LabelsReq     []string `yaml:"labels_required"`
-	LabelsExcl    []string `yaml:"labels_exclude"`
-	Expect        string `yaml:"expect"`
-	ExpectRegex   string `yaml:"expect_regex"`
-	ExpectExit    *int   `yaml:"expect_exit"`
-	Parse         string `yaml:"parse"`
-	Pattern       string `yaml:"pattern"`
-	OnlyIf        string `yaml:"only_if"`
-	When          string `yaml:"when"`
-	OnFailure     string `yaml:"on_failure"`
-	Retries       int    `yaml:"retries"`
-	RetryDelay    string `yaml:"retry_delay"`
-	Assert        string `yaml:"assert"`
-	SetAttr       string `yaml:"set_attr"`
-	AttrPrefix    string `yaml:"attr_prefix"`
-	WhenAttr      string `yaml:"when_attr"`
-	OnlyIfAttr    string `yaml:"only_if_attr"`
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	Command     string   `yaml:"command"`
+	Script      string   `yaml:"script"`
+	ScriptArgs  string   `yaml:"script_args"`
+	ScriptLang  string   `yaml:"script_lang"`
+	Package     string   `yaml:"package"`
+	Sources     []string `yaml:"sources"`
+	Schedule    string   `yaml:"schedule"`
+	OS          string   `yaml:"os"`
+	Arch        string   `yaml:"arch"`
+	LabelsReq   []string `yaml:"labels_required"`
+	LabelsExcl  []string `yaml:"labels_exclude"`
+	Expect      string   `yaml:"expect"`
+	ExpectRegex string   `yaml:"expect_regex"`
+	ExpectExit  *int     `yaml:"expect_exit"`
+	Parse       string   `yaml:"parse"`
+	Pattern     string   `yaml:"pattern"`
+	OnlyIf      string   `yaml:"only_if"`
+	When        string   `yaml:"when"`
+	OnFailure   string   `yaml:"on_failure"`
+	Retries     int      `yaml:"retries"`
+	RetryDelay  string   `yaml:"retry_delay"`
+	Assert      string   `yaml:"assert"`
+	SetAttr     string   `yaml:"set_attr"`
+	AttrPrefix  string   `yaml:"attr_prefix"`
+	WhenAttr    string   `yaml:"when_attr"`
+	OnlyIfAttr  string   `yaml:"only_if_attr"`
 }
 
 type recipe struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Version     string `yaml:"version"`
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	Version     string   `yaml:"version"`
 	Labels      []string `yaml:"labels"`
-	TestModule  bool   `yaml:"test_module"`
+	TestModule  bool     `yaml:"test_module"`
 	Params      []struct {
 		Name        string `yaml:"name"`
 		Description string `yaml:"description"`
@@ -2105,10 +2137,10 @@ func parseRecipe(content string) recipe {
 			if strings.HasPrefix(trimmed, "name:") {
 				r.Name = strings.TrimSpace(strings.TrimPrefix(trimmed, "name:"))
 				r.Name = unquoteYAML(r.Name)
-				} else if strings.HasPrefix(trimmed, "description:") {
+			} else if strings.HasPrefix(trimmed, "description:") {
 				r.Description = strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
 				r.Description = unquoteYAML(r.Description)
-				} else if strings.HasPrefix(trimmed, "version:") {
+			} else if strings.HasPrefix(trimmed, "version:") {
 				r.Version = strings.TrimSpace(strings.TrimPrefix(trimmed, "version:"))
 				r.Version = unquoteYAML(r.Version)
 			} else if strings.HasPrefix(trimmed, "labels:") {
