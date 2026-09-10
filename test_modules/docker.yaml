@@ -1,4 +1,7 @@
 # GoGitOps Test Module — Docker Hosts
+# Guards: daemon-dependent checks use `docker info` (skip when the daemon is
+# intentionally off — docker is a sometimes-tool on some nodes, an off daemon
+# is a ⬜ not a ✖); the compose check is client-side, so CLI-only guard.
 name: docker
 description: "Assertions for nodes running Docker"
 test_module: true
@@ -7,7 +10,7 @@ steps:
   - name: docker-version
     description: "Docker engine version"
     command: "docker version --format '{{.Server.Version}}' 2>/dev/null || echo 'not-available'"
-    when: "command -v docker >/dev/null 2>&1"
+    when: "docker info >/dev/null 2>&1"
     assert: "Docker engine responding"
     expect_regex: '\d+\.\d+'
     set_attr: docker_version
@@ -23,30 +26,30 @@ steps:
   - name: docker-running-containers
     description: "Count running containers"
     command: "docker ps -q 2>/dev/null | wc -l || echo '0'"
-    when: "command -v docker >/dev/null 2>&1"
+    when: "docker info >/dev/null 2>&1"
     set_attr: docker_running_containers
 
   - name: docker-stopped-containers
     description: "Count stopped containers"
     command: "docker ps -a --filter 'status=exited' -q 2>/dev/null | wc -l || echo '0'"
-    when: "command -v docker >/dev/null 2>&1"
+    when: "docker info >/dev/null 2>&1"
     set_attr: docker_stopped_containers
 
   - name: docker-disk-usage
     description: "Docker disk usage"
     command: "docker system df --format '{{.Size}}' 2>/dev/null | head -1 || echo 'unknown'"
-    when: "command -v docker >/dev/null 2>&1"
+    when: "docker info >/dev/null 2>&1"
     set_attr: docker_disk_usage
 
   - name: docker-networks
     description: "Count Docker networks"
     command: "docker network ls -q 2>/dev/null | wc -l || echo '0'"
-    when: "command -v docker >/dev/null 2>&1"
+    when: "docker info >/dev/null 2>&1"
     set_attr: docker_networks
 
   - name: docker-healthcheck
     description: "No unhealthy containers"
     command: "docker ps --filter 'health=unhealthy' -q 2>/dev/null | wc -l || echo '0'"
-    when: "command -v docker >/dev/null 2>&1"
+    when: "docker info >/dev/null 2>&1"
     assert: "No unhealthy containers"
     expect: "0"
