@@ -252,8 +252,8 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		rw.Uptime24h = formatUptime(uptime)
 
 		switch {
-		case res.TestsPass < 0:
-			rw.Tests = "—"
+		case res.TestsPass <= 0 && res.TestsFail == 0:
+			rw.Tests = "—" // unknown: old agent or unreachable
 		case res.TestsFail == 0:
 			rw.Tests = fmt.Sprintf("✅ %d", res.TestsPass)
 		default:
