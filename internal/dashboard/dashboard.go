@@ -358,6 +358,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
         <th>Online</th>
         <th>Health</th>
         <th>Services</th>
+        <th>Tests</th>
         <th>Last Checkin</th>
         <th>Version</th>
         <th>24h Uptime</th>
@@ -371,6 +372,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
         <td><span class="badge {{if .Online}}online{{else}}offline{{end}}">{{.OnlineEmoji}} {{if .Online}}online{{else}}offline{{end}}</span></td>
         <td><span class="badge {{.HealthStatus}}">{{.HealthEmoji}} {{.HealthStatus}}</span></td>
         <td class="services">{{.Services}}</td>
+        <td class="tests" title="{{.TestsFailing}}">{{.Tests}}</td>
         <td class="last-checkin">{{.LastCheckin}}</td>
         <td class="version">{{.Version}}</td>
         <td class="uptime">{{.Uptime24h}}</td>

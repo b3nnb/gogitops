@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // PromptData is the cache file starship reads
@@ -21,6 +22,23 @@ type PromptData struct {
 	Labels          []string `json:"labels"`
 	Hostname        string   `json:"hostname"`
 	NebulaRunning   bool     `json:"nebula_running"`
+	TestsFailures   int      `json:"tests_failures,omitempty"`
+	TestsTotal      int      `json:"tests_total,omitempty"`
+}
+
+// Fleet-test status, set by the agent's test loop and merged into every
+// cache write — prompt surfaces test failures without the cycle caring.
+var testStatus struct {
+	mu     sync.Mutex
+	failed int
+	total  int
+}
+
+// SetTests records the latest fleet-test counts (agent test loop).
+func SetTests(failed, total int) {
+	testStatus.mu.Lock()
+	defer testStatus.mu.Unlock()
+	testStatus.failed, testStatus.total = failed, total
 }
 
 // CachePath returns the OS-appropriate cache file location
@@ -32,6 +50,9 @@ func CachePath() string {
 
 // WriteCache writes the prompt.json for starship to read
 func WriteCache(data PromptData) error {
+	testStatus.mu.Lock()
+	data.TestsFailures, data.TestsTotal = testStatus.failed, testStatus.total
+	testStatus.mu.Unlock()
 	path := CachePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err

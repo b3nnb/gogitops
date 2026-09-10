@@ -62,6 +62,7 @@ type AgentConfig struct {
 	GitRepo         string `yaml:"git_repo"`
 	GitBranch       string `yaml:"git_branch"`
 	GitPullInterval string `yaml:"git_pull_interval"`
+	TestsInterval   string `yaml:"tests_interval"` // agent self-test cadence ("30m"; "off"/"0" disables)
 }
 
 type MeshConfig struct {

@@ -18,12 +18,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bennbanks/gogitops/internal/agent"
+	"github.com/bennbanks/gogitops/internal/alert"
 	"github.com/bennbanks/gogitops/internal/cli"
 	"github.com/bennbanks/gogitops/internal/config"
 	"github.com/bennbanks/gogitops/internal/dashboard"
+	"github.com/bennbanks/gogitops/internal/starship"
 )
 
 var (
@@ -2059,7 +2062,7 @@ type testResult struct {
 	status string // pass, fail, skip
 }
 
-func runTestModule(r recipe, modPath string, currentOS, currentArch, resolved string, verbose bool) []testResult {
+func runTestModule(r recipe, modPath string, currentOS, currentArch, resolved string, verbose bool) ([]testResult, map[string]string) {
 	var results []testResult
 	vars := map[string]string{
 		"repo":     resolved,
@@ -2072,7 +2075,9 @@ func runTestModule(r recipe, modPath string, currentOS, currentArch, resolved st
 	if selfPath, err := os.Executable(); err == nil {
 		vars["self"] = selfPath
 	}
-	allAttrs := map[string]string{}
+	// Hydrate from the device attribute store so when_attr/only_if_attr can
+	// read persistent local state (e.g. attr.tests.fail from the last suite)
+	allAttrs := readDeviceAttrs()
 
 	for i, step := range r.Steps {
 		displayName := step.Name
@@ -2205,7 +2210,7 @@ func runTestModule(r recipe, modPath string, currentOS, currentArch, resolved st
 			fmt.Printf("    \033[38;5;240m%s\033[0m\n", output)
 		}
 	}
-	return results
+	return results, allAttrs
 }
 
 func discoverTestModules(resolved string) []string {
@@ -2319,12 +2324,14 @@ func cmdTest(args []string) {
 			os.Exit(1)
 		}
 		cli.Banner()
-		results := runTestModule(r, path, currentOS, currentArch, resolved, *verbose)
+		results, attrs := runTestModule(r, path, currentOS, currentArch, resolved, *verbose)
+		persistTestAttrs(attrs, results)
 		os.Exit(printTestSummary(results))
 
 	case "run-all":
 		cli.Banner()
 		var all []testResult
+		mergedAttrs := readDeviceAttrs()
 		for _, p := range discoverTestModules(resolved) {
 			data, err := os.ReadFile(p)
 			if err != nil {
@@ -2335,8 +2342,13 @@ func cmdTest(args []string) {
 				continue
 			}
 			fmt.Printf("\n  \033[1m\033[38;5;141mModule: %s\033[0m \033[38;5;240m(%s)\033[0m\n", r.Name, p)
-			all = append(all, runTestModule(r, p, currentOS, currentArch, resolved, *verbose)...)
+			results, attrs := runTestModule(r, p, currentOS, currentArch, resolved, *verbose)
+			all = append(all, results...)
+			for k, v := range attrs {
+				mergedAttrs[k] = v
+			}
 		}
+		persistTestAttrs(mergedAttrs, all)
 		os.Exit(printTestSummary(all))
 
 	default:
@@ -2607,6 +2619,222 @@ func cmdInspect(args []string) {
 
 // ── Daemon mode ──────────────────────────────────────────────────────────
 
+// ── agent fleet tests: every node runs the YAML test suite locally ──────
+//
+// The daemon runs test_module: true YAML on its own ticker and reports
+// three ways, all local-first:
+//   1. /v1/tests      — JSON of the latest results (pass/fail/skip per step)
+//   2. starship cache — tests_failures merged into the prompt data
+//   3. Discord alerts — on NEW failures (and recoveries) only, matching
+//                       the alertOnChange pattern: silent when healthy.
+
+// ── device attribute store: local, persistent, recipe-parseable ──────────
+//
+// Test/recipe runs write their attrs here (~/.cache/gogitops/attrs.json).
+// Suite summaries land as tests.* keys; module attrs (docker_version,
+// uptime.*, ...) persist for local parsing; the next run hydrates them back
+// so when_attr conditions work across runs. Served via /v1/attrs.
+
+func attrStorePath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".cache", "gogitops", "attrs.json")
+}
+
+func readDeviceAttrs() map[string]string {
+	m := map[string]string{}
+	data, err := os.ReadFile(attrStorePath())
+	if err == nil {
+		_ = json.Unmarshal(data, &m)
+	}
+	return m
+}
+
+func writeDeviceAttrs(m map[string]string) {
+	p := attrStorePath()
+	_ = os.MkdirAll(filepath.Dir(p), 0755)
+	f, err := os.Create(p)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(m)
+}
+
+// persistTestAttrs merges module attrs + suite summary into the device store.
+func persistTestAttrs(attrs map[string]string, all []testResult) {
+	pass, fail, skip := 0, 0, 0
+	var failing []string
+	for _, r := range all {
+		switch r.status {
+		case "pass":
+			pass++
+		case "fail":
+			fail++
+			failing = append(failing, r.module+"/"+r.name)
+		default:
+			skip++
+		}
+	}
+	attrs["tests.pass"] = strconv.Itoa(pass)
+	attrs["tests.fail"] = strconv.Itoa(fail)
+	attrs["tests.skip"] = strconv.Itoa(skip)
+	attrs["tests.total"] = strconv.Itoa(pass + fail + skip)
+	attrs["tests.failing"] = strings.Join(failing, ",")
+	attrs["tests.last_run"] = time.Now().Format(time.RFC3339)
+	writeDeviceAttrs(attrs)
+}
+
+func deviceAttrsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(readDeviceAttrs())
+}
+
+var fleetTestState struct {
+	mu      sync.Mutex
+	when    time.Time
+	pass    int
+	fail    int
+	skip    int
+	results []testResult
+}
+
+func fleetTestsHandler(w http.ResponseWriter, r *http.Request) {
+	fleetTestState.mu.Lock()
+	defer fleetTestState.mu.Unlock()
+	resp := map[string]any{
+		"when":    fleetTestState.when,
+		"pass":    fleetTestState.pass,
+		"fail":    fleetTestState.fail,
+		"skip":    fleetTestState.skip,
+		"results": fleetTestState.results,
+		"attrs":   readDeviceAttrs(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// selectFleetModules applies inspect's file-level selection: common.yaml,
+// the current OS module, docker.yaml, and every other module (which must
+// self-guard via step os/arch/when filters or module labels).
+func selectFleetModules(paths []string, goos string, nodeLabels []string) []string {
+	var selected []string
+	for _, p := range paths {
+		base := strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
+		if base == goos || base == "common" || base == "docker" {
+			selected = append(selected, p)
+			continue
+		}
+		// other modules: label gate (module labels must be a subset of node's)
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		r := parseRecipe(string(data))
+		if !r.TestModule {
+			continue
+		}
+		ok := true
+		nodeSet := map[string]bool{}
+		for _, l := range nodeLabels {
+			nodeSet[l] = true
+		}
+		for _, ml := range r.Labels {
+			if !nodeSet[ml] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			selected = append(selected, p)
+		}
+	}
+	return selected
+}
+
+func runFleetTestLoop(interval time.Duration, repoDir, hostname, webhook string, nodeLabels []string) {
+	// let the daemon settle before the first suite
+	time.Sleep(10 * time.Second)
+	runFleetTests(repoDir, hostname, webhook, nodeLabels)
+	ticker := time.NewTicker(interval)
+	for range ticker.C {
+		runFleetTests(repoDir, hostname, webhook, nodeLabels)
+	}
+}
+
+func runFleetTests(repoDir, hostname, webhook string, nodeLabels []string) {
+	resolved := resolveRepoDir(repoDir)
+	var all []testResult
+	mergedAttrs := readDeviceAttrs()
+	for _, p := range selectFleetModules(discoverTestModules(resolved), runtime.GOOS, nodeLabels) {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		r := parseRecipe(string(data))
+		if !r.TestModule {
+			continue
+		}
+		results, attrs := runTestModule(r, p, runtime.GOOS, runtime.GOARCH, resolved, false)
+		all = append(all, results...)
+		for k, v := range attrs {
+			mergedAttrs[k] = v
+		}
+	}
+	persistTestAttrs(mergedAttrs, all)
+	pass, fail, skip := 0, 0, 0
+	nowFailing := map[string]bool{}
+	for _, r := range all {
+		switch r.status {
+		case "pass":
+			pass++
+		case "fail":
+			fail++
+			nowFailing[r.module+"/"+r.name] = true
+		default:
+			skip++
+		}
+	}
+	fleetTestState.mu.Lock()
+	prevFailing := map[string]bool{}
+	for _, r := range fleetTestState.results {
+		if r.status == "fail" {
+			prevFailing[r.module+"/"+r.name] = true
+		}
+	}
+	fleetTestState.when = time.Now()
+	fleetTestState.pass, fleetTestState.fail, fleetTestState.skip = pass, fail, skip
+	fleetTestState.results = all
+	fleetTestState.mu.Unlock()
+
+	starship.SetTests(fail, pass+fail+skip)
+
+	// alert on NEW failures and recoveries only — silent when steady
+	if webhook != "" && (fail > 0 || len(prevFailing) > 0) {
+		sender := alert.NewSender(webhook)
+		var newlyFailing, recovered []string
+		for k := range nowFailing {
+			if !prevFailing[k] {
+				newlyFailing = append(newlyFailing, k)
+			}
+		}
+		for k := range prevFailing {
+			if !nowFailing[k] {
+				recovered = append(recovered, k)
+			}
+		}
+		sort.Strings(newlyFailing)
+		sort.Strings(recovered)
+		if len(newlyFailing) > 0 {
+			_ = sender.SendAlert("warn", hostname, fmt.Sprintf("fleet tests: %d newly failing — %s", len(newlyFailing), strings.Join(newlyFailing, ", ")))
+		}
+		if len(recovered) > 0 {
+			_ = sender.SendAlert("ok", hostname, fmt.Sprintf("fleet tests: %d recovered — %s", len(recovered), strings.Join(recovered, ", ")))
+		}
+	}
+}
+
 func runDaemon(args []string) {
 	var (
 		repoDir   = flag.String("repo", "/home/benn/Documents/code/GoGitOps", "path to config repo")
@@ -2673,6 +2901,8 @@ func runDaemon(args []string) {
 	http.HandleFunc("/v1/logs", a.LogsHandler)
 	http.HandleFunc("/v1/git/pull", a.GitPullHandler)
 	http.HandleFunc("/v1/restart", a.RestartHandler)
+	http.HandleFunc("/v1/tests", fleetTestsHandler)
+	http.HandleFunc("/v1/attrs", deviceAttrsHandler)
 	a.SetRepoDir(*repoDir)
 	go func() {
 		log.Printf("health API listening on %s", addr)
@@ -2683,6 +2913,23 @@ func runDaemon(args []string) {
 
 	if *dashFlag != "" {
 		go registerWithDashboard(*dashFlag, hostname, bind, *port, node)
+	}
+
+	// Fleet self-tests: every agent runs the YAML test suite locally.
+	// tests_interval node config (default 30m, "off"/"0" disables).
+	testsInterval := 30 * time.Minute
+	if ti := node.Agent.TestsInterval; ti != "" {
+		if ti == "off" || ti == "0" {
+			testsInterval = 0
+		} else if d, err := time.ParseDuration(ti); err == nil {
+			testsInterval = d
+		}
+	}
+	if testsInterval > 0 {
+		log.Printf("fleet tests enabled: running suite every %s (results on /v1/tests)", testsInterval)
+		go runFleetTestLoop(testsInterval, *repoDir, hostname, wbhook, node.Labels)
+	} else {
+		log.Printf("fleet tests disabled (tests_interval=%q)", node.Agent.TestsInterval)
 	}
 
 	interval := time.Duration(*intervalS) * time.Second

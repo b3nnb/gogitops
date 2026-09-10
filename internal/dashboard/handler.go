@@ -2,6 +2,7 @@
 package dashboard
 
 import (
+	"fmt"
 	"context"
 	"encoding/json"
 	"io"
@@ -33,6 +34,11 @@ type liveResult struct {
 	ResponseMs   int
 	Error        string
 	CheckedAt    time.Time
+	// fleet test suite (scraped from the agent's /v1/tests; -1 = unknown/old agent)
+	TestsPass    int
+	TestsFail    int
+	TestsSkip    int
+	TestsFailing []string
 }
 
 // apiNodeStatus is the JSON shape returned by /api/status.
@@ -49,6 +55,10 @@ type apiNodeStatus struct {
 	Error        string  `json:"error,omitempty"`
 	CheckedAt    string  `json:"checked_at"`
 	Uptime24h    float64 `json:"uptime_24h_pct"`
+	TestsPass    int     `json:"tests_pass"`
+	TestsFail    int     `json:"tests_fail"`
+	TestsSkip    int     `json:"tests_skip"`
+	TestsFailing []string `json:"tests_failing,omitempty"`
 }
 
 // Handler serves the dashboard HTML and the API endpoints.
@@ -158,6 +168,10 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 			ResponseMs:   res.ResponseMs,
 			Uptime24h:    uptime,
 			CheckedAt:    res.CheckedAt.Format(time.RFC3339),
+			TestsPass:    res.TestsPass,
+			TestsFail:    res.TestsFail,
+			TestsSkip:    res.TestsSkip,
+			TestsFailing: res.TestsFailing,
 		}
 		if res.Error != "" {
 			s.Error = res.Error
@@ -193,6 +207,8 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Uptime24h     string // "99.8%"
 		ResponseMs    int
 		Address       string // for drill-down link
+		Tests         string // "✅ 29" | "❌ 2 failing" | "—"
+		TestsFailing  string // tooltip: failing test names
 	}
 
 	rows := make([]row, 0, len(results))
@@ -234,6 +250,16 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 		uptime, _ := h.store.Get24hSummary(r.Context(), res.NodeName)
 		rw.Uptime24h = formatUptime(uptime)
+
+		switch {
+		case res.TestsPass < 0:
+			rw.Tests = "—"
+		case res.TestsFail == 0:
+			rw.Tests = fmt.Sprintf("✅ %d", res.TestsPass)
+		default:
+			rw.Tests = fmt.Sprintf("❌ %d failing", res.TestsFail)
+			rw.TestsFailing = strings.Join(res.TestsFailing, ", ")
+		}
 
 		rows = append(rows, rw)
 	}
@@ -333,6 +359,36 @@ func (h *Handler) checkNode(ctx context.Context, cfg NodeConfig) liveResult {
 	if resp.StatusCode != http.StatusOK {
 		res.Error = "HTTP " + strconv.Itoa(resp.StatusCode)
 		return res
+	}
+
+	// Best-effort: fetch the agent's latest fleet-test suite results
+	testsResp, terr := client.Get("http://" + cfg.Address + "/v1/tests")
+	if terr == nil {
+		defer testsResp.Body.Close()
+		if testsResp.StatusCode == http.StatusOK {
+			var tr struct {
+				Pass    int `json:"pass"`
+				Fail    int `json:"fail"`
+				Skip    int `json:"skip"`
+				Results []struct {
+					Module string `json:"module"`
+					Name   string `json:"name"`
+					Status string `json:"status"`
+				} `json:"results"`
+			}
+			if json.NewDecoder(testsResp.Body).Decode(&tr) == nil {
+				res.TestsPass, res.TestsFail, res.TestsSkip = tr.Pass, tr.Fail, tr.Skip
+				for _, x := range tr.Results {
+					if x.Status == "fail" {
+						res.TestsFailing = append(res.TestsFailing, x.Module+"/"+x.Name)
+					}
+				}
+			}
+		} else {
+			res.TestsPass = -1 // agent running, but no test endpoint (old binary)
+		}
+	} else {
+		res.TestsPass = -1
 	}
 
 	// Decode the health response — we only need services and version.
