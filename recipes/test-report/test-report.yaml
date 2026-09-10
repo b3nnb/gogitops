@@ -1,0 +1,44 @@
+# Fleet test-suite report — the reference demo for reading device attrs.
+#
+# Every recipe run hydrates the device attribute store first, so any recipe
+# can reference the node's latest test results + collected attributes:
+#   {{attr.tests.pass}}            — substitution in any command
+#   when_attr: "attr.X == Y"       — conditional execution
+#   when_attr: "attr.X contains"   — substring conditions
+#   when_attr: "attr.X"           — truthy check (set, not "false"/"0")
+#
+# Attr store keys are plain (tests.pass, docker_version, load.1, ...) —
+# readable at ~/.cache/gogitops/attrs.json or GET /v1/attrs.
+name: test-report
+description: "Report the node's latest fleet-test results from the device attribute store"
+version: "1.0.0"
+labels: []
+
+steps:
+  - name: last-run-time
+    description: "When the suite last ran and what scope it covered"
+    command: "echo 'last run: {{attr.tests.last_run}} (scope: {{attr.tests.scope}})'"
+
+  - name: summary
+    description: "Pass/fail/skip counts"
+    command: "echo 'tests: {{attr.tests.pass}} passed / {{attr.tests.fail}} failed / {{attr.tests.skip}} skipped'"
+
+  - name: all-clear
+    description: "Only runs when the last suite run was green"
+    command: "echo 'ALL CLEAR - suite green on {{hostname}}'"
+    when_attr: "attr.tests.fail == 0"
+
+  - name: failures
+    description: "Only runs when something failed - names the failing tests"
+    command: "echo 'FAILING: {{attr.tests.failing}}'"
+    when_attr: "attr.tests.fail != 0"
+
+  - name: docker-reference
+    description: "References a collected module attribute (guards: skips on nodes without docker)"
+    command: "echo 'docker on this node: {{attr.docker_version}}'"
+    when_attr: "attr.docker_version"
+
+  - name: load-reference
+    description: "References a parsed capture attribute from the common module"
+    command: "echo 'current load average: {{attr.load.1}}'"
+    when_attr: "attr.load.1"

@@ -48,6 +48,29 @@ steps:
     expect: "library-probe-wins"
     assert: "modules/ library serves recipes without recipe-local scripts (cross-recipe sharing)"
 
+  - name: hydration-probe-setup
+    description: "Backup device attr store + install a probe attr (restored after)"
+    command: 'mkdir -p ~/.cache/gogitops && cp ~/.cache/gogitops/attrs.json ~/.cache/gogitops/attrs.json.selftest-bak 2>/dev/null; printf "{\042hydration_probe\042:\042probe-set\042}" > ~/.cache/gogitops/attrs.json; echo probe-installed'
+    assert: "probe attr installed in device store"
+    expect: "probe-installed"
+
+  - name: hydration-fixture-recipe
+    description: "Recipe that references device attrs ({{attr.x}} + when_attr) — written with token-splitting so this step's own substitution does not pre-bake it"
+    command: 'F=/tmp/gogitops-selftest/recipes/hydration-fixture/hydration-fixture.yaml; mkdir -p $(dirname $F); echo "name: hydration-fixture" > $F; echo "description: device attr hydration probe" >> $F; echo "version: \"1.0.0\"" >> $F; echo "labels: []" >> $F; echo "steps:" >> $F; echo "  - name: gate" >> $F; echo "    command: \"echo gate=OK\"" >> $F; echo "    when_attr: \"attr.hydration_probe == probe-set\"" >> $F; echo "  - name: read" >> $F; echo "    command: \"echo probe-{{""attr.hydration_probe""}}\"" >> $F; echo fixture-written'
+    assert: "hydration fixture recipe written"
+    expect: "fixture-written"
+
+  - name: hydration-recipe-reads-device-store
+    description: "Run the fixture recipe — it must hydrate {{attr.hydration_probe}} + when_attr from the device store"
+    command: "{{self}} recipe run hydration-fixture --repo /tmp/gogitops-selftest --verbose 2>&1 | tr '\\n' ' '"
+    expect_regex: "(?s)gate=OK.*probe-probe-set"
+    assert: "recipes hydrate device attrs ({{attr.x}} substitution + when_attr conditions)"
+
+  - name: hydration-probe-restore
+    description: "Restore the real device attr store"
+    command: "mv ~/.cache/gogitops/attrs.json.selftest-bak ~/.cache/gogitops/attrs.json 2>/dev/null || rm ~/.cache/gogitops/attrs.json"
+    assert: "device attr store restored"
+
   - name: fixture-cleanup
     description: "Remove fixture"
     command: "rm -rf /tmp/gogitops-selftest /tmp/gogitops-selftest-marker"

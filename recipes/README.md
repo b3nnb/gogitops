@@ -171,6 +171,34 @@ skips). `{{self}}` substitutes the running binary's path — selftests always
 exercise the CURRENT engine, never a stale PATH shadow. Reusable Go/shell/
 Python modules plug in via `script:` from recipe-local `scripts/` dirs.
 
+### Reading attributes & test results in recipes
+
+Every recipe and test run **hydrates the device attribute store** first
+(`~/.cache/gogitops/attrs.json` — plain keys, human/jq friendly; also served
+at `GET /v1/attrs`). Anything the fleet tests collected — and the latest
+suite results — is readable everywhere:
+
+| What you want | Syntax |
+|---|---|
+| Substitute an attr into a command | `{{attr.docker_version}}` |
+| Run a step only when a condition holds | `when_attr: "attr.tests.fail == 0"` |
+| Run a step only when it doesn't | `when_attr: "attr.tests.fail != 0"` |
+| Substring match | `when_attr: "attr.tests.failing contains docker"` |
+| Truthy check (set, not "false"/"0") | `when_attr: "attr.docker_version"` |
+| Inverse condition | `only_if_attr` (same syntax) |
+
+Suite summary keys (written by `test run-all` / agent cycles / single-module
+runs): `tests.pass`, `tests.fail`, `tests.skip`, `tests.total`,
+`tests.failing` (comma-joined names), `tests.last_run`, and `tests.scope`
+(`suite` or `module:<name>` — single-module runs describe THAT module only).
+Collected module attrs (from `set_attr`/`attr_prefix` in test modules) persist
+too: `docker_version`, `load.1`, `disk_root.1`, `kernel_version`, ...
+
+Reference demo: `recipes/test-report/test-report.yaml` — reports suite
+results, gates an ALL CLEAR step on `attr.tests.fail == 0`, and a FAILING
+step on `!= 0`. Note: only attrs **set during a run** persist back to the
+store — hydration is read-only, so merely-read attrs never leak in.
+
 ## Scripts
 
 Scripts live in `recipes/<name>/scripts/` (recipe-local — the primary location,

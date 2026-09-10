@@ -1369,8 +1369,12 @@ func recipeRun(args []string) {
 	vars["os"] = runtime.GOOS
 	vars["arch"] = runtime.GOARCH
 
-	// Attribute map — persists across steps within a recipe run
+	// Attribute map — persists across steps within a recipe run.
+	// Hydrated from the device attr store first, so every recipe can read
+	// the node's test results + collected attrs: {{attr.tests.fail}},
+	// when_attr: "attr.tests.fail == 0", {{attr.docker_version}}, ...
 	attrs := map[string]string{}
+	hydrateDeviceAttrs(attrs, vars)
 
 	// Banner
 	cli.Banner()
@@ -1617,7 +1621,7 @@ func recipeRun(args []string) {
 					assertPassed = false
 				}
 			}
-			attrKey := "assert." + displayName
+			attrKey := "attr.assert." + displayName
 			if assertPassed {
 				attrs[attrKey+".status"] = "pass"
 				fmt.Printf("     \033[38;5;46m✓ assert: %s\033[0m\n", step.Assert)
@@ -2062,7 +2066,7 @@ type testResult struct {
 	status string // pass, fail, skip
 }
 
-func runTestModule(r recipe, modPath string, currentOS, currentArch, resolved string, verbose bool) ([]testResult, map[string]string) {
+func runTestModule(r recipe, modPath string, currentOS, currentArch, resolved string, verbose bool) ([]testResult, map[string]string, map[string]bool) {
 	var results []testResult
 	vars := map[string]string{
 		"repo":     resolved,
@@ -2075,9 +2079,14 @@ func runTestModule(r recipe, modPath string, currentOS, currentArch, resolved st
 	if selfPath, err := os.Executable(); err == nil {
 		vars["self"] = selfPath
 	}
-	// Hydrate from the device attribute store so when_attr/only_if_attr can
-	// read persistent local state (e.g. attr.tests.fail from the last suite)
-	allAttrs := readDeviceAttrs()
+	// Hydrate the device attribute store so when_attr/only_if_attr and
+	// {{attr.x}} see persistent local state (e.g. attr.tests.fail from the
+	// last suite run). setAttrKeys tracks what THIS run actually set —
+	// hydration is read-only, so merely-read attrs never leak back into
+	// the store on persist.
+	allAttrs := map[string]string{}
+	hydrateDeviceAttrs(allAttrs, vars)
+	setAttrKeys := map[string]bool{}
 
 	for i, step := range r.Steps {
 		displayName := step.Name
@@ -2187,12 +2196,17 @@ func runTestModule(r recipe, modPath string, currentOS, currentArch, resolved st
 			}
 		}
 		if step.SetAttr != "" {
-			allAttrs[step.SetAttr] = output
+			allAttrs["attr."+step.SetAttr] = output
+			vars["attr."+step.SetAttr] = output
+			setAttrKeys["attr."+step.SetAttr] = true
 		}
 		if step.AttrPrefix != "" {
 			for k, v := range vars {
 				if regexp.MustCompile(`^\d+$`).MatchString(k) {
-					allAttrs[step.AttrPrefix+"."+k] = v
+					key := "attr." + step.AttrPrefix + "." + k
+					allAttrs[key] = v
+					vars[key] = v
+					setAttrKeys[key] = true
 				}
 			}
 		}
@@ -2210,7 +2224,7 @@ func runTestModule(r recipe, modPath string, currentOS, currentArch, resolved st
 			fmt.Printf("    \033[38;5;240m%s\033[0m\n", output)
 		}
 	}
-	return results, allAttrs
+	return results, allAttrs, setAttrKeys
 }
 
 func discoverTestModules(resolved string) []string {
@@ -2324,14 +2338,15 @@ func cmdTest(args []string) {
 			os.Exit(1)
 		}
 		cli.Banner()
-		results, attrs := runTestModule(r, path, currentOS, currentArch, resolved, *verbose)
-		persistTestAttrs(attrs, results)
+		results, attrs, setKeys := runTestModule(r, path, currentOS, currentArch, resolved, *verbose)
+		persistTestAttrs(attrs, setKeys, results, "module:"+r.Name)
 		os.Exit(printTestSummary(results))
 
 	case "run-all":
 		cli.Banner()
 		var all []testResult
-		mergedAttrs := readDeviceAttrs()
+		mergedAttrs := map[string]string{}
+		mergedSetKeys := map[string]bool{}
 		for _, p := range discoverTestModules(resolved) {
 			data, err := os.ReadFile(p)
 			if err != nil {
@@ -2342,13 +2357,14 @@ func cmdTest(args []string) {
 				continue
 			}
 			fmt.Printf("\n  \033[1m\033[38;5;141mModule: %s\033[0m \033[38;5;240m(%s)\033[0m\n", r.Name, p)
-			results, attrs := runTestModule(r, p, currentOS, currentArch, resolved, *verbose)
+			results, attrs, setKeys := runTestModule(r, p, currentOS, currentArch, resolved, *verbose)
 			all = append(all, results...)
 			for k, v := range attrs {
 				mergedAttrs[k] = v
+				mergedSetKeys[k] = mergedSetKeys[k] || setKeys[k]
 			}
 		}
-		persistTestAttrs(mergedAttrs, all)
+		persistTestAttrs(mergedAttrs, mergedSetKeys, all, "suite")
 		os.Exit(printTestSummary(all))
 
 	default:
@@ -2519,7 +2535,7 @@ func cmdInspect(args []string) {
 
 			// Assert: record pass/fail
 			if step.Assert != "" {
-				attrKey := "assert." + displayName
+				attrKey := "attr.assert." + displayName
 				status := "pass"
 				if !success {
 					status = "fail"
@@ -2635,6 +2651,23 @@ func cmdInspect(args []string) {
 // uptime.*, ...) persist for local parsing; the next run hydrates them back
 // so when_attr conditions work across runs. Served via /v1/attrs.
 
+// hydrateDeviceAttrs loads the persistent device attr store into an in-run
+// attrs map + vars map. Keys gain the canonical "attr." prefix that
+// when_attr/only_if_attr/{{attr.x}} use; the store itself keeps plain keys
+// (human/jq friendly: "tests.pass", "docker_version").
+func hydrateDeviceAttrs(attrs, vars map[string]string) {
+	for k, v := range readDeviceAttrs() {
+		ak := k
+		if !strings.HasPrefix(k, "attr.") {
+			ak = "attr." + k
+		}
+		attrs[ak] = v
+		if vars != nil {
+			vars[ak] = v
+		}
+	}
+}
+
 func attrStorePath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".cache", "gogitops", "attrs.json")
@@ -2663,7 +2696,11 @@ func writeDeviceAttrs(m map[string]string) {
 }
 
 // persistTestAttrs merges module attrs + suite summary into the device store.
-func persistTestAttrs(attrs map[string]string, all []testResult) {
+// In-run attr maps use the "attr." prefix; the store keeps plain keys.
+// scope records what the tests.* numbers describe: "suite" (full run-all /
+// agent cycle) or "module:<name>" (single-module run — tests.* then describe
+// THAT module only, not the whole suite).
+func persistTestAttrs(attrs map[string]string, setKeys map[string]bool, all []testResult, scope string) {
 	pass, fail, skip := 0, 0, 0
 	var failing []string
 	for _, r := range all {
@@ -2677,13 +2714,21 @@ func persistTestAttrs(attrs map[string]string, all []testResult) {
 			skip++
 		}
 	}
-	attrs["tests.pass"] = strconv.Itoa(pass)
-	attrs["tests.fail"] = strconv.Itoa(fail)
-	attrs["tests.skip"] = strconv.Itoa(skip)
-	attrs["tests.total"] = strconv.Itoa(pass + fail + skip)
-	attrs["tests.failing"] = strings.Join(failing, ",")
-	attrs["tests.last_run"] = time.Now().Format(time.RFC3339)
-	writeDeviceAttrs(attrs)
+	store := map[string]string{}
+	for k, v := range attrs {
+		if !setKeys[k] {
+			continue // hydrated (merely read) attrs never persist
+		}
+		store[strings.TrimPrefix(k, "attr.")] = v
+	}
+	store["tests.pass"] = strconv.Itoa(pass)
+	store["tests.fail"] = strconv.Itoa(fail)
+	store["tests.skip"] = strconv.Itoa(skip)
+	store["tests.total"] = strconv.Itoa(pass + fail + skip)
+	store["tests.failing"] = strings.Join(failing, ",")
+	store["tests.scope"] = scope
+	store["tests.last_run"] = time.Now().Format(time.RFC3339)
+	writeDeviceAttrs(store)
 }
 
 func deviceAttrsHandler(w http.ResponseWriter, r *http.Request) {
@@ -2766,7 +2811,8 @@ func runFleetTestLoop(interval time.Duration, repoDir, hostname, webhook string,
 func runFleetTests(repoDir, hostname, webhook string, nodeLabels []string) {
 	resolved := resolveRepoDir(repoDir)
 	var all []testResult
-	mergedAttrs := readDeviceAttrs()
+	mergedAttrs := map[string]string{}
+	mergedSetKeys := map[string]bool{}
 	for _, p := range selectFleetModules(discoverTestModules(resolved), runtime.GOOS, nodeLabels) {
 		data, err := os.ReadFile(p)
 		if err != nil {
@@ -2776,13 +2822,14 @@ func runFleetTests(repoDir, hostname, webhook string, nodeLabels []string) {
 		if !r.TestModule {
 			continue
 		}
-		results, attrs := runTestModule(r, p, runtime.GOOS, runtime.GOARCH, resolved, false)
+		results, attrs, setKeys := runTestModule(r, p, runtime.GOOS, runtime.GOARCH, resolved, false)
 		all = append(all, results...)
 		for k, v := range attrs {
 			mergedAttrs[k] = v
+			mergedSetKeys[k] = mergedSetKeys[k] || setKeys[k]
 		}
 	}
-	persistTestAttrs(mergedAttrs, all)
+	persistTestAttrs(mergedAttrs, mergedSetKeys, all, "suite")
 	pass, fail, skip := 0, 0, 0
 	nowFailing := map[string]bool{}
 	for _, r := range all {
