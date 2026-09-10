@@ -199,6 +199,23 @@ results, gates an ALL CLEAR step on `attr.tests.fail == 0`, and a FAILING
 step on `!= 0`. Note: only attrs **set during a run** persist back to the
 store — hydration is read-only, so merely-read attrs never leak in.
 
+### Universal attribute catalog (`gogitops attrs scan`)
+
+The repo *defines* attributes everywhere — `set_attr`/`attr_prefix` across
+recipes and test modules, plus engine synthetics. The scanner catalogs the
+whole vocabulary so attributes are discoverable, not tribal knowledge:
+
+    gogitops attrs scan          # grouped catalog: name, kind, source
+    gogitops attrs scan --json   # machine-readable
+    GET /v1/attrs/catalog       # every agent serves its repo's catalog
+
+`recipe validate` uses it: references to attributes that nothing defines
+(and that aren't live in the device store) get a **warning** with a
+did-you-mean suggestion — warnings, never blocks:
+
+    ✅ recipe.yaml looks valid (1 warning)
+       ⚠ unknown attribute "attr.docker_verison" — ... (did you mean docker_version?)
+
 ## Scripts
 
 Scripts live in `recipes/<name>/scripts/` (recipe-local — the primary location,

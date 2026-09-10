@@ -71,6 +71,18 @@ steps:
     command: "mv ~/.cache/gogitops/attrs.json.selftest-bak ~/.cache/gogitops/attrs.json 2>/dev/null || rm ~/.cache/gogitops/attrs.json"
     assert: "device attr store restored"
 
+  - name: attrs-catalog-scan
+    description: "Universal attribute catalog lists repo-defined attrs + engine synthetics"
+    command: "{{self}} attrs scan --repo {{repo}} --json"
+    expect_regex: '(?s)docker_version.*tests\.pass'
+    assert: "attrs scan catalogs the repo's attribute vocabulary"
+
+  - name: attrs-validate-warns-on-typos
+    description: "recipe validate warns (not blocks) on unknown attr references"
+    command: 'F2=/tmp/gogitops-attr-typo.yaml; echo "name: bogus" > $F2; echo "description: x" >> $F2; echo "version: 1.0.0" >> $F2; echo "labels: []" >> $F2; echo "steps:" >> $F2; echo "  - name: t" >> $F2; echo "    command: \"echo {{attr.bogus_probe}}\"" >> $F2; {{self}} recipe validate $F2 2>&1; rm -f $F2'
+    expect: "unknown attribute"
+    assert: "validate warns on unknown attr references (warnings, not blocks)"
+
   - name: fixture-cleanup
     description: "Remove fixture"
     command: "rm -rf /tmp/gogitops-selftest /tmp/gogitops-selftest-marker"

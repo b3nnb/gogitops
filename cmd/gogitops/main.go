@@ -67,6 +67,8 @@ func main() {
 			cmdInspect(os.Args[2:])
 		case "test":
 			cmdTest(os.Args[2:])
+		case "attrs":
+			cmdAttrs(os.Args[2:])
 		case "deploy":
 			cmdDeploy(os.Args[2:])
 		case "help", "--help", "-h":
@@ -108,6 +110,7 @@ func printHelp() {
     recipe     Recipe management (new, list, validate)
     inspect    Run test modules and collect node attributes
     test       Run test modules as a test suite (list, run, run-all — CI exit codes)
+    attrs      Universal attribute catalog (scan the repo for every attr)
     deploy     Generate agent install snippets (one-liner, systemd, launchd)
     version    Print version
 
@@ -1089,6 +1092,222 @@ func resolveRepoDir(flagVal string) string {
 	return "."
 }
 
+// ── universal attribute catalog ──────────────────────────────────────────
+//
+// scanRepoAttrs walks recipes/ and test_modules/ and catalogs every
+// attribute the repo can produce — the universal attribute vocabulary.
+// This is what makes attributes discoverable: `gogitops attrs scan` lists
+// them, recipe validate warns on references to attrs nothing defines,
+// and the agent serves the catalog at /v1/attrs/catalog.
+
+type AttrDef struct {
+	Name   string `json:"name"`   // e.g. docker_version, load.*, tests.pass
+	Kind   string `json:"kind"`   // set_attr | attr_prefix | engine
+	Source string `json:"source"` // recipe or test-module name
+	File   string `json:"file"`   // path relative to repo
+	Step   string `json:"step,omitempty"`
+}
+
+func scanRepoAttrs(repoDir string) []AttrDef {
+	resolved := resolveRepoDir(repoDir)
+	var defs []AttrDef
+	seen := map[string]bool{}
+
+	add := func(d AttrDef) {
+		key := d.Name + "|" + d.Source
+		if !seen[key] {
+			seen[key] = true
+			defs = append(defs, d)
+		}
+	}
+
+	scanFile := func(path string) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		r := parseRecipe(string(data))
+		rel, _ := filepath.Rel(resolved, path)
+		for _, s := range r.Steps {
+			if s.SetAttr != "" {
+				add(AttrDef{Name: s.SetAttr, Kind: "set_attr", Source: r.Name, File: rel, Step: s.Name})
+			}
+			if s.AttrPrefix != "" {
+				add(AttrDef{Name: s.AttrPrefix + ".*", Kind: "attr_prefix", Source: r.Name, File: rel, Step: s.Name})
+			}
+			if s.Assert != "" {
+				add(AttrDef{Name: "assert." + s.Name + ".status", Kind: "engine", Source: r.Name, File: rel, Step: s.Name})
+			}
+		}
+	}
+
+	// recipes/<r>/<r>.yaml + recipes/<r>/tests/*.yaml
+	if entries, err := os.ReadDir(filepath.Join(resolved, "recipes")); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			base := filepath.Join(resolved, "recipes", e.Name())
+			scanFile(filepath.Join(base, e.Name()+".yaml"))
+			if tests, err := os.ReadDir(filepath.Join(base, "tests")); err == nil {
+				for _, t := range tests {
+					if strings.HasSuffix(t.Name(), ".yaml") || strings.HasSuffix(t.Name(), ".yml") {
+						scanFile(filepath.Join(base, "tests", t.Name()))
+					}
+				}
+			}
+		}
+	}
+	// test_modules/*.yaml
+	if entries, err := os.ReadDir(filepath.Join(resolved, "test_modules")); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".yaml") || strings.HasSuffix(e.Name(), ".yml") {
+				scanFile(filepath.Join(resolved, "test_modules", e.Name()))
+			}
+		}
+	}
+	// engine synthetics — the test suite always writes these
+	for _, n := range []string{"tests.pass", "tests.fail", "tests.skip", "tests.total", "tests.failing", "tests.last_run", "tests.scope"} {
+		add(AttrDef{Name: n, Kind: "engine", Source: "test-suite", File: "(engine)"})
+	}
+
+	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
+	return defs
+}
+
+// attrKnown: is an attribute resolvable? Exact catalog def, wildcard
+// catalog def (load.* covers load.1), or a live value in the device store.
+func attrKnown(plain string, defs []AttrDef, store map[string]string) bool {
+	if v, ok := store[plain]; ok && v != "" {
+		return true
+	}
+	for _, d := range defs {
+		if d.Name == plain {
+			return true
+		}
+		if strings.HasSuffix(d.Name, ".*") && strings.HasPrefix(plain, strings.TrimSuffix(d.Name, "*")) {
+			return true
+		}
+	}
+	return false
+}
+
+func suggestAttr(plain string, defs []AttrDef) string {
+	best, bestDist := "", 99
+	for _, d := range defs {
+		name := strings.TrimSuffix(d.Name, ".*")
+		dist := editDistance(plain, name)
+		if dist < bestDist {
+			best, bestDist = name, dist
+		}
+	}
+	if bestDist <= 3 && bestDist < len(plain) {
+		return " (did you mean " + best + "?)"
+	}
+	return ""
+}
+
+func editDistance(a, b string) int {
+	la, lb := len(a), len(b)
+	prev := make([]int, lb+1)
+	cur := make([]int, lb+1)
+	for j := 0; j <= lb; j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= la; i++ {
+		cur[0] = i
+		for j := 1; j <= lb; j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = minInt(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[lb]
+}
+
+func minInt(vals ...int) int {
+	m := vals[0]
+	for _, v := range vals[1:] {
+		if v < m {
+			m = v
+		}
+	}
+	return m
+}
+
+var attrRefRe = regexp.MustCompile(`attr\.[A-Za-z0-9_.-]+`)
+
+// extractAttrRefs collects every attr.<name> referenced by a recipe's steps
+// ({{attr.x}} substitutions and when_attr/only_if_attr conditions).
+func extractAttrRefs(r recipe) []string {
+	refs := map[string]bool{}
+	for _, s := range r.Steps {
+		for _, field := range []string{s.Command, s.When, s.WhenAttr, s.OnlyIfAttr, s.Expect, s.ExpectRegex} {
+			if field == "" {
+				continue
+			}
+			for _, m := range attrRefRe.FindAllString(field, -1) {
+				refs[m] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(refs))
+	for k := range refs {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func cmdAttrs(args []string) {
+	// optional "scan" subcommand reads nicer: gogitops attrs scan --repo .
+	if len(args) > 0 && args[0] == "scan" {
+		args = args[1:]
+	}
+	fs := flag.NewFlagSet("attrs", flag.ExitOnError)
+	repoDir := fs.String("repo", ".", "path to gogitops repo")
+	jsonOut := fs.Bool("json", false, "machine-readable JSON")
+	fs.Parse(args)
+
+	defs := scanRepoAttrs(*repoDir)
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(defs)
+		return
+	}
+
+	cli.Banner()
+	fmt.Printf("\n  \033[1m\033[38;5;141mUniversal attribute catalog\033[0m\n")
+	fmt.Printf("  \033[38;5;240mevery attribute the repo can produce — recipes, tests, engine\033[0m\n\n")
+	bySource := map[string][]AttrDef{}
+	for _, d := range defs {
+		bySource[d.Source] = append(bySource[d.Source], d)
+	}
+	sources := make([]string, 0, len(bySource))
+	for s := range bySource {
+		sources = append(sources, s)
+	}
+	sort.Strings(sources)
+	for _, s := range sources {
+		fmt.Printf("  \033[38;5;38m%s\033[0m\n", s)
+		for _, d := range bySource[s] {
+			kind := "\033[38;5;240mset_attr\033[0m"
+			switch d.Kind {
+			case "attr_prefix":
+				kind = "\033[38;5;80mcaptures\033[0m"
+			case "engine":
+				kind = "\033[38;5;141mengine\033[0m"
+			}
+			fmt.Printf("    \033[38;5;46m●\033[0m %-28s %s\n", d.Name, kind)
+		}
+	}
+	fmt.Printf("\n  \033[1m%d attributes\033[0m across %d sources\n\n", len(defs), len(sources))
+}
+
 func cmdRecipe(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n")
@@ -1230,7 +1449,49 @@ func recipeValidate(args []string) {
 		}
 		os.Exit(1)
 	}
+
+	// Attribute reference check (WARNINGS, not blocks): every attr.<x> the
+	// recipe references must be defined somewhere in the repo catalog or
+	// exist live in the device store — catches typos before runtime.
+	var warnings []string
+	r := parseRecipe(content)
+	if len(r.Steps) > 0 {
+		store := readDeviceAttrs()
+		defs := scanRepoAttrs(repoRootFromFile(file))
+		for _, ref := range extractAttrRefs(r) {
+			plain := strings.TrimPrefix(ref, "attr.")
+			if !attrKnown(plain, defs, store) {
+				warnings = append(warnings, fmt.Sprintf("unknown attribute %q — not defined by any recipe/module, not in the device store%s", ref, suggestAttr(plain, defs)))
+			}
+		}
+	}
+
+	if len(warnings) > 0 {
+		fmt.Printf("✅ %s looks valid (%d warning%s)\n", file, len(warnings), map[bool]string{true: "", false: "s"}[len(warnings) == 1])
+		for _, wn := range warnings {
+			fmt.Printf("   \033[38;5;178m⚠ %s\033[0m\n", wn)
+		}
+		return
+	}
 	fmt.Printf("✅ %s looks valid\n", file)
+}
+
+// repoRootFromFile walks up from a recipe file to find the repo root
+// (the nearest ancestor containing a recipes/ dir); falls back to the
+// standard auto-detect (cwd or ~/.config/gogitops) for files outside a repo.
+func repoRootFromFile(file string) string {
+	dir := filepath.Dir(file)
+	for i := 0; i < 5; i++ {
+		if _, err := os.Stat(filepath.Join(dir, "recipes")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return resolveRepoDir(".")
 }
 
 // ── Recipe runner ─────────────────────────────────────────────────────────
@@ -2950,6 +3211,11 @@ func runDaemon(args []string) {
 	http.HandleFunc("/v1/restart", a.RestartHandler)
 	http.HandleFunc("/v1/tests", fleetTestsHandler)
 	http.HandleFunc("/v1/attrs", deviceAttrsHandler)
+	scanRepo := *repoDir
+	http.HandleFunc("/v1/attrs/catalog", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(scanRepoAttrs(scanRepo))
+	})
 	a.SetRepoDir(*repoDir)
 	go func() {
 		log.Printf("health API listening on %s", addr)
