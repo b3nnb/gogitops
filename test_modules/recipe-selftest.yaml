@@ -85,7 +85,7 @@ steps:
 
   - name: attrs-verify-recipes
     description: "attrs verify validates all recipes, stores local verdicts (decentralized — stays on-node)"
-    command: "{{self}} attrs verify --repo {{repo}} 2>&1 | tail -1"
+    command: "{{self}} attrs verify --repo {{repo}} 2>&1 | grep verified"
     expect: "0 failed"
     assert: "agent verifies repo recipes locally (verdicts stay on-node)"
 
