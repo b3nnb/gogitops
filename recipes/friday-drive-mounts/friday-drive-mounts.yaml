@@ -1,19 +1,24 @@
 name: friday-drive-mounts
-description: "Mount Friday's internal drives (Drive_m2 + home) over SSHFS on the laptop and Mini, verify Friday is properly set up to share, and keep it all healthy with scheduled doctors. Manual gates (one-time): sudo apt install sshfs (laptop), brew install --cask macfuse + sshfs + Security approval (Mini), and client SSH keys in Friday's authorized_keys."
-version: "1.0.0"
+description: "Mount Friday's internal drives (Drive_m2 + home) over SSHFS on the laptop and Mini, verify Friday is properly set up to share, and keep it all healthy with scheduled doctors. Manual gates (one-time): sudo apt install sshfs (laptop), brew install --cask macfuse + sshfs + Security approval (Mini), and client SSH keys in Friday's authorized_keys. NOTE: run with --hostname <node> on manual runs (system hostname may differ from node name)."
+version: "1.1.0"
 labels: []
 
 steps:
   # ── FRIDAY: verify share-readiness + schedule the share doctor ────────
+  - name: friday-install-share-doctor
+    description: "Install share doctor to ~/.local/bin (sshd, SFTP subsystem, share dirs, Drive_m2 genuinely mounted, client keys)"
+    command: "mkdir -p $HOME/.local/bin && cp {{repo}}/recipes/friday-drive-mounts/scripts/friday-share-doctor.sh $HOME/.local/bin/friday-share-doctor.sh && chmod +x $HOME/.local/bin/friday-share-doctor.sh"
+    labels_required: [primary-compute]
+
   - name: friday-share-doctor-run
-    description: "Run share doctor now — sshd, SFTP subsystem, share dirs, Drive_m2 genuinely mounted, client keys"
-    script: friday-share-doctor.sh
+    description: "Run share doctor now"
+    command: "$HOME/.local/bin/friday-share-doctor.sh"
     labels_required: [primary-compute]
     on_failure: continue
 
   - name: friday-share-doctor-schedule
-    description: "Run share doctor every 15 minutes (idempotent crontab entry)"
-    script: friday-share-doctor.sh
+    description: "Run share doctor every 15 minutes (idempotent crontab entry, absolute path)"
+    command: "$HOME/.local/bin/friday-share-doctor.sh"
     schedule: "*/15 * * * *"
     labels_required: [primary-compute]
     on_failure: continue
@@ -38,7 +43,7 @@ steps:
     labels_required: [laptop]
 
   - name: laptop-deploy-mount-units
-    description: "Deploy sshfs mount systemd user units (installed but only enabled once sshfs exists)"
+    description: "Deploy sshfs mount systemd user units (enabled only once sshfs exists)"
     command: "mkdir -p $HOME/.config/systemd/user && cp {{repo}}/recipes/friday-drive-mounts/files/friday-m2.service {{repo}}/recipes/friday-drive-mounts/files/friday-home.service $HOME/.config/systemd/user/ && systemctl --user daemon-reload"
     labels_required: [laptop]
 
@@ -49,15 +54,20 @@ steps:
     labels_required: [laptop]
     on_failure: continue
 
+  - name: laptop-install-mounts-doctor
+    description: "Install mounts doctor to ~/.local/bin"
+    command: "mkdir -p $HOME/.local/bin && cp {{repo}}/recipes/friday-drive-mounts/scripts/friday-mounts-doctor.sh $HOME/.local/bin/friday-mounts-doctor.sh && chmod +x $HOME/.local/bin/friday-mounts-doctor.sh"
+    labels_required: [laptop]
+
   - name: laptop-mounts-doctor-run
     description: "Run mounts doctor now — probes mounts, heals stale/missing ones"
-    script: friday-mounts-doctor.sh
+    command: "$HOME/.local/bin/friday-mounts-doctor.sh"
     labels_required: [laptop]
     on_failure: continue
 
   - name: laptop-mounts-doctor-schedule
-    description: "Run mounts doctor every 5 minutes (idempotent crontab entry)"
-    script: friday-mounts-doctor.sh
+    description: "Run mounts doctor every 5 minutes (idempotent crontab entry, absolute path)"
+    command: "$HOME/.local/bin/friday-mounts-doctor.sh"
     schedule: "*/5 * * * *"
     labels_required: [laptop]
     on_failure: continue
@@ -99,16 +109,22 @@ steps:
     os: darwin
     on_failure: continue
 
+  - name: mini-install-mounts-doctor
+    description: "Install mounts doctor to ~/.local/bin"
+    command: "mkdir -p $HOME/.local/bin && cp {{repo}}/recipes/friday-drive-mounts/scripts/friday-mounts-doctor.sh $HOME/.local/bin/friday-mounts-doctor.sh && chmod +x $HOME/.local/bin/friday-mounts-doctor.sh"
+    labels_required: [lora-training]
+    os: darwin
+
   - name: mini-mounts-doctor-run
     description: "Run mounts doctor now"
-    script: friday-mounts-doctor.sh
+    command: "$HOME/.local/bin/friday-mounts-doctor.sh"
     labels_required: [lora-training]
     os: darwin
     on_failure: continue
 
   - name: mini-mounts-doctor-schedule
-    description: "Run mounts doctor every 5 minutes (idempotent crontab entry)"
-    script: friday-mounts-doctor.sh
+    description: "Run mounts doctor every 5 minutes (idempotent crontab entry, absolute path)"
+    command: "$HOME/.local/bin/friday-mounts-doctor.sh"
     schedule: "*/5 * * * *"
     labels_required: [lora-training]
     os: darwin
