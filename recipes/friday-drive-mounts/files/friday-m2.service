@@ -1,0 +1,14 @@
+[Unit]
+Description=SSHFS mount Friday Drive_m2 (10.2.0.102)
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p %h/mnt/friday-m2
+ExecStart=/usr/bin/sshfs -f -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,ConnectTimeout=10,IdentityFile=%h/.ssh/id_gogitops,follow_symlinks benn@10.2.0.102:/media/benn/Drive_m2 %h/mnt/friday-m2
+ExecStop=/bin/fusermount -u %h/mnt/friday-m2
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

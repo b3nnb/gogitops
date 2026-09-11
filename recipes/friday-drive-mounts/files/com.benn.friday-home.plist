@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.benn.friday-home</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/sshfs</string>
+        <string>-f</string>
+        <string>-o</string>
+        <string>reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,ConnectTimeout=10,IdentityFile=/Users/benn/.ssh/id_gogitops_mini,follow_symlinks</string>
+        <string>benn@10.2.0.102:/home/benn</string>
+        <string>/Users/benn/mnt/friday-home</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/benn/.sshfs-friday-home.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/benn/.sshfs-friday-home.log</string>
+</dict>
+</plist>

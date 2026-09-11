@@ -1,0 +1,115 @@
+name: friday-drive-mounts
+description: "Mount Friday's internal drives (Drive_m2 + home) over SSHFS on the laptop and Mini, verify Friday is properly set up to share, and keep it all healthy with scheduled doctors. Manual gates (one-time): sudo apt install sshfs (laptop), brew install --cask macfuse + sshfs + Security approval (Mini), and client SSH keys in Friday's authorized_keys."
+version: "1.0.0"
+labels: []
+
+steps:
+  # ── FRIDAY: verify share-readiness + schedule the share doctor ────────
+  - name: friday-share-doctor-run
+    description: "Run share doctor now — sshd, SFTP subsystem, share dirs, Drive_m2 genuinely mounted, client keys"
+    script: friday-share-doctor.sh
+    labels_required: [primary-compute]
+    on_failure: continue
+
+  - name: friday-share-doctor-schedule
+    description: "Run share doctor every 15 minutes (idempotent crontab entry)"
+    script: friday-share-doctor.sh
+    schedule: "*/15 * * * *"
+    labels_required: [primary-compute]
+    on_failure: continue
+
+  # ── LAPTOP (framework): sshfs + mounts + mounts doctor ────────────────
+  - name: laptop-install-sshfs
+    description: "Install sshfs via apt (needs sudo — if this fails run: sudo apt install -y sshfs)"
+    package: sshfs
+    labels_required: [laptop]
+    on_failure: continue
+
+  - name: laptop-report-sshfs
+    description: "Report sshfs availability"
+    command: "command -v sshfs >/dev/null 2>&1 && echo sshfs-ok || echo 'MISSING: run sudo apt install -y sshfs'"
+    labels_required: [laptop]
+    set_attr: sshfs
+    on_failure: continue
+
+  - name: laptop-mountpoints
+    description: "Create mount points"
+    command: "mkdir -p $HOME/mnt/friday-m2 $HOME/mnt/friday-home"
+    labels_required: [laptop]
+
+  - name: laptop-deploy-mount-units
+    description: "Deploy sshfs mount systemd user units (installed but only enabled once sshfs exists)"
+    command: "mkdir -p $HOME/.config/systemd/user && cp {{repo}}/recipes/friday-drive-mounts/files/friday-m2.service {{repo}}/recipes/friday-drive-mounts/files/friday-home.service $HOME/.config/systemd/user/ && systemctl --user daemon-reload"
+    labels_required: [laptop]
+
+  - name: laptop-enable-mounts
+    description: "Enable + start mounts (only when sshfs is installed)"
+    command: "systemctl --user enable --now friday-m2.service friday-home.service"
+    when: "command -v sshfs >/dev/null 2>&1"
+    labels_required: [laptop]
+    on_failure: continue
+
+  - name: laptop-mounts-doctor-run
+    description: "Run mounts doctor now — probes mounts, heals stale/missing ones"
+    script: friday-mounts-doctor.sh
+    labels_required: [laptop]
+    on_failure: continue
+
+  - name: laptop-mounts-doctor-schedule
+    description: "Run mounts doctor every 5 minutes (idempotent crontab entry)"
+    script: friday-mounts-doctor.sh
+    schedule: "*/5 * * * *"
+    labels_required: [laptop]
+    on_failure: continue
+
+  # ── MINI (darwin): macFUSE/sshfs + launchd mounts + mounts doctor ────
+  - name: mini-report-fuse
+    description: "Report macFUSE + sshfs availability"
+    command: "FUSE=missing; SSHFS=missing; [ -d /Library/Filesystems/macfuse.fs ] && FUSE=ok; command -v sshfs >/dev/null 2>&1 && SSHFS=ok; echo \"macfuse:$FUSE sshfs:$SSHFS\""
+    labels_required: [lora-training]
+    os: darwin
+    set_attr: fuse_status
+    on_failure: continue
+
+  - name: mini-install-sshfs
+    description: "Install sshfs via brew (fails until macFUSE is installed + approved — manual: brew install --cask macfuse, then approve in System Settings > Privacy & Security)"
+    package: sshfs
+    labels_required: [lora-training]
+    os: darwin
+    when: "[ -d /Library/Filesystems/macfuse.fs ]"
+    on_failure: continue
+
+  - name: mini-mountpoints
+    description: "Create mount points"
+    command: "mkdir -p $HOME/mnt/friday-m2 $HOME/mnt/friday-home"
+    labels_required: [lora-training]
+    os: darwin
+
+  - name: mini-deploy-launchd
+    description: "Deploy sshfs launchd agents (loaded only when sshfs exists)"
+    command: "mkdir -p $HOME/Library/LaunchAgents && cp {{repo}}/recipes/friday-drive-mounts/files/com.benn.friday-m2.plist {{repo}}/recipes/friday-drive-mounts/files/com.benn.friday-home.plist $HOME/Library/LaunchAgents/"
+    labels_required: [lora-training]
+    os: darwin
+
+  - name: mini-load-launchd
+    description: "Load launchd mount agents (only when sshfs is installed)"
+    command: "launchctl unload $HOME/Library/LaunchAgents/com.benn.friday-m2.plist $HOME/Library/LaunchAgents/com.benn.friday-home.plist 2>/dev/null; launchctl load $HOME/Library/LaunchAgents/com.benn.friday-m2.plist $HOME/Library/LaunchAgents/com.benn.friday-home.plist"
+    when: "command -v sshfs >/dev/null 2>&1"
+    labels_required: [lora-training]
+    os: darwin
+    on_failure: continue
+
+  - name: mini-mounts-doctor-run
+    description: "Run mounts doctor now"
+    script: friday-mounts-doctor.sh
+    labels_required: [lora-training]
+    os: darwin
+    on_failure: continue
+
+  - name: mini-mounts-doctor-schedule
+    description: "Run mounts doctor every 5 minutes (idempotent crontab entry)"
+    script: friday-mounts-doctor.sh
+    schedule: "*/5 * * * *"
+    labels_required: [lora-training]
+    os: darwin
+    on_failure: continue

@@ -1,0 +1,14 @@
+[Unit]
+Description=SSHFS mount Friday home (10.2.0.102)
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p %h/mnt/friday-home
+ExecStart=/usr/bin/sshfs -f -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,ConnectTimeout=10,IdentityFile=%h/.ssh/id_gogitops,follow_symlinks benn@10.2.0.102:/home/benn %h/mnt/friday-home
+ExecStop=/bin/fusermount -u %h/mnt/friday-home
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
