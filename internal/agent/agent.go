@@ -269,8 +269,8 @@ func (a *Agent) gitPull() string {
 
 // Run starts the main agent loop
 func (a *Agent) Run(interval time.Duration) {
-	a.logger.Infof("agent", "gogitops agent v%s starting on %s (labels: %v)", Version, a.node.Hostname, a.node.Labels)
-	log.Printf("gogitops agent v%s starting on %s (labels: %v)", Version, a.node.Hostname, a.node.Labels)
+	a.logger.Infof("agent", "gogitops agent %s starting on %s (labels: %v)", Version, a.node.Hostname, a.node.Labels)
+	log.Printf("gogitops agent %s starting on %s (labels: %v)", Version, a.node.Hostname, a.node.Labels)
 
 	// Initial git pull
 	if a.repoDir != "" {

@@ -56,7 +56,7 @@ func main() {
 			cmdSet(os.Args[2:])
 		case "version", "--version", "-v":
 			cli.Banner()
-			fmt.Printf("\n  \033[38;5;141m%s\033[0m\n\n", version)
+			fmt.Printf("\n  \033[38;5;141m%s\033[0m  \033[38;5;240m%s/%s\033[0m\n\n", version, runtime.GOOS, runtime.GOARCH)
 		case "daemon", "run":
 			runDaemon(os.Args[2:])
 		case "dashboard":
@@ -92,72 +92,123 @@ func main() {
 
 func printHelp() {
 	cli.Banner()
+	p := "\033[38;5;141m" // purple — section headers
+	r := "\033[0m"
+
 	fmt.Printf(`
-  USAGE
+  %sUSAGE%s
 
-    gogitops <command> [flags]
+    gogitops <command> [subcommand] [flags]
+    gogitops <command> -h         flags for that command
+    gogitops                      show this manual
+`, p, r)
 
-  COMMANDS
+	fmt.Printf(`
+  %sSTATUS%s
 
-    status     Show local agent health (services, tags, peers, system)
-    fleet      Show all agents in the fleet (compact view)
-    info       Show detailed attributes for a node (tags, groups, config)
-    config     Show agent configuration (repo, git, labels, groups, recipes)
-    logs       Show recent agent activity log (-n N for count)
-    watch      Live monitoring — auto-refreshing status (Ctrl+C to exit)
-    git-pull   Force a git pull on the agent's config repo
-    restart    Restart the agent daemon
-    set        Set config values (repo, branch, dashboard, webhook, hostname)
-    daemon     Run the agent daemon
-    dashboard  Fleet status dashboard (web UI on :7781)
-    recipe     Recipe management (new, list, validate)
-    inspect    Run test modules and collect node attributes
-    test       Run test modules as a test suite (list, run, run-all — CI exit codes)
-    attrs      Attribute catalog: attrs scan (vocabulary), attrs verify (recipes)
-    update     Self-update check: running vs binaries-branch version
-    deploy     Generate agent install snippets (one-liner, systemd, launchd)
-    version    Print version
+    status              agent health — system, tags, services, peers, disk
+    fleet               compact one-line-per-node fleet overview (parallel)
+    info [node]         deep dive — attributes, tags, groups, services
+    config              agent configuration — repo, git, labels, recipes
+    logs                recent activity log             (-n N, default 30)
+    watch               live auto-refresh (Ctrl+C)     (-interval N, default 5)
+    version             version + platform
 
-  FLAGS
+    agent commands accept -addr <host:port> (default 127.0.0.1:7780)
+`, p, r)
 
-    -addr <host:port>     Agent address (default: 127.0.0.1:7780)
-    -repo <path>          Path to git config repo (default: .)
-    -port <N>             Port for daemon/dashboard
-    -hostname <name>      Override detected hostname
-    -interval <seconds>   Check cycle interval (default: 60)
-    -n <N>                Number of log entries (logs command)
-    -nodes <name=addr>    Comma-separated node list (fleet command)
+	fmt.Printf(`
+  %sAGENT CONTROL%s
 
-  REMOTE AGENTS
+    git-pull            force immediate git pull on the config repo
+    restart             restart the agent daemon        (-hard: unit reload)
+    set <key> <value>   edit config: repo, branch, dashboard, webhook,
+                        hostname, bind, port, interval
+    update              self-update check — running vs binaries branch
+    daemon              run the agent daemon (unit/launchd entrypoint)
+    dashboard           fleet status web UI (beacon, default port 7781)
+`, p, r)
 
-    All commands accept -addr to target a remote agent:
-      gogitops status -addr 10.0.0.229:7780
-      gogitops config -addr 10.0.0.251:7780
-      gogitops git-pull -addr 10.200.0.4:7780
-      gogitops restart -addr 10.0.0.229:7780
+	fmt.Printf(`
+  %sRECIPES & TESTS%s   (repo operations — run from any checkout)
 
-  INSTALL ON A NEW MACHINE
+    recipe new <name>   scaffold recipes/<name>/ (template + scripts/)
+    recipe list         list all recipes
+    recipe validate <f> parse + attribute-ref check (never executes)
+    recipe run <name>   execute by name or YAML path
+                        flags: -repo, -hostname, --dry-run, --verbose
+    test list           available test modules
+    test run <name>     run one test module
+    test run-all        run all; exit 1 on fail (CI-able)
+    attrs scan          universal attribute catalog (--json)
+    attrs verify        validate all recipes; exit 1 on fail
+    inspect             collect node attributes (test_modules/)
 
-    # Linux (amd64)
-    curl -sL github.com/b3nnb/gogitops/releases/download/v0.5.0/gogitops_0.5.0_amd64.deb -o /tmp/gogitops.deb
-    sudo dpkg -i /tmp/gogitops.deb
+    flags: -repo, --verbose, --json
+`, p, r)
 
-    # macOS (arm64)
-    curl -sL github.com/b3nnb/gogitops/releases/download/v0.5.0/gogitops-installer-darwin-arm64.tar.gz | tar xz
-    bash install.sh
+	fmt.Printf(`
+  %sDEPLOY%s
 
-    The installer auto-detects hostname, LAN/Nebula IP, starts the daemon,
-    and registers with the dashboard. Zero prompts.
+    deploy              generate install snippets for a new node — daemon
+                        command, agent.env, systemd unit, launchd plist
+                        flags: -hostname <name> (required), -os linux|darwin,
+                        -arch amd64|arm64, -format cmd|install|config|
+                        systemd|launchd|all, -dashboard, -repo <url>
+`, p, r)
 
-  AGENT API
+	fmt.Printf(`
+  %sFLAGS%s
 
-    GET  /v1/health          Health snapshot (services, peers, system)
-    GET  /v1/config          Agent configuration (repo, git, labels, recipes)
-    GET  /v1/logs?limit=N    Recent activity log entries
-    POST /v1/git/pull        Force immediate git pull
-    POST /v1/restart         Restart agent (systemd auto-restarts)
+    -addr <host:port>    target agent         (default 127.0.0.1:7780)
+    -repo <path>         config repo          (default: auto-detect)
+    -nodes <name=addr>   node list override   (fleet, dashboard)
+    -hostname <name>     hostname override    (daemon, recipe run)
+    -bind <addr>         health API bind      (daemon, default LAN IP)
+    -port <N>            port                 (daemon 7780, dashboard 7781)
+    -interval <sec>      check cycle          (daemon 60, watch 5)
+    -webhook <url>       Discord alerts       (daemon; nenv:ns/key ok)
 
-`)
+  %sREMOTE AGENTS%s
+
+    gogitops status   -addr 10.0.0.229:7780
+    gogitops config   -addr mini:7780
+    gogitops git-pull -addr 10.200.0.4:7780
+    gogitops restart  -addr 10.0.0.229:7780 -hard
+`, p, r, p, r)
+
+	fmt.Printf(`
+  %sSELF-UPDATE%s
+
+    Agents fetch the binaries branch (git transport) on every git tick and
+    hot-swap + exec-restart when a newer VERSION appears. Release:
+
+      git tag vX.Y.Z && git push origin vX.Y.Z
+
+    CI builds all 5 platforms — linux amd64/arm64, darwin amd64/arm64,
+    windows amd64 — and publishes VERSION + binaries to the branch. The
+    daemon binary path must be user-writable (e.g. ~/.local/bin/gogitops);
+    root-owned paths (like /usr/local/bin) cannot self-swap.
+
+  %sINSTALL%s
+
+    gogitops deploy -hostname <name> -os <os> -arch <arch>
+      prints the daemon command, agent.env, systemd unit, or launchd
+      plist for that node — copy-paste ready.
+
+    From an existing checkout, grab a platform binary:
+      git fetch origin binaries
+      git show origin/binaries:bin/gogitops-<os>-<arch> > gogitops && chmod +x gogitops
+
+  %sAGENT API%s
+
+    GET  /v1/health          health snapshot (services, peers, system)
+    GET  /v1/config          agent configuration
+    GET  /v1/logs?limit=N    recent activity log
+    GET  /v1/attrs/catalog   universal attribute catalog
+    POST /v1/git/pull        force immediate git pull
+    POST /v1/restart         restart agent
+`, p, r, p, r, p, r)
 }
 
 // ── status: show local or remote agent health ────────────────────────────
@@ -1278,19 +1329,24 @@ func cmdUpdate(args []string) {
 	cli.Banner()
 	running := agent.Version
 	pub := strings.TrimPrefix(published, "v") // normalize display
+	run := strings.TrimPrefix(running, "v")
+	runDisp := "v" + run
+	if run == "dev" {
+		runDisp = "dev"
+	}
 	switch {
 	case err != nil:
 		fmt.Printf("  update check: unreachable — %v\n", err)
-		fmt.Printf("  running: v%s | binaries branch: unknown (feature off until reachable)\n", running)
+		fmt.Printf("  running: %s | binaries branch: unknown (feature off until reachable)\n", runDisp)
 	case published == "":
 		fmt.Printf("  update check: no VERSION on the binaries branch — self-update dormant\n")
-		fmt.Printf("  running: v%s\n", running)
+		fmt.Printf("  running: %s\n", runDisp)
 	case agent.IsNewer(published, running):
-		fmt.Printf("  update check: AVAILABLE — v%s → v%s (daemon swaps + exec-restarts on its git tick)\n", running, pub)
+		fmt.Printf("  update check: AVAILABLE — %s → v%s (daemon swaps + exec-restarts on its git tick)\n", runDisp, pub)
 	case published == running:
-		fmt.Printf("  update check: up to date (v%s)\n", running)
+		fmt.Printf("  update check: up to date (%s)\n", runDisp)
 	default:
-		fmt.Printf("  update check: binaries branch older (v%s) than running (v%s) — no action\n", pub, running)
+		fmt.Printf("  update check: binaries branch older (v%s) than running (%s) — no action\n", pub, runDisp)
 	}
 }
 
@@ -1300,6 +1356,10 @@ func cmdAttrs(args []string) {
 	if len(args) > 0 && (args[0] == "scan" || args[0] == "verify") {
 		sub = args[0]
 		args = args[1:]
+	}
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
+		fmt.Fprintf(os.Stderr, "usage: gogitops attrs [scan|verify]\n\nSubcommands:\n  scan    universal attribute catalog — every attr the repo can produce\n  verify  validate all recipes (parse + attr refs, never executed)\n\nFlags: -repo <path>, --json\n")
+		os.Exit(0)
 	}
 	fs := flag.NewFlagSet("attrs", flag.ExitOnError)
 	repoDir := fs.String("repo", ".", "path to gogitops repo")
@@ -1397,7 +1457,7 @@ func countFailed(results []testResult) int {
 }
 
 func cmdRecipe(args []string) {
-	if len(args) == 0 {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n")
 		os.Exit(1)
 	}
@@ -1426,7 +1486,7 @@ func recipeNew(args []string) {
 	var positional []string
 	var flagArgs []string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--repo" && i+1 < len(args) {
+		if (args[i] == "--repo" || args[i] == "-repo") && i+1 < len(args) {
 			flagArgs = append(flagArgs, args[i], args[i+1])
 			i++ // skip value
 		} else if strings.HasPrefix(args[i], "-") {
@@ -2676,7 +2736,7 @@ func discoverTestModules(resolved string) []string {
 }
 
 func cmdTest(args []string) {
-	if len(args) == 0 {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		fmt.Fprintf(os.Stderr, "usage: gogitops test <subcommand>\n\nSubcommands:\n  list                     List available test modules\n  run <name-or-path>       Run one test module (by name or YAML path)\n  run-all                  Run every test_module: true YAML (test_modules/ + recipes/*/tests/)\n\nFlags: --repo path, --verbose\n")
 		os.Exit(1)
 	}
@@ -2688,7 +2748,7 @@ func cmdTest(args []string) {
 	var positional []string
 	var flagArgs []string
 	for i := 1; i < len(args); i++ {
-		if args[i] == "--repo" && i+1 < len(args) {
+		if (args[i] == "--repo" || args[i] == "-repo") && i+1 < len(args) {
 			flagArgs = append(flagArgs, args[i], args[i+1])
 			i++
 		} else if strings.HasPrefix(args[i], "-") {
@@ -3315,7 +3375,7 @@ func runFleetTests(repoDir, hostname, webhook string, nodeLabels []string) {
 
 func runDaemon(args []string) {
 	var (
-		repoDir   = flag.String("repo", "/home/benn/Documents/code/GoGitOps", "path to config repo")
+		repoDir   = flag.String("repo", "", "path to config repo (default: auto-detect — ~/.config/gogitops, /etc/gogitops, else cwd)")
 		hostFlag  = flag.String("hostname", "", "override hostname (defaults to system hostname; match a nodes/*.yaml name)")
 		bindAddr  = flag.String("bind", "", "bind address for health API (default: node's LAN IP, then nebula IP, then 0.0.0.0)")
 		port      = flag.Int("port", 7780, "health API port")
@@ -3324,6 +3384,7 @@ func runDaemon(args []string) {
 		dashFlag  = flag.String("dashboard", "", "dashboard URL to register with (e.g. http://10.2.0.102:7781)")
 	)
 	flag.CommandLine.Parse(args)
+	repoPath := resolveRepoDir(*repoDir)
 
 	hostname := *hostFlag
 	if hostname == "" {
@@ -3333,12 +3394,12 @@ func runDaemon(args []string) {
 		hostname = config.DetectHostname()
 	}
 
-	node, err := config.LoadNode(*repoDir, hostname)
+	node, err := config.LoadNode(repoPath, hostname)
 	if err != nil {
 		log.Fatalf("failed to load node config for %q: %v\n(hint: create nodes/%s.yaml in the repo)", hostname, err, hostname)
 	}
 
-	meshCfg, err := config.LoadMesh(*repoDir)
+	meshCfg, err := config.LoadMesh(repoPath)
 	if err != nil {
 		log.Printf("warning: failed to load mesh config: %v — running without peer pings", err)
 		meshCfg = &config.MeshConfig{}
@@ -3355,7 +3416,7 @@ func runDaemon(args []string) {
 	if syncMid == "" {
 		syncMid = node.MachineID
 	}
-	config.SyncSelfToMesh(*repoDir, hostname, config.DetectNebulaIP(), config.DetectLanIP(), syncNIC, syncMid)
+	config.SyncSelfToMesh(repoPath, hostname, config.DetectNebulaIP(), config.DetectLanIP(), syncNIC, syncMid)
 
 	wbhook := resolveWebhook(*webhook)
 
@@ -3381,12 +3442,12 @@ func runDaemon(args []string) {
 	http.HandleFunc("/v1/restart", a.RestartHandler)
 	http.HandleFunc("/v1/tests", fleetTestsHandler)
 	http.HandleFunc("/v1/attrs", deviceAttrsHandler)
-	scanRepo := *repoDir
+	scanRepo := repoPath
 	http.HandleFunc("/v1/attrs/catalog", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(scanRepoAttrs(scanRepo))
 	})
-	a.SetRepoDir(*repoDir)
+	a.SetRepoDir(repoPath)
 	go func() {
 		log.Printf("health API listening on %s", addr)
 		if err := http.ListenAndServe(addr, nil); err != nil {
@@ -3410,7 +3471,7 @@ func runDaemon(args []string) {
 	}
 	if testsInterval > 0 {
 		log.Printf("fleet tests enabled: running suite every %s (results on /v1/tests)", testsInterval)
-		go runFleetTestLoop(testsInterval, *repoDir, hostname, wbhook, node.Labels)
+		go runFleetTestLoop(testsInterval, repoPath, hostname, wbhook, node.Labels)
 	} else {
 		log.Printf("fleet tests disabled (tests_interval=%q)", node.Agent.TestsInterval)
 	}
