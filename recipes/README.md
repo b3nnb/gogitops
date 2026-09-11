@@ -113,11 +113,11 @@ steps:
     on_failure: abort
 
   - name: drop-config
-    command: "cp {{repo}}/configs/starship.toml ~/.config/starship.toml"
+    command: "cp {{repo}}/recipes/starship/starship.toml ~/.config/starship.toml"
     on_failure: abort
 
   - name: drop-helper
-    command: "cp {{repo}}/configs/gogitops_prompt.py ~/.local/bin/gogitops_prompt.py"
+    command: "cp {{repo}}/recipes/starship/gogitops_prompt.py ~/.local/bin/gogitops_prompt.py"
     on_failure: abort
 
   - name: init-bash

@@ -34,9 +34,9 @@ fields are ignored, translated steps run as harmless one-shot commands.
 2. **Installs only if missing** — official installer, `~/.local/bin` target
    (no sudo required)
 3. Deploys from the repo:
-   - `configs/starship.toml` → `~/.config/starship.toml`
-   - `configs/dashboard` → `~/bin/dashboard` (login splash)
-   - `configs/gogitops_prompt.py` → `~/.local/bin/` (fleet status module helper)
+   - `recipes/starship/starship.toml` → `~/.config/starship.toml`
+   - `recipes/starship/dashboard` → `~/bin/dashboard` (login splash)
+   - `recipes/starship/gogitops_prompt.py` → `~/.local/bin/` (fleet status module helper)
 4. Wires whichever shell rc files exist (`.bashrc` and/or `.zshrc`, detected
    via `when` guards — not assumed from the OS) — all greps guard against
    duplicates, so re-running is always safe:

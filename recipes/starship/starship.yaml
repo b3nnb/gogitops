@@ -49,17 +49,17 @@ steps:
   # ── Deploy config files from the repo ────────────────────────────────
   - name: drop-starship-config
     description: "Deploy starship.toml from gogitops repo"
-    command: "cp {{repo}}/configs/starship.toml $HOME/.config/starship.toml"
+    command: "cp {{repo}}/recipes/starship/starship.toml $HOME/.config/starship.toml"
     on_failure: abort
 
   - name: drop-prompt-helper
     description: "Deploy gogitops prompt helper for fleet status module"
-    command: "cp {{repo}}/configs/gogitops_prompt.py $HOME/.local/bin/gogitops_prompt.py && chmod +x $HOME/.local/bin/gogitops_prompt.py"
+    command: "cp {{repo}}/recipes/starship/gogitops_prompt.py $HOME/.local/bin/gogitops_prompt.py && chmod +x $HOME/.local/bin/gogitops_prompt.py"
     on_failure: continue
 
   - name: drop-dashboard
     description: "Deploy the login splash dashboard script"
-    command: "cp {{repo}}/configs/dashboard $HOME/bin/dashboard && chmod +x $HOME/bin/dashboard"
+    command: "cp {{repo}}/recipes/starship/dashboard $HOME/bin/dashboard && chmod +x $HOME/bin/dashboard"
     on_failure: abort
 
   # ── ASCII art renderer (best effort — degrades to plain text) ─────────
