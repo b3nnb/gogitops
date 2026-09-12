@@ -139,7 +139,8 @@ func printHelp() {
     recipe list         list all recipes
     recipe validate <f> parse + attribute-ref check (never executes)
     recipe run <name>   execute by name or YAML path
-                        flags: -repo, -hostname, --dry-run, --verbose
+                        flags: -repo, -hostname, --pull (git pull first),
+                        --dry-run, --verbose
     test list           available test modules
     test run <name>     run one test module
     test run-all        run all; exit 1 on fail (CI-able)
@@ -1776,11 +1777,12 @@ func recipeRun(args []string) {
 	hostFlag := fs.String("hostname", "", "node hostname for label scoping + {{hostname}} (default: detected system hostname)")
 	dryRun := fs.Bool("dry-run", false, "print commands without executing")
 	verbose := fs.Bool("verbose", false, "show full command output")
+	pull := fs.Bool("pull", false, "git pull the repo before running (fresh recipes)")
 
 	// Separate flags from positional args
 	var positional []string
 	var flagArgs []string
-	valueFlags := map[string]bool{"--repo": true, "--hostname": true}
+	valueFlags := map[string]bool{"--repo": true, "-repo": true, "--hostname": true, "-hostname": true}
 	for i := 0; i < len(args); i++ {
 		if valueFlags[args[i]] && i+1 < len(args) {
 			flagArgs = append(flagArgs, args[i], args[i+1])
@@ -1794,8 +1796,9 @@ func recipeRun(args []string) {
 	fs.Parse(flagArgs)
 
 	if len(positional) < 1 {
-		fmt.Fprintf(os.Stderr, "usage: gogitops recipe run <file.yaml|name> [--repo path] [--dry-run] [--verbose]\n\n")
+		fmt.Fprintf(os.Stderr, "usage: gogitops recipe run <file.yaml|name> [--repo path] [--pull] [--dry-run] [--verbose]\n\n")
 		fmt.Fprintf(os.Stderr, "  Executes a recipe step-by-step.\n")
+		fmt.Fprintf(os.Stderr, "  --pull      Git pull the repo first (one-command fresh run)\n")
 		fmt.Fprintf(os.Stderr, "  --dry-run   Print each command without running it\n")
 		fmt.Fprintf(os.Stderr, "  --verbose   Show full command output (stdout+stderr)\n")
 		os.Exit(1)
@@ -1803,6 +1806,19 @@ func recipeRun(args []string) {
 
 	target := positional[0]
 	resolved := resolveRepoDir(*repoDir)
+
+	// --pull: fetch fresh recipes before running. Best-effort — a failed
+	// pull (offline, dirty tree) warns and runs what's on disk.
+	if *pull {
+		pc := exec.Command("git", "-C", resolved, "pull", "--ff-only")
+		pout, perr := pc.CombinedOutput()
+		pmsg := strings.TrimSpace(string(pout))
+		if perr != nil {
+			fmt.Printf("  \033[38;5;226m⚠ git pull failed — running local checkout: %s\033[0m\n", pmsg)
+		} else if pmsg != "" && pmsg != "Already up to date." {
+			fmt.Printf("  \033[38;5;46m▸ pulled: %s\033[0m\n", pmsg)
+		}
+	}
 
 	// Resolve recipe file path
 	// If the target is a directory (e.g. directory-based recipe name), fall
