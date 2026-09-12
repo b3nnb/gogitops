@@ -34,7 +34,99 @@ var (
 	version = "dev"
 )
 
+// ── reclone: global repo reset (-reclone / --reclone on any command) ───────
+
+// looksLikeGogitopsRepo guards the wipe: the dir must be a git repo AND
+// carry at least one gogitops marker dir. Refuses anything else — never
+// nuke a random directory (or $HOME) by flag typo. ONE marker suffices: a
+// broken repo is the whole reason -reclone exists, so the guard must stay
+// passable when half the tree is already missing.
+func looksLikeGogitopsRepo(dir string) bool {
+	if dir == "" || dir == "/" {
+		return false
+	}
+	if home, err := os.UserHomeDir(); err == nil && dir == home {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		return false
+	}
+	for _, m := range []string{"recipes", "nodes", "mesh.d", "modules", "test_modules", "install"} {
+		if fi, err := os.Stat(filepath.Join(dir, m)); err == nil && fi.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// recloneRepo wipes the checkout and clones fresh from origin. Every check
+// runs BEFORE the wipe; if any fails the tree is untouched.
+func recloneRepo(dir string) {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if !looksLikeGogitopsRepo(dir) {
+		fmt.Printf("  \033[38;5;196m✖ reclone refused: %s does not look like a gogitops repo (.git + recipes/nodes/mesh.d/...)\033[0m\n", dir)
+		os.Exit(1)
+	}
+	originOut, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	origin := strings.TrimSpace(string(originOut))
+	if err != nil || origin == "" {
+		fmt.Printf("  \033[38;5;196m✖ reclone refused: no origin remote — wiping would lose the repo\033[0m\n")
+		os.Exit(1)
+	}
+	branchOut, _ := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	branch := strings.TrimSpace(string(branchOut))
+	if branch == "" || branch == "HEAD" {
+		branch = "main"
+	}
+	fmt.Printf("  \033[38;5;226m⟲ recloning %s (branch %s)\033[0m\n", dir, branch)
+	if err := os.RemoveAll(dir); err != nil {
+		fmt.Printf("  \033[38;5;196m✖ wipe failed: %v\033[0m\n", err)
+		os.Exit(1)
+	}
+	cout, err := exec.Command("git", "clone", "--quiet", "--branch", branch, origin, dir).CombinedOutput()
+	if err != nil {
+		fmt.Printf("  \033[38;5;196m✖ clone failed: %s\n  repo dir is gone — re-clone manually: git clone --branch %s %s %s\033[0m\n",
+			strings.TrimSpace(string(cout)), branch, origin, dir)
+		os.Exit(1)
+	}
+	fmt.Printf("  \033[38;5;46m✓ fresh clone\033[0m\n")
+}
+
 func main() {
+	// Global -reclone/--reclone: wipe + fresh clone of the repo, then run
+	// the command. Stripped from argv so every subcommand ignores it.
+	// Safe-guarded: refuses dirs that don't look like a gogitops repo or
+	// have no origin — never wipes what it can't re-download.
+	if len(os.Args) > 1 {
+		hasRC := false
+		for _, a := range os.Args[1:] {
+			if a == "-reclone" || a == "--reclone" {
+				hasRC = true
+			}
+		}
+		if hasRC {
+			cleaned := []string{}
+			repo := ""
+			args := os.Args[1:]
+			for i := 0; i < len(args); i++ {
+				a := args[i]
+				if a == "-reclone" || a == "--reclone" {
+					continue
+				}
+				if (a == "-repo" || a == "--repo") && i+1 < len(args) {
+					repo = args[i+1]
+					cleaned = append(cleaned, a, args[i+1])
+					i++
+					continue
+				}
+				cleaned = append(cleaned, a)
+			}
+			recloneRepo(resolveRepoDir(repo))
+			os.Args = append([]string{os.Args[0]}, cleaned...)
+		}
+	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "status":
@@ -141,6 +233,12 @@ func printHelp() {
     recipe run <name>   execute by name or YAML path
                         flags: -repo, -hostname, --pull (git pull first),
                         --dry-run, --verbose
+
+  GLOBAL FLAG (works on any command):
+    -reclone            wipe + fresh clone of the repo, then run the
+                        command. Refuses dirs that don't look like a
+                        gogitops repo or have no origin (nothing it
+                        can't re-download is ever wiped)
     test list           available test modules
     test run <name>     run one test module
     test run-all        run all; exit 1 on fail (CI-able)
