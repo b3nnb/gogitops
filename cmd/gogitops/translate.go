@@ -20,6 +20,11 @@ import (
 
 // parseSourceList parses "[pkg:figlet, pip:pyfiglet]" into its elements.
 func parseSourceList(val string) []string {
+	// strip inline YAML comments first — "labels: [] # all nodes" must
+	// parse as empty, not as a garbage label that never matches
+	if idx := strings.Index(val, " #"); idx >= 0 {
+		val = val[:idx]
+	}
 	val = strings.TrimSpace(val)
 	val = strings.TrimPrefix(val, "[")
 	val = strings.TrimSuffix(val, "]")

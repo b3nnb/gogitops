@@ -233,6 +233,12 @@ func printHelp() {
     recipe run <name>   execute by name or YAML path
                         flags: -repo, -hostname, --pull (git pull first),
                         --dry-run, --verbose
+    recipe run-all      pull + run EVERY recipe applicable to this node
+                        (labels scope per recipe; test modules excluded).
+                        compact output; -v for full steps. Recipe steps
+                        are expected to be idempotent — applied state
+                        shows as skipped, so this doubles as a
+                        diagnostic sweep of what applies + what drifted.
 
   GLOBAL FLAG (works on any command):
     -reclone            wipe + fresh clone of the repo, then run the
@@ -1567,7 +1573,7 @@ func countFailed(results []testResult) int {
 
 func cmdRecipe(args []string) {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n")
+		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n  run-all           Pull + run EVERY recipe applicable to this node\n")
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -1578,7 +1584,9 @@ func cmdRecipe(args []string) {
 	case "validate":
 		recipeValidate(args[1:])
 	case "run":
-		recipeRun(args[1:])
+		recipeRun(args[1:], nil)
+	case "run-all":
+		recipeRunAll(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown recipe subcommand: %s\n", args[0])
 		os.Exit(1)
@@ -1869,12 +1877,13 @@ type recipe struct {
 	Steps []recipeStep `yaml:"steps"`
 }
 
-func recipeRun(args []string) {
+func recipeRun(args []string, all *runAllCtx) {
 	fs := flag.NewFlagSet("recipe run", flag.ExitOnError)
 	repoDir := fs.String("repo", ".", "path to gogitops repo")
 	hostFlag := fs.String("hostname", "", "node hostname for label scoping + {{hostname}} (default: detected system hostname)")
 	dryRun := fs.Bool("dry-run", false, "print commands without executing")
 	verbose := fs.Bool("verbose", false, "show full command output")
+	vAlias := fs.Bool("v", false, "alias for --verbose")
 	pull := fs.Bool("pull", false, "git pull the repo before running (fresh recipes)")
 
 	// Separate flags from positional args
@@ -1908,14 +1917,7 @@ func recipeRun(args []string) {
 	// --pull: fetch fresh recipes before running. Best-effort — a failed
 	// pull (offline, dirty tree) warns and runs what's on disk.
 	if *pull {
-		pc := exec.Command("git", "-C", resolved, "pull", "--ff-only")
-		pout, perr := pc.CombinedOutput()
-		pmsg := strings.TrimSpace(string(pout))
-		if perr != nil {
-			fmt.Printf("  \033[38;5;226m⚠ git pull failed — running local checkout: %s\033[0m\n", pmsg)
-		} else if pmsg != "" && pmsg != "Already up to date." {
-			fmt.Printf("  \033[38;5;46m▸ pulled: %s\033[0m\n", pmsg)
-		}
+		gitPullRepo(resolved)
 	}
 
 	// Resolve recipe file path
@@ -1981,17 +1983,27 @@ func recipeRun(args []string) {
 	hydrateDeviceAttrs(attrs, vars)
 
 	// Banner
-	cli.Banner()
-	fmt.Printf("\n  \033[1m\033[38;5;141mRecipe: %s\033[0m\n", r.Name)
-	if r.Description != "" {
-		fmt.Printf("  \033[38;5;240m%s\033[0m\n", r.Description)
-	}
-	fmt.Printf("  \033[38;5;240m%d steps%s\033[0m\n\n", len(r.Steps), func() string {
-		if *dryRun {
-			return " (DRY RUN)"
+	// run-all: compact one-liner per recipe; single: full banner
+	showDetail := all == nil || (*verbose || *vAlias)
+	if all == nil {
+		cli.Banner()
+		fmt.Printf("\n  \033[1m\033[38;5;141mRecipe: %s\033[0m\n", r.Name)
+		if r.Description != "" {
+			fmt.Printf("  \033[38;5;240m%s\033[0m\n", r.Description)
 		}
-		return ""
-	}())
+		fmt.Printf("  \033[38;5;240m%d steps%s\033[0m\n\n", len(r.Steps), func() string {
+			if *dryRun {
+				return " (DRY RUN)"
+			}
+			return ""
+		}())
+	} else {
+		dr := ""
+		if *dryRun {
+			dr = " (DRY RUN)"
+		}
+		fmt.Printf("\n  \033[1m\033[38;5;141m▸ %s\033[0m \033[38;5;240m— %d steps%s\033[0m\n", r.Name, len(r.Steps), dr)
+	}
 
 	// Node labels for label scoping. Only loaded when the node yaml exists —
 	// recipe runs must not trigger LoadNode's auto-registration side effect.
@@ -2005,7 +2017,10 @@ func recipeRun(args []string) {
 	// Recipe-level label gate (recipe labels: node must have ALL of them;
 	// empty = all nodes)
 	if len(r.Labels) > 0 && !labelsMatch(nodeLabels, r.Labels, nil) {
-		fmt.Printf("  ⊘ node labels %v don't satisfy recipe labels %v — recipe skipped\n", nodeLabels, r.Labels)
+		fmt.Printf("  \033[38;5;240m⊘ %s — node labels don't satisfy recipe labels %v\033[0m\n", r.Name, r.Labels)
+		if all != nil {
+			all.recipeSkipped++
+		}
 		return
 	}
 
@@ -2030,6 +2045,11 @@ func recipeRun(args []string) {
 				fmt.Printf("  \033[38;5;196m✖ script not found: %s (searched recipes/<name>/scripts/, modules/, agent sets)\033[0m\n", step.Script)
 				failed++
 				if step.OnFailure == "" || step.OnFailure == "abort" {
+					if all != nil {
+						all.recipeFailed++
+						all.failedAt = fmt.Sprintf("%s step %d: %s (script not found: %s)", r.Name, stepNum, displayName, step.Script)
+						return
+					}
 					fmt.Printf("\n  \033[38;5;196m✖ Recipe aborted at step %d: %s\033[0m\n", stepNum, displayName)
 					fmt.Printf("  \033[38;5;240m%d passed, %d skipped, %d failed\033[0m\n\n", passed, skipped, failed)
 					os.Exit(1)
@@ -2073,20 +2093,26 @@ func recipeRun(args []string) {
 
 		// OS filter
 		if step.OS != "" && step.OS != vars["os"] {
-			fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: os=%s, host=%s)\033[0m\n", stepNum, len(r.Steps), displayName, step.OS, vars["os"])
+			if showDetail {
+				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: os=%s, host=%s)\033[0m\n", stepNum, len(r.Steps), displayName, step.OS, vars["os"])
+			}
 			skipped++
 			continue
 		}
 		// Arch filter
 		if step.Arch != "" && step.Arch != vars["arch"] {
-			fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: arch=%s)\033[0m\n", stepNum, len(r.Steps), displayName, step.Arch)
+			if showDetail {
+				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: arch=%s)\033[0m\n", stepNum, len(r.Steps), displayName, step.Arch)
+			}
 			skipped++
 			continue
 		}
 		// Label filters: labels_required = node must have ALL of them;
 		// labels_exclude = node must have NONE of them
 		if !labelsMatch(nodeLabels, step.LabelsReq, step.LabelsExcl) {
-			fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: labels required=%v exclude=%v)\033[0m\n", stepNum, len(r.Steps), displayName, step.LabelsReq, step.LabelsExcl)
+			if showDetail {
+				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: labels required=%v exclude=%v)\033[0m\n", stepNum, len(r.Steps), displayName, step.LabelsReq, step.LabelsExcl)
+			}
 			skipped++
 			continue
 		}
@@ -2096,7 +2122,9 @@ func recipeRun(args []string) {
 			whenCmd := substituteVars(step.When, vars)
 			wCmd := exec.Command("bash", "-c", whenCmd)
 			if err := wCmd.Run(); err != nil {
-				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: when condition false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				if showDetail {
+					fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: when condition false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				}
 				skipped++
 				continue
 			}
@@ -2107,7 +2135,9 @@ func recipeRun(args []string) {
 			onlyCmd := substituteVars(step.OnlyIf, vars)
 			oCmd := exec.Command("bash", "-c", onlyCmd)
 			if err := oCmd.Run(); err != nil {
-				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: only_if false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				if showDetail {
+					fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: only_if false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				}
 				skipped++
 				continue
 			}
@@ -2117,7 +2147,9 @@ func recipeRun(args []string) {
 		if step.WhenAttr != "" {
 			cond := substituteVars(step.WhenAttr, vars)
 			if !evalAttrCondition(cond, attrs) {
-				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: when_attr false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				if showDetail {
+					fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: when_attr false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				}
 				skipped++
 				continue
 			}
@@ -2127,22 +2159,28 @@ func recipeRun(args []string) {
 		if step.OnlyIfAttr != "" {
 			cond := substituteVars(step.OnlyIfAttr, vars)
 			if !evalAttrCondition(cond, attrs) {
-				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: only_if_attr false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				if showDetail {
+					fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: only_if_attr false)\033[0m\n", stepNum, len(r.Steps), displayName)
+				}
 				skipped++
 				continue
 			}
 		}
 
 		// Description
-		if step.Description != "" {
-			fmt.Printf("  \033[38;5;38m▸ %d/%d %s\033[0m — \033[38;5;245m%s\033[0m\n", stepNum, len(r.Steps), displayName, step.Description)
-		} else {
-			fmt.Printf("  \033[38;5;38m▸ %d/%d %s\033[0m\n", stepNum, len(r.Steps), displayName)
+		if showDetail {
+			if step.Description != "" {
+				fmt.Printf("  \033[38;5;38m▸ %d/%d %s\033[0m — \033[38;5;245m%s\033[0m\n", stepNum, len(r.Steps), displayName, step.Description)
+			} else {
+				fmt.Printf("  \033[38;5;38m▸ %d/%d %s\033[0m\n", stepNum, len(r.Steps), displayName)
+			}
 		}
 
 		// Dry run — just print
 		if *dryRun {
-			fmt.Printf("     \033[38;5;240m$ %s\033[0m\n", cmd)
+			if showDetail {
+				fmt.Printf("     \033[38;5;240m$ %s\033[0m\n", cmd)
+			}
 			passed++
 			continue
 		}
@@ -2231,7 +2269,9 @@ func recipeRun(args []string) {
 			attrKey := "attr.assert." + displayName
 			if assertPassed {
 				attrs[attrKey+".status"] = "pass"
-				fmt.Printf("     \033[38;5;46m✓ assert: %s\033[0m\n", step.Assert)
+				if showDetail {
+					fmt.Printf("     \033[38;5;46m✓ assert: %s\033[0m\n", step.Assert)
+				}
 			} else {
 				attrs[attrKey+".status"] = "fail"
 				fmt.Printf("     \033[38;5;196m✖ assert: %s\033[0m\n", step.Assert)
@@ -2244,7 +2284,9 @@ func recipeRun(args []string) {
 			attrs["attr."+step.SetAttr] = attrVal
 			// Also make available as a variable for subsequent steps
 			vars["attr."+step.SetAttr] = attrVal
-			fmt.Printf("     \033[38;5;178m⊙ attr.%s = %s\033[0m\n", step.SetAttr, truncateStr(attrVal, 60))
+			if showDetail {
+				fmt.Printf("     \033[38;5;178m⊙ attr.%s = %s\033[0m\n", step.SetAttr, truncateStr(attrVal, 60))
+			}
 		}
 
 		// attr_prefix: store regex capture groups as attributes
@@ -2258,7 +2300,9 @@ func recipeRun(args []string) {
 						val := strings.TrimSpace(m)
 						attrs[key] = val
 						vars[key] = val
-						fmt.Printf("     \033[38;5;178m⊙ %s = %s\033[0m\n", key, truncateStr(val, 60))
+						if showDetail {
+							fmt.Printf("     \033[38;5;178m⊙ %s = %s\033[0m\n", key, truncateStr(val, 60))
+						}
 					}
 				}
 			}
@@ -2273,7 +2317,9 @@ func recipeRun(args []string) {
 
 		// Result
 		if lastExitCode == 0 || (step.ExpectExit != nil && lastExitCode == *step.ExpectExit) {
-			fmt.Printf("     \033[38;5;46m✓\033[0m\n")
+			if showDetail {
+				fmt.Printf("     \033[38;5;46m✓\033[0m\n")
+			}
 			passed++
 		} else {
 			failureAction := step.OnFailure
@@ -2294,6 +2340,11 @@ func recipeRun(args []string) {
 			}
 			failed++
 			if failureAction == "abort" {
+				if all != nil {
+					all.recipeFailed++
+					all.failedAt = fmt.Sprintf("%s step %d: %s (exit %d)", r.Name, stepNum, displayName, lastExitCode)
+					return
+				}
 				fmt.Printf("\n  \033[38;5;196m✖ Recipe aborted at step %d: %s\033[0m\n", stepNum, displayName)
 				fmt.Printf("  \033[38;5;240m%d passed, %d skipped, %d failed\033[0m\n\n", passed, skipped, failed)
 				os.Exit(1)
@@ -2302,6 +2353,19 @@ func recipeRun(args []string) {
 	}
 
 	// Summary
+	if all != nil {
+		if failed > 0 {
+			fmt.Printf("  \033[38;5;226m⚠ %s: %d passed, %d skipped, %d failed\033[0m\n", r.Name, passed, skipped, failed)
+			all.recipeFailed++
+			if all.failedAt == "" {
+				all.failedAt = fmt.Sprintf("%s (%d failed steps)", r.Name, failed)
+			}
+		} else {
+			fmt.Printf("  \033[38;5;46m✓ %s: %d passed, %d skipped\033[0m\n", r.Name, passed, skipped)
+			all.recipeOK++
+		}
+		return
+	}
 	fmt.Printf("\n  ")
 	if failed > 0 {
 		fmt.Printf("\033[38;5;226m⚠ %s complete: %d passed, %d skipped, %d failed\033[0m\n\n", r.Name, passed, skipped, failed)
@@ -2771,6 +2835,132 @@ func cmdModules(args []string) {
 	}
 	fmt.Println()
 	fmt.Printf("  \033[38;5;240mGo modules compile+cache on first use (needs go on the node); .sh/.py run anywhere.\033[0m\n\n")
+}
+
+// ── recipe run-all: pull + run every recipe applicable to this node ──────
+
+// runAllCtx threads run-all state through recipeRun: compact output,
+// abort-tolerance (a failed recipe doesn't kill the sweep), and the
+// final summary counts.
+type runAllCtx struct {
+	verbose       bool
+	recipeOK      int
+	recipeFailed  int
+	recipeSkipped int
+	failedAt      string // first failure, for the final summary
+}
+
+// gitPullRepo pulls --ff-only, best-effort. Shared by recipe run --pull
+// and recipe run-all.
+func gitPullRepo(resolved string) {
+	pc := exec.Command("git", "-C", resolved, "pull", "--ff-only")
+	pout, perr := pc.CombinedOutput()
+	pmsg := strings.TrimSpace(string(pout))
+	if perr != nil {
+		fmt.Printf("  \033[38;5;226m⚠ git pull failed — running local checkout: %s\033[0m\n", pmsg)
+	} else if pmsg != "" && pmsg != "Already up to date." {
+		fmt.Printf("  \033[38;5;46m▸ pulled: %s\033[0m\n", pmsg)
+	}
+}
+
+// discoverRecipes lists every recipe file in recipes/: dir recipes
+// (recipes/<name>/<name>.yaml) and flat files (recipes/*.yaml). Test
+// modules (test_module: true) are excluded — those belong to test run-all.
+func discoverRecipes(repoDir string) []string {
+	var files []string
+	root := filepath.Join(repoDir, "recipes")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			cand := filepath.Join(root, e.Name(), e.Name()+".yaml")
+			if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+				files = append(files, cand)
+			}
+			continue
+		}
+		if strings.HasSuffix(e.Name(), ".yaml") || strings.HasSuffix(e.Name(), ".yml") {
+			files = append(files, filepath.Join(root, e.Name()))
+		}
+	}
+	sort.Strings(files)
+	// exclude test modules
+	var recipes []string
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), "test_module: true") {
+			continue
+		}
+		recipes = append(recipes, f)
+	}
+	return recipes
+}
+
+func recipeRunAll(args []string) {
+	fs := flag.NewFlagSet("recipe run-all", flag.ExitOnError)
+	repoDir := fs.String("repo", ".", "path to gogitops repo")
+	hostFlag := fs.String("hostname", "", "node hostname for label scoping (default: detected system hostname)")
+	noPull := fs.Bool("no-pull", false, "skip the git pull (pull is run-all's default behavior)")
+	dryRun := fs.Bool("dry-run", false, "print commands without executing")
+	verbose := fs.Bool("verbose", false, "full step output (compact by default)")
+	vAlias := fs.Bool("v", false, "alias for --verbose")
+
+	var positional []string
+	var flagArgs []string
+	valueFlags := map[string]bool{"--repo": true, "-repo": true, "--hostname": true, "-hostname": true}
+	for i := 0; i < len(args); i++ {
+		if valueFlags[args[i]] && i+1 < len(args) {
+			flagArgs = append(flagArgs, args[i], args[i+1])
+			i++
+		} else if strings.HasPrefix(args[i], "-") {
+			flagArgs = append(flagArgs, args[i])
+		} else {
+			positional = append(positional, args[i])
+		}
+	}
+	_ = fs.Parse(flagArgs)
+
+	resolved := resolveRepoDir(*repoDir)
+	cli.Banner()
+	if !*noPull {
+		gitPullRepo(resolved)
+	}
+
+	hostname := *hostFlag
+	if hostname == "" {
+		hostname = config.DetectHostname()
+	}
+
+	files := discoverRecipes(resolved)
+	if len(files) == 0 {
+		cli.PrintError("no recipes found in " + resolved + "/recipes/")
+		os.Exit(1)
+	}
+	fmt.Printf("\n  \033[1m\033[38;5;141mRun-all\033[0m \033[38;5;240m— %d recipes, node %s\033[0m\n\n", len(files), hostname)
+
+	ctx := &runAllCtx{verbose: *verbose || *vAlias}
+	for _, f := range files {
+		rargs := []string{f, "--repo", resolved, "--hostname", hostname}
+		if *dryRun {
+			rargs = append(rargs, "--dry-run")
+		}
+		if ctx.verbose {
+			rargs = append(rargs, "--verbose")
+		}
+		recipeRun(rargs, ctx)
+	}
+
+	fmt.Printf("\n  \033[1m\033[38;5;141mrun-all complete\033[0m — %d ok, %d failed, %d not-applicable\n",
+		ctx.recipeOK, ctx.recipeFailed, ctx.recipeSkipped)
+	if ctx.failedAt != "" {
+		fmt.Printf("  \033[38;5;196mfirst failure: %s\033[0m\n", ctx.failedAt)
+		os.Exit(1)
+	}
 }
 
 // ── test: run test modules as a real test suite ───────────────────────────
