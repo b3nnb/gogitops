@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -159,18 +160,48 @@ func LoadNodeStrict(repoDir, hostname string) (*NodeConfig, error) {
 	return &cfg, nil
 }
 
-// LoadMesh loads the mesh peer list
+// LoadMesh loads the mesh peer list. The mesh is a FOLDER — mesh.d/ — one
+// yaml per node (mesh.d/<hostname>.yaml, same peers: schema, one entry per
+// file); each agent owns and submits exactly its own file, and this loader
+// concatenates them in sorted filename order. A legacy root mesh.yaml is
+// still honored for hostnames not yet in mesh.d/ (rolling migration); on a
+// hostname collision the mesh.d/ file always wins.
 func LoadMesh(repoDir string) (*MeshConfig, error) {
-	path := filepath.Join(repoDir, "mesh.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read mesh config: %w", err)
+	cfg := &MeshConfig{}
+	seen := map[string]bool{}
+	add := func(peers []Peer) {
+		for _, p := range peers {
+			key := strings.ToLower(p.Hostname)
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			cfg.Peers = append(cfg.Peers, p)
+		}
 	}
-	var cfg MeshConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse mesh config: %w", err)
+	files, _ := filepath.Glob(filepath.Join(repoDir, "mesh.d", "*.yaml"))
+	sort.Strings(files)
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var m MeshConfig
+		if yaml.Unmarshal(data, &m) != nil {
+			continue
+		}
+		add(m.Peers)
 	}
-	return &cfg, nil
+	if data, err := os.ReadFile(filepath.Join(repoDir, "mesh.yaml")); err == nil {
+		var m MeshConfig
+		if yaml.Unmarshal(data, &m) == nil {
+			add(m.Peers)
+		}
+	}
+	if len(cfg.Peers) == 0 {
+		return nil, fmt.Errorf("no mesh peers found (mesh.d/ or legacy mesh.yaml) in %s", repoDir)
+	}
+	return cfg, nil
 }
 
 // LoadGroups loads all group configs
@@ -326,64 +357,46 @@ func autoRegister(repoDir, hostname string) (*NodeConfig, error) {
 	return autoRegisterWith(repoDir, hostname, DetectNebulaIP(), DetectLanIP(), detectOSLabel(), DetectNICs(), DetectMachineID())
 }
 
-// registerToMesh adds or updates a peer entry in mesh.yaml
+// registerToMesh adds or updates a node's peer entry — in its OWN file,
+// mesh.d/<hostname>.yaml (created if missing; a legacy mesh.yaml entry
+// self-migrates on first write, the legacy file is never touched). The
+// agent then submits the file to origin.
 func registerToMesh(repoDir, hostname, nebulaIP, lanIP string, labels []string, nic NICIdentity, machineID string) {
-	meshPath := filepath.Join(repoDir, "mesh.yaml")
-	data, err := os.ReadFile(meshPath)
-	if err != nil {
-		return
-	}
-
-	var mesh MeshConfig
-	if err := yaml.Unmarshal(data, &mesh); err != nil {
-		return
-	}
-
-	// Check if already registered
-	for i, p := range mesh.Peers {
-		if p.Hostname == hostname {
-			// Update existing entry with detected IPs
-			if nebulaIP != "" {
-				mesh.Peers[i].NebulaIP = nebulaIP
-			}
-			if lanIP != "" {
-				mesh.Peers[i].LanIP = lanIP
-			}
-			if len(nic.Macs) > 0 || len(nic.Portable) > 0 {
-				portable := unionMACs(p.PortableMacs, nic.Portable)
-				mesh.Peers[i].PortableMacs = portable
-				mesh.Peers[i].Macs = subtractMACs(unionMACs(p.Macs, nic.Macs), portable)
-			}
-			if machineID != "" && p.MachineID == "" {
-				mesh.Peers[i].MachineID = machineID
-			}
-			if len(labels) > 0 && len(p.Labels) == 0 {
-				// only fill empty labels — never clobber hand-curated ones
-				mesh.Peers[i].Labels = labels
-			}
-			if out, err := yaml.Marshal(&mesh); err == nil && string(out) != string(data) {
-				os.WriteFile(meshPath, out, 0644)
-			}
-			return
+	p, _, ok := loadOwnMeshEntry(repoDir, hostname)
+	if !ok {
+		// Not known — brand-new peer entry
+		p = Peer{
+			Hostname:     hostname,
+			NebulaIP:     nebulaIP,
+			LanIP:        lanIP,
+			Port:         7780,
+			MachineID:    machineID,
+			Macs:         nic.Macs,
+			PortableMacs: nic.Portable,
+			Labels:       labels,
+		}
+	} else {
+		// Update existing entry with detected IPs
+		if nebulaIP != "" {
+			p.NebulaIP = nebulaIP
+		}
+		if lanIP != "" {
+			p.LanIP = lanIP
+		}
+		if len(nic.Macs) > 0 || len(nic.Portable) > 0 {
+			portable := unionMACs(p.PortableMacs, nic.Portable)
+			p.PortableMacs = portable
+			p.Macs = subtractMACs(unionMACs(p.Macs, nic.Macs), portable)
+		}
+		if machineID != "" && p.MachineID == "" {
+			p.MachineID = machineID
+		}
+		if len(labels) > 0 && len(p.Labels) == 0 {
+			// only fill empty labels — never clobber hand-curated ones
+			p.Labels = labels
 		}
 	}
-
-	// Not found — add new peer
-	peer := Peer{
-		Hostname:     hostname,
-		NebulaIP:     nebulaIP,
-		LanIP:        lanIP,
-		Port:         7780,
-		MachineID:    machineID,
-		Macs:         nic.Macs,
-		PortableMacs: nic.Portable,
-		Labels:       labels,
-	}
-	mesh.Peers = append(mesh.Peers, peer)
-
-	if out, err := yaml.Marshal(&mesh); err == nil {
-		os.WriteFile(meshPath, out, 0644)
-	}
+	saveOwnMeshEntry(repoDir, hostname, p)
 }
 
 func indexOf(s string, c byte) int {

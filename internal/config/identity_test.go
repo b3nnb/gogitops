@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -270,11 +272,120 @@ func TestSyncSelfToMeshManualPortableAndNoChurn(t *testing.T) {
 		t.Errorf("declared-portable MAC must appear in portable inventory: %v", friday.PortableMacs)
 	}
 
+	// First write must have self-migrated into the node's OWN file, and
+	// the legacy mesh.yaml must be untouched.
+	selfFile := filepath.Join(repo, "mesh.d", "friday.yaml")
+	if _, err := os.Stat(selfFile); err != nil {
+		t.Fatal("sync must write the node's own mesh.d/friday.yaml")
+	}
+	legacy, _ := os.ReadFile(filepath.Join(repo, "mesh.yaml"))
+
 	// Second sync with same inputs = byte-identical → NO rewrite.
-	before, _ := os.ReadFile(filepath.Join(repo, "mesh.yaml"))
+	before, _ := os.ReadFile(selfFile)
 	SyncSelfToMesh(repo, "friday", "10.200.0.4", "10.2.0.102", nic, "mid-friday-0001")
-	after, _ := os.ReadFile(filepath.Join(repo, "mesh.yaml"))
+	after, _ := os.ReadFile(selfFile)
 	if string(before) != string(after) {
 		t.Error("steady-state sync must be a no-op (byte-identical) — churn would break the agent's own git pull")
+	}
+	legacyAfter, _ := os.ReadFile(filepath.Join(repo, "mesh.yaml"))
+	if string(legacy) != string(legacyAfter) {
+		t.Error("legacy mesh.yaml must never be touched once mesh.d/ writes begin")
+	}
+}
+
+// mesh.d/ union read: per-node files concatenate in sorted order; a legacy
+// mesh.yaml still contributes hostnames that have no mesh.d/ file; on a
+// hostname collision the mesh.d/ file wins.
+func TestMeshDUnionAndPrecedence(t *testing.T) {
+	repo := t.TempDir()
+	os.MkdirAll(filepath.Join(repo, "mesh.d"), 0755)
+	os.WriteFile(filepath.Join(repo, "mesh.d", "mini.yaml"),
+		[]byte("peers:\n    - hostname: mini\n      machine_id: mid-mini-0002\n      nebula_ip: \"\"\n      lan_ip: 10.9.9.9\n      port: 7780\n      macs:\n        - aa:bb:cc:dd:ee:03\n"), 0644)
+	os.WriteFile(filepath.Join(repo, "mesh.yaml"),
+		[]byte("peers:\n    - hostname: mini\n      lan_ip: 10.0.0.251\n      port: 7780\n    - hostname: friday\n      lan_ip: 10.2.0.102\n      port: 7780\n"), 0644)
+
+	peers := mustPeers(t, repo)
+	if len(peers) != 2 {
+		t.Fatalf("union read: mesh.d/ mini + legacy friday — want 2, got %d", len(peers))
+	}
+	if mini := findPeer(peers, "mini"); mini.LanIP != "10.9.9.9" {
+		t.Errorf("mesh.d/ file must win on collision, got lan_ip %q", mini.LanIP)
+	}
+	if findPeer(peers, "friday") == nil {
+		t.Error("legacy-only entries must still be visible")
+	}
+}
+
+// A node with no entry anywhere (fresh standalone) stays untouched by
+// SyncSelfToMesh — it registers via the auto-register path instead.
+func TestSyncSelfNoEntryNoFile(t *testing.T) {
+	repo := setupRepo(t)
+	SyncSelfToMesh(repo, "stranger", "10.200.0.99", "10.0.0.99", NICIdentity{}, "mid-stranger-9999")
+	if _, err := os.Stat(filepath.Join(repo, "mesh.d", "stranger.yaml")); !os.IsNotExist(err) {
+		t.Error("sync must not invent an entry for an unknown node")
+	}
+	peers := mustPeers(t, repo)
+	if len(peers) != 3 {
+		t.Errorf("unknown node sync must not change the mesh — want 3, got %d", len(peers))
+	}
+}
+
+// The submit half of the per-node mesh model: saveOwnMeshEntry must commit
+// the node's OWN mesh.d/ file and push it to origin. Local bare remote —
+// proves the full add/commit/push mechanics without touching the real repo.
+func TestSubmitMeshFilePushes(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	remote := filepath.Join(dir, "remote.git")
+	run := func(args ...string) (string, bool) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err == nil
+	}
+	for _, args := range [][]string{
+		{"init", "-q", repo},
+		{"init", "-q", "--bare", remote},
+	} {
+		cmd := exec.Command("git", args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	if _, ok := run("remote", "add", "origin", remote); !ok {
+		t.Fatal("remote add failed")
+	}
+	run("config", "user.email", "agent@test")
+	run("config", "user.name", "agent-test")
+
+	p := Peer{Hostname: "friday", NebulaIP: "10.200.0.4", LanIP: "10.2.0.102", Port: 7780,
+		Macs: []string{"aa:bb:cc:dd:ee:01"}, Labels: []string{"primary-compute"}}
+	saveOwnMeshEntry(repo, "friday", p)
+
+	if _, err := os.Stat(filepath.Join(repo, "mesh.d", "friday.yaml")); err != nil {
+		t.Fatal("own mesh.d file must exist")
+	}
+	if _, ok := run("log", "-1", "--oneline"); !ok {
+		t.Fatal("submit must leave a commit on the branch")
+	}
+	// the push must have landed on the bare remote
+	cmd := exec.Command("git", "--git-dir", remote, "show-ref", "--verify", "refs/heads/main")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		cmd := exec.Command("git", "--git-dir", remote, "show-ref", "--verify", "refs/heads/master")
+		if out2, err2 := cmd.CombinedOutput(); err2 != nil {
+			t.Fatalf("push did not land on remote main/master: %v / %v (%s / %s)", err, err2, out, out2)
+		}
+	}
+	nameOnly, _ := exec.Command("git", "--git-dir", remote, "ls-tree", "-r", "--name-only", "HEAD").CombinedOutput()
+	if !strings.Contains(string(nameOnly), "mesh.d/friday.yaml") {
+		t.Errorf("remote HEAD must contain the submitted file, got: %s", nameOnly)
+	}
+
+	// Steady state: identical content → no churn, no second commit.
+	before, _ := run("rev-list", "--count", "HEAD")
+	saveOwnMeshEntry(repo, "friday", p)
+	after, _ := run("rev-list", "--count", "HEAD")
+	if before != after {
+		t.Errorf("steady-state write must not commit again (%s → %s)", before, after)
 	}
 }

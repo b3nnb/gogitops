@@ -1,0 +1,15 @@
+peers:
+    - hostname: friday
+      machine_id: 0977c274f3c54f2c87bd59e763c2ca26
+      nebula_ip: 10.200.0.4
+      lan_ip: 10.2.0.102
+      port: 7780
+      macs:
+        - 2c:0d:a7:d9:87:a3
+        - c8:7f:54:02:0a:fd
+      labels:
+        - primary-compute
+        - docker-host
+        - hermes-host
+        - trader-host
+        - gpu

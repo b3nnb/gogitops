@@ -1,0 +1,15 @@
+peers:
+    - hostname: mini
+      machine_id: adf8cc28-824e-5092-a251-6ca1fa10d181
+      nebula_ip: 10.200.0.188
+      lan_ip: 10.0.0.251
+      port: 7780
+      macs:
+        - d0:11:e5:1a:77:5f
+        - 42:18:eb:4a:1c:ae
+      labels:
+        - compute
+        - gpu
+        - llm-inference
+        - image-gen
+        - lora-training

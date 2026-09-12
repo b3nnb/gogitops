@@ -266,66 +266,141 @@ func autoRegisterWith(repoDir, hostname, nebulaIP, lanIP, osLabel string, nic NI
 	return cfg, nil
 }
 
-// SyncSelfToMesh refreshes a KNOWN machine's own mesh entry at daemon
-// startup: detected IPs, identity MAC union, portable MAC union (including
-// the node yaml's declared portable_macs — the manual override for
-// thunderbolt docks etc.), machine-id backfill. Byte-stable: writes only
-// when content actually changes (the daemon git-pulls this repo — a churn
-// write would dirty the tree and break its own pull).
-func SyncSelfToMesh(repoDir, hostname, nebulaIP, lanIP string, nic NICIdentity, machineID string) {
-	meshPath := filepath.Join(repoDir, "mesh.yaml")
-	data, err := os.ReadFile(meshPath)
-	if err != nil {
-		return
-	}
-	var mesh MeshConfig
-	if err := yaml.Unmarshal(data, &mesh); err != nil {
-		return
-	}
-	changed := false
-	for i, p := range mesh.Peers {
-		if p.Hostname != hostname {
-			continue
-		}
-		// manual portable declarations win over sysfs: a MAC declared
-		// portable in the node yaml leaves the identity set
-		portable := unionMACs(p.PortableMacs, nic.Portable)
-		identity := subtractMACs(unionMACs(p.Macs, nic.Macs), portable)
-		if len(identity) != len(p.Macs) || !macEqual(identity, p.Macs) {
-			mesh.Peers[i].Macs = identity
-			changed = true
-		}
-		if !macEqual(portable, p.PortableMacs) {
-			mesh.Peers[i].PortableMacs = portable
-			changed = true
-		}
-		if machineID != "" && p.MachineID == "" {
-			mesh.Peers[i].MachineID = machineID
-			changed = true
-		}
-		if nebulaIP != "" && p.NebulaIP != nebulaIP {
-			mesh.Peers[i].NebulaIP = nebulaIP
-			changed = true
-		}
-		if lanIP != "" && p.LanIP != lanIP {
-			mesh.Peers[i].LanIP = lanIP
-			changed = true
-		}
-		break
-	}
-	if !changed {
-		return
-	}
-	if out, err := yaml.Marshal(&mesh); err == nil && string(out) != string(data) {
-		if werr := os.WriteFile(meshPath, out, 0644); werr == nil {
-			for _, p := range mesh.Peers {
+// meshPeerPath returns the node's OWN mesh file: mesh.d/<hostname>.yaml.
+// One file per node — each agent owns exactly one and never writes another
+// node's file (identity-merges target the machine's true name, which the
+// machine then owns).
+func meshPeerPath(repoDir, hostname string) string {
+	return filepath.Join(repoDir, "mesh.d", hostname+".yaml")
+}
+
+// loadOwnMeshEntry loads a node's own peer entry. Preference: the node's
+// own mesh.d/ file; legacy mesh.yaml is the self-migration fallback (an
+// agent whose entry only exists in the legacy file migrates it on first
+// write). ok=false when the node has no entry anywhere (it registers via
+// the auto-register path instead).
+func loadOwnMeshEntry(repoDir, hostname string) (Peer, bool, bool) {
+	if data, err := os.ReadFile(meshPeerPath(repoDir, hostname)); err == nil {
+		var m MeshConfig
+		if yaml.Unmarshal(data, &m) == nil {
+			for _, p := range m.Peers {
 				if p.Hostname == hostname {
-					fmt.Fprintf(os.Stderr, "[gogitops] mesh entry for %s refreshed (identity MACs=%d portable MACs=%d)\n", hostname, len(p.Macs), len(p.PortableMacs))
-					break
+					return p, false, true
 				}
 			}
 		}
 	}
+	if mesh, err := LoadMesh(repoDir); err == nil {
+		for _, p := range mesh.Peers {
+			if p.Hostname == hostname {
+				return p, true, true
+			}
+		}
+	}
+	return Peer{}, false, false
+}
+
+// saveOwnMeshEntry byte-stable-writes the node's OWN mesh.d/ file and
+// submits it to origin. Byte-stable: the file is only rewritten when
+// marshaled content differs (the daemon git-pulls this repo — churn
+// writes would dirty the tree and break its own pull).
+func saveOwnMeshEntry(repoDir, hostname string, p Peer) {
+	if err := os.MkdirAll(filepath.Join(repoDir, "mesh.d"), 0755); err != nil {
+		return
+	}
+	out, err := yaml.Marshal(&MeshConfig{Peers: []Peer{p}})
+	if err != nil {
+		return
+	}
+	path := meshPeerPath(repoDir, hostname)
+	if prev, err := os.ReadFile(path); err == nil && string(prev) == string(out) {
+		return // steady state: no churn, no submit
+	}
+	if err := os.WriteFile(path, out, 0644); err != nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[gogitops] mesh entry for %s refreshed (identity MACs=%d portable MACs=%d)\n", hostname, len(p.Macs), len(p.PortableMacs))
+	submitMeshFile(repoDir, hostname)
+}
+
+// submitMeshFile commits and pushes the node's own mesh.d/ file — the
+// "submit" in the per-node mesh model. Concurrent submissions are safe by
+// construction: files are disjoint, so a rebase over another node's pushed
+// commit is always clean. Every failure degrades to local-only (the
+// pre-submit behavior) — a node without push credentials simply keeps its
+// entry current locally; never fatal.
+func submitMeshFile(repoDir, hostname string) {
+	rel := filepath.ToSlash(filepath.Join("mesh.d", hostname+".yaml"))
+	run := func(args ...string) (string, bool) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err == nil
+	}
+	if out, ok := run("rev-parse", "--is-inside-work-tree"); !ok || out != "true" {
+		return // not a git repo (tests, ad-hoc checkouts) — local-only
+	}
+	if out, ok := run("add", "--", rel); !ok {
+		fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: git add: %s\n", out)
+		return
+	}
+	if _, ok := run("diff", "--cached", "--quiet", "--", rel); ok {
+		return // nothing staged — no change to submit
+	}
+	if out, ok := run("commit", "-m", "mesh: "+hostname+" self-refresh (agent)", "--", rel); !ok {
+		fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: git commit: %s\n", out)
+		return
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		out, ok := run("push", "origin", "HEAD")
+		if ok {
+			return // submitted
+		}
+		rejected := strings.Contains(out, "non-fast-forward") ||
+			strings.Contains(out, "fetch first") ||
+			strings.Contains(out, "[rejected]")
+		if !rejected {
+			fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: git push: %s\n", out)
+			return
+		}
+		// Another node's submission landed first — rebase ours under it
+		// (disjoint files → clean) and retry once.
+		if out, ok := run("-c", "rebase.autoStash=true", "pull", "--rebase"); !ok {
+			run("rebase", "--abort")
+			run("stash", "pop")
+			fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: rebase failed: %s\n", out)
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: push rejected twice\n")
+}
+
+// SyncSelfToMesh refreshes a KNOWN machine's own mesh entry at daemon
+// startup: detected IPs, identity MAC union, portable MAC union (including
+// the node yaml's declared portable_macs — the manual override for
+// thunderbolt docks etc.), machine-id backfill. The entry lives in the
+// machine's OWN file — mesh.d/<hostname>.yaml (a legacy mesh.yaml entry
+// self-migrates on first write; the legacy file is never touched again).
+func SyncSelfToMesh(repoDir, hostname, nebulaIP, lanIP string, nic NICIdentity, machineID string) {
+	p, _, ok := loadOwnMeshEntry(repoDir, hostname)
+	if !ok {
+		return
+	}
+	// manual portable declarations win over sysfs: a MAC declared
+	// portable in the node yaml leaves the identity set
+	portable := unionMACs(p.PortableMacs, nic.Portable)
+	p.Macs = subtractMACs(unionMACs(p.Macs, nic.Macs), portable)
+	p.PortableMacs = portable
+	if machineID != "" && p.MachineID == "" {
+		p.MachineID = machineID
+	}
+	if nebulaIP != "" && p.NebulaIP != nebulaIP {
+		p.NebulaIP = nebulaIP
+	}
+	if lanIP != "" && p.LanIP != lanIP {
+		p.LanIP = lanIP
+	}
+	saveOwnMeshEntry(repoDir, hostname, p)
 }
 
 func macEqual(a, b []string) bool {
@@ -402,37 +477,26 @@ func containsMAC(macs []string, m string) bool {
 
 // mergeIntoExistingPeer refreshes a known machine's mesh entry: fresh IPs,
 // identity + portable MAC unions, machine-id backfill. Hostname and labels
-// are NOT touched. Byte-stable write.
+// are NOT touched. The entry lives in the machine's OWN mesh.d/ file (a
+// legacy mesh.yaml entry self-migrates on first write). Byte-stable.
 func mergeIntoExistingPeer(repoDir, peerHostname, nebulaIP, lanIP string, nic NICIdentity, machineID string) {
-	meshPath := filepath.Join(repoDir, "mesh.yaml")
-	data, err := os.ReadFile(meshPath)
-	if err != nil {
+	p, _, ok := loadOwnMeshEntry(repoDir, peerHostname)
+	if !ok {
 		return
 	}
-	var mesh MeshConfig
-	if err := yaml.Unmarshal(data, &mesh); err != nil {
-		return
+	if nebulaIP != "" {
+		p.NebulaIP = nebulaIP
 	}
-	for i, p := range mesh.Peers {
-		if p.Hostname == peerHostname {
-			if nebulaIP != "" {
-				mesh.Peers[i].NebulaIP = nebulaIP
-			}
-			if lanIP != "" {
-				mesh.Peers[i].LanIP = lanIP
-			}
-			portable := unionMACs(p.PortableMacs, nic.Portable)
-			mesh.Peers[i].PortableMacs = portable
-			mesh.Peers[i].Macs = subtractMACs(unionMACs(p.Macs, nic.Macs), portable)
-			if machineID != "" && p.MachineID == "" {
-				mesh.Peers[i].MachineID = machineID
-			}
-			break
-		}
+	if lanIP != "" {
+		p.LanIP = lanIP
 	}
-	if out, err := yaml.Marshal(&mesh); err == nil && string(out) != string(data) {
-		os.WriteFile(meshPath, out, 0644)
+	portable := unionMACs(p.PortableMacs, nic.Portable)
+	p.PortableMacs = portable
+	p.Macs = subtractMACs(unionMACs(p.Macs, nic.Macs), portable)
+	if machineID != "" && p.MachineID == "" {
+		p.MachineID = machineID
 	}
+	saveOwnMeshEntry(repoDir, peerHostname, p)
 }
 
 func nonEmpty(val, fallback string) string {

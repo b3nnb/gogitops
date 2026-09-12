@@ -1,0 +1,8 @@
+peers:
+    - hostname: pixel
+      nebula_ip: ""
+      lan_ip: ""
+      port: 7780
+      labels:
+        - mobile
+        - android

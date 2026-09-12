@@ -230,8 +230,8 @@ func cmdStatus(args []string) {
 
 func cmdFleet(args []string) {
 	fs := flag.NewFlagSet("fleet", flag.ExitOnError)
-	repoDir := fs.String("repo", ".", "path to gogitops repo (reads mesh.yaml)")
-	addrList := fs.String("nodes", "", "comma-separated name=address pairs (overrides mesh.yaml)")
+	repoDir := fs.String("repo", ".", "path to gogitops repo (reads mesh.d/)")
+	addrList := fs.String("nodes", "", "comma-separated name=address pairs (overrides mesh.d/)")
 	fs.Parse(args)
 
 	// Build node list
@@ -276,7 +276,7 @@ func cmdFleet(args []string) {
 	}
 
 	if len(nodes) == 0 {
-		cli.PrintInfo("no nodes found. Use --nodes flag or configure mesh.yaml")
+		cli.PrintInfo("no nodes found. Use --nodes flag or configure mesh.d/")
 		return
 	}
 
@@ -3771,7 +3771,7 @@ func runDashboard(args []string) {
 			}
 		}
 		if len(nodes) == 0 {
-			log.Printf("no static nodes in mesh.yaml — waiting for nodes to self-register")
+			log.Printf("no static nodes in mesh.d/ — waiting for nodes to self-register")
 		}
 	}
 

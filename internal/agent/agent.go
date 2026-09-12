@@ -250,9 +250,29 @@ func (a *Agent) gitPull() string {
 	out, err := cmd.CombinedOutput()
 	result := strings.TrimSpace(string(out))
 	if err != nil {
-		a.logger.Errorf("git", "git pull failed: %s", result)
-		result = "error: " + result
-	} else {
+		// Diverged — our own mesh submission is not pushed yet while
+		// another node's landed. Per-node mesh.d/ files are disjoint,
+		// so a rebase is always clean; autostash protects uncommitted
+		// repo-local state (older gits ignore it and fail cleanly).
+		rb := exec.Command("git", "-c", "rebase.autoStash=true", "pull", "--rebase")
+		rb.Dir = a.repoDir
+		rbOut, rbErr := rb.CombinedOutput()
+		if rbErr != nil {
+			// Unwedge any half-finished rebase and restore the autostash.
+			ab := exec.Command("git", "rebase", "--abort")
+			ab.Dir = a.repoDir
+			_, _ = ab.CombinedOutput()
+			sp := exec.Command("git", "stash", "pop")
+			sp.Dir = a.repoDir
+			_, _ = sp.CombinedOutput()
+			a.logger.Errorf("git", "git pull failed: %s", result)
+			result = "error: " + result
+		} else {
+			err = nil
+			result = strings.TrimSpace(string(rbOut))
+		}
+	}
+	if err == nil {
 		if result == "" || strings.Contains(result, "Already up to date") {
 			result = "up to date"
 		}
