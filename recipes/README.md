@@ -75,15 +75,39 @@ steps:
     only_if_attr: "<expr>"       # skip if attribute condition is false
 ```
 
-## Built-in Actions
+## Recipe philosophy — thin YAML, fat reusable code
 
-| Action | Description |
-|--------|-------------|
-| `mesh-query` | Query the mesh for peer/label state |
-| `service-check` | Check if a service is healthy |
-| `git-commit` | Commit a change to the config repo |
-| `mesh-broadcast` | Notify all peers of a state change |
-| `wait-for-healthy` | Block until service responds |
+A recipe is a *reference to capability*, not a nest of embedded bash. Three tiers:
+
+1. **Built-in step types** — common operations are first-class; the yaml is
+   declarative and the agent holds the logic (idempotent, sudo-aware):
+   `package:` (any package manager), `schedule:` (idempotent cron), and
+   `mount:` — mounting a drive in six lines:
+
+   ```yaml
+   steps:
+     - name: backup-drive
+       mount: backup            # label (fstab comment + attrs)
+       device: uuid=3f2a...    # or label=NAME or /dev/sdb1
+       at: /mnt/backup
+       options: defaults,noatime
+       fstab: true              # idempotent /etc/fstab persistence
+   ```
+
+   `mount:` is idempotent (already-mounted = pass with state attr), ensures
+   the fstab entry on every run, uses sudo only when not root, and reports
+   `state=mounted|already-mounted|fail` for `set_attr` / asserts.
+
+2. **Module sets** — admin-authored Go/shell modules do the real work; the
+   yaml calls them with `script:`. The agent ships embedded sets
+   (`storage/`, `system/`, `net/` …) and the repo can extend or override
+   via `modules/`. See `gogitops modules` for the catalog.
+
+3. **Recipe-local scripts** — genuinely recipe-specific logic lives in
+   `recipes/<name>/scripts/` and travels with the recipe.
+
+Keep `command:` bash for one-liners and glue. If a step's command grows
+pipes, fallbacks, and `|| echo` chains — that's a module, not a yaml line.
 
 ## Variable Substitution
 
@@ -239,7 +263,8 @@ Override detection with `script_lang: bash|go|python3`.
 
 1. `recipes/<recipe-name>/scripts/<name>` — recipe-local scripts (preferred: self-contained recipes)
 2. `modules/<name>` — fleet library (cross-recipe shared modules)
-3. As-is (absolute or relative path)
+3. `<set>/<name>` in the agent's embedded module sets (extracted to `~/.cache/gogitops/agent-modules/`) — the agent's own standard library; repo-local and repo `modules/` win, so admins can override any embedded module
+4. As-is (absolute or relative path)
 
 ## Modules — the fleet library (`modules/`)
 

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/bennbanks/gogitops/internal/agent"
+	"github.com/bennbanks/gogitops/internal/agentmodules"
 	"github.com/bennbanks/gogitops/internal/alert"
 	"github.com/bennbanks/gogitops/internal/cli"
 	"github.com/bennbanks/gogitops/internal/config"
@@ -72,6 +73,8 @@ func main() {
 			cmdTest(os.Args[2:])
 		case "attrs":
 			cmdAttrs(os.Args[2:])
+		case "modules":
+			cmdModules(os.Args[2:])
 		case "deploy":
 			cmdDeploy(os.Args[2:])
 		case "help", "--help", "-h":
@@ -143,6 +146,13 @@ func printHelp() {
     attrs scan          universal attribute catalog (--json)
     attrs verify        validate all recipes; exit 1 on fail
     inspect             collect node attributes (test_modules/)
+    modules             callable module library — repo modules/ + the
+                        agent's embedded sets (resolution: recipe
+                        scripts/ → repo modules/ → agent sets)
+
+    built-in step types (no bash in the yaml): package:, schedule:,
+    mount:  (mount: <label> + device: uuid=|label=|path + at: +
+            options: + fstab:) — idempotent, sudo only when needed
 
     flags: -repo, --verbose, --json
 `, p, r)
@@ -1711,34 +1721,39 @@ func repoRootFromFile(file string) string {
 // ── Recipe runner ─────────────────────────────────────────────────────────
 
 type recipeStep struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Command     string   `yaml:"command"`
-	Script      string   `yaml:"script"`
-	ScriptArgs  string   `yaml:"script_args"`
-	ScriptLang  string   `yaml:"script_lang"`
-	Package     string   `yaml:"package"`
-	Sources     []string `yaml:"sources"`
-	Schedule    string   `yaml:"schedule"`
-	OS          string   `yaml:"os"`
-	Arch        string   `yaml:"arch"`
-	LabelsReq   []string `yaml:"labels_required"`
-	LabelsExcl  []string `yaml:"labels_exclude"`
-	Expect      string   `yaml:"expect"`
-	ExpectRegex string   `yaml:"expect_regex"`
-	ExpectExit  *int     `yaml:"expect_exit"`
-	Parse       string   `yaml:"parse"`
-	Pattern     string   `yaml:"pattern"`
-	OnlyIf      string   `yaml:"only_if"`
-	When        string   `yaml:"when"`
-	OnFailure   string   `yaml:"on_failure"`
-	Retries     int      `yaml:"retries"`
-	RetryDelay  string   `yaml:"retry_delay"`
-	Assert      string   `yaml:"assert"`
-	SetAttr     string   `yaml:"set_attr"`
-	AttrPrefix  string   `yaml:"attr_prefix"`
-	WhenAttr    string   `yaml:"when_attr"`
-	OnlyIfAttr  string   `yaml:"only_if_attr"`
+	Name         string   `yaml:"name"`
+	Description  string   `yaml:"description"`
+	Command      string   `yaml:"command"`
+	Script       string   `yaml:"script"`
+	ScriptArgs   string   `yaml:"script_args"`
+	ScriptLang   string   `yaml:"script_lang"`
+	Package      string   `yaml:"package"`
+	Sources      []string `yaml:"sources"`
+	Schedule     string   `yaml:"schedule"`
+	OS           string   `yaml:"os"`
+	Arch         string   `yaml:"arch"`
+	LabelsReq    []string `yaml:"labels_required"`
+	LabelsExcl   []string `yaml:"labels_exclude"`
+	Expect       string   `yaml:"expect"`
+	ExpectRegex  string   `yaml:"expect_regex"`
+	ExpectExit   *int     `yaml:"expect_exit"`
+	Parse        string   `yaml:"parse"`
+	Pattern      string   `yaml:"pattern"`
+	OnlyIf       string   `yaml:"only_if"`
+	When         string   `yaml:"when"`
+	OnFailure    string   `yaml:"on_failure"`
+	Retries      int      `yaml:"retries"`
+	RetryDelay   string   `yaml:"retry_delay"`
+	Assert       string   `yaml:"assert"`
+	SetAttr      string   `yaml:"set_attr"`
+	AttrPrefix   string   `yaml:"attr_prefix"`
+	WhenAttr     string   `yaml:"when_attr"`
+	OnlyIfAttr   string   `yaml:"only_if_attr"`
+	Mount        string   `yaml:"mount"`
+	MountDevice  string   `yaml:"device"`
+	MountAt      string   `yaml:"at"`
+	MountOptions string   `yaml:"options"`
+	MountFstab   bool     `yaml:"fstab"`
 }
 
 type recipe struct {
@@ -1898,7 +1913,7 @@ func recipeRun(args []string) {
 		if step.Script != "" {
 			scriptPath := resolveScriptPath(step.Script, resolved, recipeFile)
 			if scriptPath == "" {
-				fmt.Printf("  \033[38;5;196m✖ script not found: %s (searched recipes/<name>/scripts/, modules/)\033[0m\n", step.Script)
+				fmt.Printf("  \033[38;5;196m✖ script not found: %s (searched recipes/<name>/scripts/, modules/, agent sets)\033[0m\n", step.Script)
 				failed++
 				if step.OnFailure == "" || step.OnFailure == "abort" {
 					fmt.Printf("\n  \033[38;5;196m✖ Recipe aborted at step %d: %s\033[0m\n", stepNum, displayName)
@@ -1937,6 +1952,9 @@ func recipeRun(args []string) {
 		}
 		if step.Schedule != "" {
 			cmd = translateSchedule(step, cmd)
+		}
+		if step.Mount != "" {
+			cmd = translateMount(step)
 		}
 
 		// OS filter
@@ -2313,6 +2331,16 @@ func parseRecipe(content string) recipe {
 			currentStep.LabelsReq = parseSourceList(val)
 		case "labels_exclude":
 			currentStep.LabelsExcl = parseSourceList(val)
+		case "mount":
+			currentStep.Mount = val
+		case "device":
+			currentStep.MountDevice = val
+		case "at":
+			currentStep.MountAt = val
+		case "options":
+			currentStep.MountOptions = val
+		case "fstab":
+			currentStep.MountFstab = val == "true" || val == "yes"
 		}
 	}
 
@@ -2459,6 +2487,13 @@ func resolveScriptPath(scriptName string, repoDir string, recipeFile string) str
 		filepath.Join(repoDir, "modules", scriptName), // fleet library — cross-recipe shared modules
 	}
 
+	// Agent-embedded module sets — the agent's own standard library,
+	// extracted to ~/.cache/gogitops/agent-modules/. Repo-local and repo
+	// modules/ win, so admins can override any embedded module.
+	if amDir := agentmodules.Dir(); amDir != "" {
+		candidates = append(candidates, filepath.Join(amDir, scriptName))
+	}
+
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
 			return c
@@ -2518,6 +2553,110 @@ func shellQuote(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// translateMount builds the bash for the mount: universal step type —
+// mounting a drive is a FIRST-CLASS agent function, not a page of YAML.
+//
+//	step:
+//	  - name: backup-drive
+//	    mount: backup                # label (used for fstab comment + attrs)
+//	    device: uuid=XXXX | label=NAME | /dev/sdb1
+//	    at: /mnt/backup              # default /mnt/<label>
+//	    options: defaults,noatime    # default defaults
+//	    fstab: true                  # idempotent /etc/fstab persistence
+//
+// Idempotent: already-mounted is a pass with state=already-mounted. fstab
+// appends only when the mountpoint has no line yet (never clobbers). sudo
+// is used only when not root. darwin gets a clear failure (use os: linux).
+func translateMount(step recipeStep) string {
+	if runtime.GOOS == "darwin" {
+		return `echo "mount: darwin mounts via diskutil — gate this step with os: linux or use an admin script"; exit 1`
+	}
+	dev := step.MountDevice
+	switch {
+	case strings.HasPrefix(dev, "uuid="):
+		dev = "/dev/disk/by-uuid/" + strings.TrimPrefix(dev, "uuid=")
+	case strings.HasPrefix(dev, "label="):
+		dev = "/dev/disk/by-label/" + strings.TrimPrefix(dev, "label=")
+	}
+	at := step.MountAt
+	if at == "" {
+		at = "/mnt/" + step.Mount
+	}
+	opts := step.MountOptions
+	if opts == "" {
+		opts = "defaults"
+	}
+	fstabBlock := ""
+	if step.MountFstab {
+		fstabBlock = fmt.Sprintf(`
+if ! grep -qE "[[:space:]]%s[[:space:]]" /etc/fstab 2>/dev/null; then
+  echo "$M_DEV $M_AT auto $M_OPTS 0 0 # gogitops: %s" | $SUDO tee -a /etc/fstab >/dev/null
+  echo "fstab=entry-added point=$M_AT"
+else
+  echo "fstab=present point=$M_AT"
+fi`, at, step.Mount)
+	}
+	return fmt.Sprintf(`M_DEV=%s; M_AT=%s; M_OPTS=%s
+[ -e "$M_DEV" ] || { echo "state=fail reason=device-not-found device=$M_DEV"; exit 1; }
+SUDO=""; [ "$(id -u)" != 0 ] && SUDO="sudo"%s
+if mountpoint -q "$M_AT" 2>/dev/null; then
+  SRC=$(findmnt -n -o SOURCE "$M_AT" 2>/dev/null || awk -v at="$M_AT" '$2==at{print $1}' /proc/mounts | head -1)
+  echo "state=already-mounted device=$SRC point=$M_AT"
+  exit 0
+fi
+mkdir -p "$M_AT" || exit 1
+$SUDO mount -o "$M_OPTS" "$M_DEV" "$M_AT" || { echo "state=fail reason=mount-failed device=$M_DEV point=$M_AT"; exit 1; }
+echo "state=mounted device=$M_DEV point=$M_AT opts=$M_OPTS"`,
+		shellQuote(dev), shellQuote(at), shellQuote(opts), fstabBlock)
+}
+
+// ── modules: list callable modules (repo library + agent sets) ────────────
+
+func cmdModules(args []string) {
+	repoDir := resolveRepoDir(".")
+	cli.Banner()
+	fmt.Printf("\n  \033[1m\033[38;5;141mModule library\033[0m \033[38;5;240mrecipes call these via script: <name>\033[0m\n\n")
+	fmt.Printf("  \033[38;5;240mresolution: recipe scripts/ → repo modules/ → agent sets (embedded)\033[0m\n\n")
+
+	fmt.Printf("  \033[38;5;38mrepo library\033[0m \033[38;5;240m%s/modules/\033[0m\n", repoDir)
+	entries, _ := os.ReadDir(filepath.Join(repoDir, "modules"))
+	any := false
+	for _, e := range entries {
+		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".go") && !strings.HasSuffix(e.Name(), ".sh") && !strings.HasSuffix(e.Name(), ".py")) {
+			continue
+		}
+		any = true
+		desc := ""
+		if data, err := os.ReadFile(filepath.Join(repoDir, "modules", e.Name())); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				desc = strings.TrimSpace(strings.TrimPrefix(line, "//"))
+				break
+			}
+		}
+		fmt.Printf("    \033[38;5;46m●\033[0m %-28s \033[38;5;240m%s\033[0m\n", e.Name(), desc)
+	}
+	if !any {
+		fmt.Printf("    \033[38;5;240m(none)\033[0m\n")
+	}
+	fmt.Println()
+
+	fmt.Printf("  \033[38;5;178magent sets\033[0m \033[38;5;240membedded in the agent binary\033[0m\n")
+	curSet := ""
+	for _, m := range agentmodules.List() {
+		if m.Set != curSet {
+			curSet = m.Set
+			fmt.Printf("  \033[38;5;178m%s/\033[0m\n", m.Set)
+		}
+		fmt.Printf("    \033[38;5;46m●\033[0m %-28s \033[38;5;240m%s\033[0m\n", m.Name, m.Description)
+	}
+	fmt.Println()
+	fmt.Printf("  \033[38;5;240mGo modules compile+cache on first use (needs go on the node); .sh/.py run anywhere.\033[0m\n\n")
 }
 
 // ── test: run test modules as a real test suite ───────────────────────────
