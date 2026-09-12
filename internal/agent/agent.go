@@ -87,7 +87,7 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		AgentVersion:   Version,
 		UptimeSeconds:  int64(time.Since(a.started).Seconds()),
 		NebulaRunning:  a.nebulaRunning(),
-		NebulaIP:       a.node.NebulaIP,
+		NebulaIP:       a.nebulaIP(),
 		Labels:         a.node.Labels,
 		Services:       svcMap,
 		DiskWarns:      append(result.DiskWarns, result.DiskCrits...),
@@ -432,6 +432,16 @@ func (a *Agent) alertOnChange(result health.CheckResult, reachable, unreachable 
 }
 
 // nebulaRunning checks if the nebula process is alive
+// nebulaIP prefers the node yaml declaration; falls back to live
+// interface detection — dnclient names its interface defined1, self-hosted
+// nebula uses nebula0, so detection scans for 10.200.0.x on ANY interface.
+func (a *Agent) nebulaIP() string {
+	if a.node.NebulaIP != "" && a.node.NebulaIP != "null" {
+		return a.node.NebulaIP
+	}
+	return config.DetectNebulaIP()
+}
+
 func (a *Agent) nebulaRunning() bool {
 	if _, err := os.Stat("/proc"); err == nil {
 		cmd := exec.Command("pgrep", "-f", "nebula")
