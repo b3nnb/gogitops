@@ -46,9 +46,10 @@ done
 # 2. Install config
 echo "▸ Installing config to $CFGDIR..."
 $SUDO mkdir -p "$CFGDIR"
-if [ -f "$SCRIPT_DIR/config/mesh.yaml" ]; then
-    $SUDO cp "$SCRIPT_DIR/config/mesh.yaml" "$CFGDIR/mesh.yaml"
-    echo "  ✓ mesh.yaml (peers: $(grep -c 'hostname:' "$CFGDIR/mesh.yaml" 2>/dev/null || echo '?'))"
+if [ -d "$SCRIPT_DIR/config/mesh.d" ]; then
+    $SUDO mkdir -p "$CFGDIR/mesh.d"
+    $SUDO cp -R "$SCRIPT_DIR/config/mesh.d/." "$CFGDIR/mesh.d/"
+    echo "  ✓ mesh.d/ (per-node mesh — agents self-register on first check-in)"
 fi
 
 # 3. Set up SSH authorized_keys.d

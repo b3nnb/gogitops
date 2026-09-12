@@ -89,7 +89,7 @@ jobs:
           chmod 755 "$DEB_ROOT/usr/local/bin/gogitops" "$DEB_ROOT/usr/local/bin/nenv-agent"
 
           # Config (clean template — no hardcoded fleet IPs or SSH keys)
-          cp mesh.yaml.template "$DEB_ROOT/etc/gogitops/mesh.yaml"
+          mkdir -p "$DEB_ROOT/etc/gogitops/mesh.d"
 
           # Systemd (both services — nenv-agent rendered inert by postinst if not opted in)
           cp install/deb/systemd/gogitops-daemon.service "$DEB_ROOT/usr/lib/systemd/user/"
@@ -113,7 +113,7 @@ jobs:
           mkdir -p dist/config dist/systemd dist/ssh
           cp install/install.sh dist/
           cp install/systemd/*.tmpl dist/systemd/
-          cp mesh.yaml dist/config/
+          mkdir -p dist/config/mesh.d
           cp install/ssh/friday-automation.pub dist/ssh/
           chmod +x dist/install.sh
           NAME=gogitops-installer-darwin-${{ matrix.goarch }}
@@ -124,8 +124,7 @@ jobs:
       - name: Build Windows zip
         if: matrix.package == 'zip'
         run: |
-          mkdir -p dist/config
-          cp mesh.yaml dist/config/
+          mkdir -p dist/config/mesh.d
           NAME=gogitops-installer-windows-${{ matrix.goarch }}
           cd dist && zip -r ../$NAME.zip . && cd ..
           echo "ZIP_FILE=$NAME.zip" >> $GITHUB_ENV
