@@ -47,20 +47,16 @@ node yaml (businesses set it true fleet-wide via the repo — one commit).
   user consent; the user is never a gate, but everything is fully audited.
 - `false` (default) = consent mode: system-touching recipes ask first.
 
-**Per-recipe override:** `user_input: default|required|never`
+**Per-recipe override — same field, same type (Benn, Sep 12 2026):**
+`transparency: true|false` in the recipe header. Absent = inherit the
+agent default. One concept, one name, two scopes:
 
-- `default` — follow the global transparency setting
-- `required` — ask even in transparent mode (businesses flag disruptive
-  recipes: reboot, logout, data wipes — the employee acks before it runs)
-- `never` — run silently even in consent mode (personal machines: trusted
-  routine recipes — starship, prompt cache, self-tests)
-
-| global transparency | recipe user_input | behavior |
-|---------------------|------------------|----------|
-| true (work computer) | default / never | runs, fully audited, no gate |
-| true (work computer) | required | asks the user first |
-| false (personal) | default / required | asks first |
-| false (personal) | never | runs silently, audited |
+| agent (node yaml) | recipe | behavior |
+|-------------------|--------|----------|
+| true (work computer) | absent | runs, fully audited, no gate |
+| true (work computer) | false | asks — disruptive recipes (reboot, wipes) |
+| false (personal) | absent | asks first |
+| false (personal) | true | runs silently — trusted routines (starship, self-tests) |
 
 **Asking, mechanically:** the alert channel (Discord webhook today; an
 admin console for business deployments) carries an approve/deny; pending
