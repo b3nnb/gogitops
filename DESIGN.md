@@ -33,6 +33,43 @@ _Agent-controlled, GitOps-driven infrastructure mesh for Benn's homelab._
 
 When an integration is unavailable, the agent logs a warning and continues with its last cached or fallback value. No crash, no blocked startup.
 
+### Capability Placement — every new function gets a tier decision
+
+Before adding ANY new function, decide where it lives. Default to the
+lowest tier; move up only when the criteria force it. (Benn, Sep 12 2026)
+
+| Tier | Lives in | Ships via | Use when | Cost |
+|------|----------|-----------|----------|------|
+| 1. Built-in step type | agent binary (`translateX`) | agent release (tag → self-update) | Universal, declarative vocabulary — the yaml is DATA (`mount:`, `package:`, `schedule:`). Every fleet could need it. Semantics are stable. | API commitment; slowest to change |
+| 2. Agent module set | `internal/agentmodules/modules/<set>/` | agent release; **repo can override** | Reusable LOGIC called by name (`script: storage/...`). Worth shipping with the binary so every node has it day one. | Binary size; release cadence |
+| 3. Repo module library | `modules/` | git pull (instant) | Fleet-specific or fast-changing logic. Admin-owned, no release needed. | duplicated across fleets |
+| 4. Recipe-local script | `recipes/<name>/scripts/` | git pull | One recipe's specific flow; keeps the recipe self-contained. | duplication if 2+ recipes want it |
+| 5. Command line | `command:` in the yaml | git pull | Glue only — one-liners: mkdir, cp, grep checks. | bash-in-yaml debt |
+
+**Decision questions, in order:**
+
+1. Is the yaml just parameters and the concept universal across fleets? → step type.
+2. Is the logic reusable across recipes/nodes and worth shipping in the binary? → embedded set.
+3. Is it fleet-specific or likely to change soon? → repo `modules/`.
+4. Does only one recipe need it? → recipe-local script.
+5. Is it two lines of bash? → `command:`.
+
+**Rules of thumb:**
+
+- The agent binary is product surface — everything in it is a versioned
+  commitment. When unsure, put it in the repo.
+- Repo `modules/` overrides embedded sets — the repo is always the escape
+  hatch, so a bad embedded module never needs an emergency release.
+- Step types inherit the runner's guarantees free (idempotency, retries,
+  attrs, os/arch/label filters, dry-run, expect/assert) — the strongest
+  argument FOR the agent.
+- A step whose `command:` grows a pipe chain or `|| echo` fallbacks is a
+  module misfiled as yaml.
+
+**Known candidates for future placement calls:** `service-ensure:`, `user:`,
+`git-clone:`, log rotation, docker prune, SMART health — each gets an explicit
+tier decision before implementation, recorded in the PR description.
+
 ---
 
 ## Architecture

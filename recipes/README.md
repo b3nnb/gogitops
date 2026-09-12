@@ -109,6 +109,10 @@ A recipe is a *reference to capability*, not a nest of embedded bash. Three tier
 Keep `command:` bash for one-liners and glue. If a step's command grows
 pipes, fallbacks, and `|| echo` chains — that's a module, not a yaml line.
 
+**Every new function gets an explicit placement decision** — the five-tier
+table and decision questions live in DESIGN.md ("Capability Placement").
+Default to the lowest tier; the agent binary is a versioned commitment.
+
 ## Variable Substitution
 
 Variables come from three sources:
