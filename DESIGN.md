@@ -33,6 +33,50 @@ _Agent-controlled, GitOps-driven infrastructure mesh for Benn's homelab._
 
 When an integration is unavailable, the agent logs a warning and continues with its last cached or fallback value. No crash, no blocked startup.
 
+
+### User Consent & Transparency Model (business fleet mode)
+
+For offering gogitops as a business service: businesses must be able to
+force critical configs on work computers, while personal machines stay
+consent-first. Two knobs cover every scenario (Benn, Sep 12 2026).
+
+**Global default (per agent):** `agent.transparency: true|false` in the
+node yaml (businesses set it true fleet-wide via the repo — one commit).
+
+- `true` = managed/transparent mode: recipes and tests execute WITHOUT
+  user consent; the user is never a gate, but everything is fully audited.
+- `false` (default) = consent mode: system-touching recipes ask first.
+
+**Per-recipe override:** `user_input: default|required|never`
+
+- `default` — follow the global transparency setting
+- `required` — ask even in transparent mode (businesses flag disruptive
+  recipes: reboot, logout, data wipes — the employee acks before it runs)
+- `never` — run silently even in consent mode (personal machines: trusted
+  routine recipes — starship, prompt cache, self-tests)
+
+| global transparency | recipe user_input | behavior |
+|---------------------|------------------|----------|
+| true (work computer) | default / never | runs, fully audited, no gate |
+| true (work computer) | required | asks the user first |
+| false (personal) | default / required | asks first |
+| false (personal) | never | runs silently, audited |
+
+**Asking, mechanically:** the alert channel (Discord webhook today; an
+admin console for business deployments) carries an approve/deny; pending
+actions are exposed via the agent API (`/v1/pending`) and the dashboard.
+**Timeout (default 15m) = DENY** — the safe default in consent mode.
+Transparent mode never queues anything.
+
+**Transparency is an audit floor in BOTH modes — consent only changes
+whether the user is a gate, never whether they can see:** every recipe
+step logs command + result + recipe + initiator to the activity log,
+recipe runs surface on the API and dashboard, no hidden channels.
+
+**Implementation order:** (1) config parsing + matrix enforcement in the
+recipe runner + audit lines, (2) webhook ask + pending queue + timeout,
+(3) dashboard pending view.
+
 ### Capability Placement — every new function gets a tier decision
 
 Before adding ANY new function, decide where it lives. Default to the
