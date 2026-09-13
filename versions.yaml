@@ -23,4 +23,5 @@
 
 global: latest
 groups: {}
-nodes: {}
+nodes:
+  mini: v0.6.8
