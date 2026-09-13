@@ -118,3 +118,119 @@ func TestPinSummary(t *testing.T) {
 		t.Fatal("summary should render")
 	}
 }
+
+// ── recipe-carried node overrides ───────────────────────────────────────────
+
+func recipeRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for path, content := range files {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestRecipeOverrideBasic(t *testing.T) {
+	dir := recipeRepo(t, map[string]string{
+		"recipes/hold/hold.yaml": "name: hold\nnode_overrides:\n  mini:\n    version: v0.6.8\n",
+	})
+	ov, ok := LoadRecipeVersionOverride(dir, "mini")
+	if !ok || ov.Version != "v0.6.8" || ov.Recipe != "hold" {
+		t.Fatalf("want hold/v0.6.8, got %+v ok=%v", ov, ok)
+	}
+	if _, ok := LoadRecipeVersionOverride(dir, "friday"); ok {
+		t.Fatal("override must not match other nodes")
+	}
+}
+
+func TestRecipeOverrideBeatsPinsFile(t *testing.T) {
+	dir := recipeRepo(t, map[string]string{
+		"versions.yaml":          "global: latest\nnodes:\n  mini: v0.6.9\n",
+		"recipes/hold/hold.yaml": "name: hold\nnode_overrides:\n  mini:\n    version: v0.6.8\n",
+	})
+	tgt, src, err := ResolveUpdateTarget(dir, "mini", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt != "v0.6.8" || src != "recipe:hold" {
+		t.Fatalf("recipe override must win, got %s/%s", tgt, src)
+	}
+}
+
+func TestRecipeOverrideLowestWins(t *testing.T) {
+	dir := recipeRepo(t, map[string]string{
+		"recipes/a/a.yaml": "name: a\nnode_overrides:\n  mini: {version: v0.6.9}\n",
+		"recipes/b/b.yaml": "name: b\nnode_overrides:\n  mini: {version: v0.6.8}\n",
+	})
+	ov, ok := LoadRecipeVersionOverride(dir, "mini")
+	if !ok || ov.Version != "v0.6.8" {
+		t.Fatalf("lowest must win, got %+v ok=%v", ov, ok)
+	}
+}
+
+func TestRecipeOverrideLatestLosesToConcrete(t *testing.T) {
+	dir := recipeRepo(t, map[string]string{
+		"recipes/a/a.yaml": "name: a\nnode_overrides:\n  mini: {version: latest}\n",
+		"recipes/b/b.yaml": "name: b\nnode_overrides:\n  mini: {version: v0.6.8}\n",
+	})
+	ov, ok := LoadRecipeVersionOverride(dir, "mini")
+	if !ok || ov.Version != "v0.6.8" {
+		t.Fatalf("concrete pin must beat latest, got %+v ok=%v", ov, ok)
+	}
+}
+
+func TestRecipeOverrideLatestForcesTrack(t *testing.T) {
+	// recipe "latest" beats a versions.yaml node pin — the escape hatch
+	dir := recipeRepo(t, map[string]string{
+		"versions.yaml":      "nodes:\n  mini: v0.6.8\n",
+		"recipes/go/go.yaml": "name: go\nnode_overrides:\n  mini: {version: latest}\n",
+	})
+	tgt, src, _ := ResolveUpdateTarget(dir, "mini", nil)
+	if tgt != "latest" || src != "recipe:go" {
+		t.Fatalf("recipe latest must override pin, got %s/%s", tgt, src)
+	}
+}
+
+func TestRecipeOverrideSkipsBrokenFiles(t *testing.T) {
+	dir := recipeRepo(t, map[string]string{
+		"recipes/bad/bad.yaml":   "name: [broken\n",
+		"recipes/hold/hold.yaml": "name: hold\nnode_overrides:\n  mini:\n    version: v0.6.7\n",
+	})
+	ov, ok := LoadRecipeVersionOverride(dir, "mini")
+	if !ok || ov.Version != "v0.6.7" {
+		t.Fatalf("broken file must be skipped, got %+v ok=%v", ov, ok)
+	}
+}
+
+func TestRecipeOverrideNoRecipes(t *testing.T) {
+	dir := recipeRepo(t, map[string]string{
+		"versions.yaml": "global: latest\n",
+	})
+	if _, ok := LoadRecipeVersionOverride(dir, "mini"); ok {
+		t.Fatal("no recipes → no override")
+	}
+	tgt, src, err := ResolveUpdateTarget(dir, "mini", nil)
+	if err != nil || tgt != "latest" {
+		t.Fatalf("clean repo → latest, got %s/%s/%v", tgt, src, err)
+	}
+}
+
+func TestNormalizePinValue(t *testing.T) {
+	for in, want := range map[string]string{
+		"latest":   "latest",
+		"":         "latest",
+		"0.6.8":    "v0.6.8",
+		"v0.6.8":   "v0.6.8",
+		" v0.6.9 ": "v0.6.9",
+	} {
+		if got := NormalizePinValue(in); got != want {
+			t.Fatalf("NormalizePinValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

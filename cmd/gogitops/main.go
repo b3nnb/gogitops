@@ -1498,6 +1498,9 @@ func cmdUpdate(args []string) {
 		}
 	}
 	tgt, src := agent.ResolveVersion(pins, host, labels)
+	if ov, ok := agent.LoadRecipeVersionOverride(resolved, host); ok {
+		tgt, src = agent.NormalizePinValue(ov.Version), "recipe:"+ov.Recipe
+	}
 	fmt.Printf("  this node (%s): %s via %s\n", host, tgt, src)
 }
 

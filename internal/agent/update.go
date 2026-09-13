@@ -48,12 +48,12 @@ func (a *Agent) maybeSelfUpdate() {
 	}
 	remote := "origin/" + BinariesBranch
 
-	// Version policy: exact pin (node > group > global) or track latest.
-	pins, perr := LoadVersionPins(a.repoDir)
+	// Version policy: recipe node_overrides > versions.yaml pin (node > group
+	// > global) — or track latest.
+	target, source, perr := ResolveUpdateTarget(a.repoDir, a.node.Hostname, a.node.Labels)
 	if perr != nil {
 		a.logger.Errorf("update", "%v — ignoring pins this cycle", perr)
 	}
-	target, source := ResolveVersion(pins, a.node.Hostname, a.node.Labels)
 
 	if target != "latest" {
 		// Pinned: exact-match semantics — downgrades allowed.
@@ -125,7 +125,7 @@ func (a *Agent) swapAndRestart(bin []byte, toVer, reason string) {
 		return
 	}
 
-	a.logger.Actionf("update", "self-updated v%s -> v%s (%s) — restarting in place", Version, toVer, reason)
+	a.logger.Actionf("update", "self-updated %s -> %s (%s) — restarting in place", Version, toVer, reason)
 
 	// Restart in place: syscall.Exec replaces this process with the new
 	// binary, keeping the same PID/lineage — no reliance on the service

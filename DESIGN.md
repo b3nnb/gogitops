@@ -73,6 +73,27 @@ recipe runs surface on the API and dashboard, no hidden channels.
 recipe runner + audit lines, (2) webhook ask + pending queue + timeout,
 (3) dashboard pending view.
 
+### Per-Node Override Rule — every global is overridable (Benn, Sep 12 2026)
+
+Anything defined globally must be overridable per node, and the override
+can live in the global's own definition file, in the node's own recipe, or
+inline in any other recipe. One rule, any home:
+
+| Global | Own definition file (global + per-node) | Recipe-carried override |
+|--------|----------------------------------------|-------------------------|
+| Agent version pin | `versions.yaml` — global / groups / nodes | `node_overrides: {<hostname>: {version: vX.Y.Z}}` in any recipe |
+
+**Precedence (most specific wins):** recipe `node_overrides` >
+`versions.yaml` nodes > groups (lowest match) > global > latest. When
+several recipes override the same node, the lowest version wins — same
+stay-back bias as groups ("latest" loses to any concrete pin). The
+override names its target node explicitly, so it applies regardless of the
+carrying recipe's own label scoping.
+
+**Applies to every future global** (transparency, alert routing, …): each
+ships with per-node override from day one — add the key to
+`versions.yaml`-style own files AND the `node_overrides` recipe block.
+
 ### Capability Placement — every new function gets a tier decision
 
 Before adding ANY new function, decide where it lives. Default to the

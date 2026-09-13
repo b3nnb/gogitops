@@ -31,6 +31,14 @@ params:
     description: "Container to restart"
     required: true
 
+# Per-node overrides (optional — any recipe may carry these; the override
+# names its target explicitly, so it applies regardless of this recipe's own
+# label scoping. Precedence: recipe override > versions.yaml nodes > groups
+# > global > latest. Several recipes overriding the same node → lowest wins.)
+node_overrides:
+  <hostname>:
+    version: v0.6.8        # agent version pin (beats versions.yaml)
+
 steps:
   - name: <step-name>            # unique within recipe
     description: "<what this step does>"
