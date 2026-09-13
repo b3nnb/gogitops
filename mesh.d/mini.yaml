@@ -5,8 +5,8 @@ peers:
       lan_ip: 10.0.0.251
       port: 7780
       macs:
-        - d0:11:e5:1a:77:5f
         - 42:18:eb:4a:1c:ae
+        - d0:11:e5:1a:77:5f
       labels:
         - compute
         - gpu
