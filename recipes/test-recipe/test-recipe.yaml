@@ -20,14 +20,6 @@ params:
   #   required: true
   #   default: "mini"
 
-# Per-node overrides — any recipe can carry these (Benn's override rule:
-# every global is overridable per node, in its own recipe or any other).
-# Applies to the named node regardless of this recipe's label scoping.
-# DEMO: holds mini on v0.6.8 while the rest of the fleet runs latest.
-node_overrides:
-  mini:
-    version: v0.6.8
-
 # Tag-based switching (for failover/migration recipes)
 # Tags are applied to nodes and queried by the recipe engine
 tags:
