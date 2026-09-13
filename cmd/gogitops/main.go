@@ -305,6 +305,15 @@ func printHelp() {
     daemon binary path must be user-writable (e.g. ~/.local/bin/gogitops);
     root-owned paths (like /usr/local/bin) cannot self-swap.
 
+    Version pinning — versions.yaml in the config repo:
+
+      global: v0.6.9            fleet-wide default
+      groups: {gpu: v0.6.8}     per-label pin — lowest matching pin wins
+      nodes: {framework: v0.6.9} per-hostname override ("latest" allowed)
+      omitted / "latest" = track the binaries-branch VERSION, upgrades only.
+      Pins are exact — downgrades included; every release stays fetchable
+      on the binaries branch under versions/<tag>/bin/.
+
   %sINSTALL%s
 
     gogitops deploy -hostname <name> -os <os> -arch <arch>
@@ -1437,6 +1446,7 @@ func extractAttrRefs(r recipe) []string {
 func cmdUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	repoDir := fs.String("repo", ".", "path to the config repo (needs the binaries branch remote)")
+	hostname := fs.String("hostname", "", "node hostname for pin resolution (default: system hostname)")
 	fs.Parse(args)
 	resolved := resolveRepoDir(*repoDir)
 
@@ -1463,6 +1473,32 @@ func cmdUpdate(args []string) {
 	default:
 		fmt.Printf("  update check: binaries branch older (v%s) than running (%s) — no action\n", pub, runDisp)
 	}
+
+	// Version pin policy (versions.yaml) + what THIS node resolves to.
+	pins, perr := agent.LoadVersionPins(resolved)
+	if perr != nil {
+		fmt.Printf("  pins: unreadable — %v\n", perr)
+		return
+	}
+	if pins == nil {
+		return
+	}
+	fmt.Printf("  pins: %s\n", pins.PinSummary())
+	host := config.DetectHostname()
+	if *hostname != "" {
+		host = *hostname
+	}
+	var labels []string
+	if mesh, merr := config.LoadMesh(resolved); merr == nil {
+		for _, p := range mesh.Peers {
+			if strings.EqualFold(p.Hostname, host) {
+				labels = p.Labels
+				break
+			}
+		}
+	}
+	tgt, src := agent.ResolveVersion(pins, host, labels)
+	fmt.Printf("  this node (%s): %s via %s\n", host, tgt, src)
 }
 
 func cmdAttrs(args []string) {

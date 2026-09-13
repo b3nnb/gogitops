@@ -1,0 +1,26 @@
+# ── Agent version pins ──────────────────────────────────────────────────────
+# Priority (most specific wins): nodes.<hostname> > groups.<label> > global
+#
+#   nodes    exact hostname override — "latest" here force-tracks even when
+#            a matching group pins older
+#   groups   matches node LABELS (mesh.d); if several groups match a node,
+#            the LOWEST version wins — a node stays held back until every
+#            group it belongs to is ready
+#   global   fleet-wide default
+#
+# A pin is EXACT: the agent swaps to precisely that version, downgrades
+# included. Every release is retained on the binaries branch under
+# versions/<tag>/bin/, so pins to any past release stay fetchable.
+# Omit a key (or write "latest") to track the binaries-branch VERSION,
+# upgrades only — the default fleet behavior.
+#
+# Example:
+#   global: v0.6.9
+#   groups:
+#     gpu: v0.6.8        # gpu nodes lag one release
+#   nodes:
+#     framework: latest  # always track, ignore group pins
+
+global: latest
+groups: {}
+nodes: {}

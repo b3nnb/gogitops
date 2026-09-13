@@ -17,20 +17,24 @@ import (
 // any network position that can reach github.com (the LAN dashboard is not
 // reachable from client-side subnets; releases.bennbot.com was never built).
 //
-// Branch layout (force-pushed each release, no history growth):
+// Branch layout (republished each release, prior versions retained):
 //
-//	binaries/VERSION                    e.g. "v0.5.4"
-//	binaries/bin/gogitops-<goos>-<goarch>   raw static binaries (ldflags-versioned)
+//	binaries/VERSION                            e.g. "v0.6.9" — latest
+//	binaries/bin/gogitops-<goos>-<goarch>       latest raw binaries
+//	binaries/versions/<tag>/bin/gogitops-...    every past release (pin store)
 //
 // Opt-in by presence: no branch = feature silently off.
-// After a successful swap the agent exits 0; the service manager (systemd
-// unit with Restart=always, or the macOS cron keepalive) restarts it.
+// The version TARGET comes from versions.yaml in the config repo (see
+// versionpins.go): a pin is exact (downgrades included); unpinned nodes
+// track VERSION, upgrade-only.
+// After a successful swap the agent exec-restarts in place.
 
 // BinariesBranch is the git branch serving pre-built agent binaries.
 const BinariesBranch = "binaries"
 
-// maybeSelfUpdate checks the binaries branch for a newer version and
-// hot-swaps the running binary. Called after each git pull cycle.
+// maybeSelfUpdate resolves this node's version target (versions.yaml pin, or
+// the binaries-branch VERSION) and hot-swaps the running binary when needed.
+// Called after each git pull cycle.
 func (a *Agent) maybeSelfUpdate() {
 	if a.repoDir == "" {
 		return
@@ -44,32 +48,52 @@ func (a *Agent) maybeSelfUpdate() {
 	}
 	remote := "origin/" + BinariesBranch
 
-	// Read published version
-	showVer := exec.Command("git", "show", remote+":VERSION")
-	showVer.Dir = a.repoDir
-	vOut, err := showVer.Output()
+	// Version policy: exact pin (node > group > global) or track latest.
+	pins, perr := LoadVersionPins(a.repoDir)
+	if perr != nil {
+		a.logger.Errorf("update", "%v — ignoring pins this cycle", perr)
+	}
+	target, source := ResolveVersion(pins, a.node.Hostname, a.node.Labels)
+
+	if target != "latest" {
+		// Pinned: exact-match semantics — downgrades allowed.
+		if target == normalizeTag(Version) {
+			return // already running the pinned version
+		}
+		binPath := fmt.Sprintf("versions/%s/bin/gogitops-%s-%s", target, runtime.GOOS, runtime.GOARCH)
+		bin, err := gitShowBytes(a.repoDir, remote, binPath)
+		if err != nil {
+			a.logger.Errorf("update", "pinned %s (%s) not fetchable from binaries branch — staying on v%s", target, source, Version)
+			return
+		}
+		a.swapAndRestart(bin, target, "pinned via "+source)
+		return
+	}
+
+	// Unpinned: track the published VERSION, upgrades only.
+	vOut, err := gitShowBytes(a.repoDir, remote, "VERSION")
 	if err != nil {
 		return
 	}
 	published := strings.TrimSpace(string(vOut))
-	if published == "" {
-		return
-	}
-	if !isNewer(published, Version) {
+	if published == "" || !isNewer(published, Version) {
 		return
 	}
 
 	// Download this platform's binary
 	binPath := fmt.Sprintf("bin/gogitops-%s-%s", runtime.GOOS, runtime.GOARCH)
-	showBin := exec.Command("git", "show", remote+":"+binPath)
-	showBin.Dir = a.repoDir
-	bin, err := showBin.Output()
+	bin, err := gitShowBytes(a.repoDir, remote, binPath)
 	if err != nil {
 		a.logger.Errorf("update", "download %s failed: %v", binPath, err)
 		return
 	}
+	a.swapAndRestart(bin, published, "binaries branch")
+}
+
+// swapAndRestart atomically replaces the running binary and exec-restarts.
+func (a *Agent) swapAndRestart(bin []byte, toVer, reason string) {
 	if len(bin) < 500*1024 {
-		a.logger.Errorf("update", "downloaded %s too small (%d bytes) — refusing", binPath, len(bin))
+		a.logger.Errorf("update", "downloaded %s too small (%d bytes) — refusing", toVer, len(bin))
 		return
 	}
 
@@ -79,7 +103,7 @@ func (a *Agent) maybeSelfUpdate() {
 	if err != nil {
 		return
 	}
-	tmp := filepath.Join(filepath.Dir(exe), ".gogitops-update-"+published)
+	tmp := filepath.Join(filepath.Dir(exe), ".gogitops-update-"+toVer)
 	if err := os.WriteFile(tmp, bin, 0755); err != nil {
 		a.logger.Errorf("update", "cannot write update (binary location not writable?): %v", err)
 		return
@@ -101,7 +125,7 @@ func (a *Agent) maybeSelfUpdate() {
 		return
 	}
 
-	a.logger.Actionf("update", "self-updated v%s -> v%s — restarting in place", Version, published)
+	a.logger.Actionf("update", "self-updated v%s -> v%s (%s) — restarting in place", Version, toVer, reason)
 
 	// Restart in place: syscall.Exec replaces this process with the new
 	// binary, keeping the same PID/lineage — no reliance on the service
@@ -116,6 +140,13 @@ func (a *Agent) maybeSelfUpdate() {
 	}
 	// Service manager (Restart=always / cron keepalive) restarts us now.
 	os.Exit(0)
+}
+
+// gitShowBytes returns a file's content from a remote ref via git transport.
+func gitShowBytes(repoDir, remote, path string) ([]byte, error) {
+	show := exec.Command("git", "show", remote+":"+path)
+	show.Dir = repoDir
+	return show.Output()
 }
 
 // CheckBinaryUpdate returns the VERSION published on the binaries branch

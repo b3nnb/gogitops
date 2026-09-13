@@ -160,6 +160,24 @@ jobs:
           echo "${GITHUB_REF_NAME}" > binout/VERSION
           ls -la binout/bin/
 
+      - name: Preserve version history for pins
+        # Keep every past release under versions/<tag>/bin/ so pinned agents
+        # (versions.yaml) can fetch — and downgrade to — any previous release.
+        # First run backfills the version that was live before this step.
+        run: |
+          git fetch -q origin binaries --depth=1 || true
+          if git rev-parse -q --verify origin/binaries >/dev/null 2>&1; then
+            OLD_VER="$(git show origin/binaries:VERSION 2>/dev/null || true)"
+            if [ -n "$OLD_VER" ] && [ "$OLD_VER" != "${GITHUB_REF_NAME}" ]; then
+              mkdir -p "binout/versions/$OLD_VER"
+              git archive origin/binaries bin | tar -x -C "binout/versions/$OLD_VER"
+            fi
+            git archive origin/binaries versions 2>/dev/null | tar -x -C binout || true
+          fi
+          mkdir -p "binout/versions/${GITHUB_REF_NAME}/bin"
+          cp -a binout/bin/. "binout/versions/${GITHUB_REF_NAME}/bin/"
+          find binout/versions -maxdepth 2 -type d | sort
+
       - name: Force-push binaries branch
         run: |
           cd binout
