@@ -1,0 +1,6 @@
+{
+  "yaml.schemas": {
+    "./recipes/recipe-schema.json": ["recipes/**/*.yaml"]
+  },
+  "yaml.schemaStore.enable": false
+}

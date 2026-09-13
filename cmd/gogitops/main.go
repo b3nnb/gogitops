@@ -1612,7 +1612,7 @@ func countFailed(results []testResult) int {
 
 func cmdRecipe(args []string) {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n  run-all           Pull + run EVERY recipe applicable to this node\n")
+		fmt.Fprintf(os.Stderr, "usage: gogitops recipe <subcommand>\n\nSubcommands:\n  new <name>        Scaffold a new recipe directory with template + examples\n  list              List all recipes in the repo\n  schema            Emit JSON Schema for recipe YAML (editor autocomplete;\n                    -repo injects fleet labels/hostnames, -out writes file)\n  validate <file>   Validate a recipe YAML file\n  run <file>        Execute a recipe YAML file\n  run <name>        Execute a recipe by name (searches recipes/ dir)\n  run-all           Pull + run EVERY recipe applicable to this node\n")
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -1620,6 +1620,8 @@ func cmdRecipe(args []string) {
 		recipeNew(args[1:])
 	case "list":
 		recipeList()
+	case "schema":
+		cmdRecipeSchema(args[1:])
 	case "validate":
 		recipeValidate(args[1:])
 	case "run":
@@ -1668,12 +1670,22 @@ func recipeNew(args []string) {
 		os.Exit(1)
 	}
 
-	template := `# GoGitOps Recipe: ` + name + `
-# Universal step vocabulary — the AGENT translates per-OS, the recipe never changes.
+	template := `# yaml-language-server: $schema=../recipe-schema.json
+# GoGitOps Recipe: ` + name + `
+# Editor autocomplete + validation: recipes/recipe-schema.json (wired via
+# .vscode/settings.json; modeline above covers JetBrains/Neovim/Zed).
+# Refresh the schema after agent updates:
+#   gogitops recipe schema -repo . -out recipes/recipe-schema.json
+# Step vocabulary — the AGENT translates per-OS, the recipe never changes:
 #   command:   plain bash (universal prereq)
-#   package: X + sources: "[pkg:X, pip:alt]"   → agent picks apt/dnf/apk/brew/...
+#   package: X + sources: "[pkg:X, brew:alt]"   → agent picks apt/dnf/apk/brew/...
 #   schedule: hourly + command: Y              → agent installs idempotent cron
+#   mount: <label> + device: + at: + options: + fstab:  → idempotent mount
 #   when: guard runs on every OS (detect capabilities, don't assume them)
+# Per-node overrides (any recipe may carry these):
+#   node_overrides:
+#     <hostname>:
+#       version: v0.6.8   # agent pin — beats versions.yaml for that node
 name: ` + name + `
 description: "TODO: Human-readable description"
 version: "1.0.0"

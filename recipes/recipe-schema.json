@@ -1,0 +1,287 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Declarative operational procedure. Emitted by `gogitops recipe schema` — regenerate after agent updates: gogitops recipe schema -repo . -out recipes/recipe-schema.json",
+  "properties": {
+    "description": {
+      "description": "Human-readable description of what this recipe does.",
+      "type": "string"
+    },
+    "labels": {
+      "description": "Which nodes run this recipe (empty = all). Union of every label in mesh.d/ — add new labels to mesh.d first.",
+      "items": {
+        "enum": [
+          "android",
+          "aws",
+          "compute",
+          "docker-host",
+          "gpu",
+          "hermes-host",
+          "image-gen",
+          "infra",
+          "laptop",
+          "llm-inference",
+          "lora-training",
+          "mobile",
+          "nebula-lighthouse",
+          "primary-compute",
+          "trader-host"
+        ],
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "name": {
+      "description": "Recipe identifier — should match the directory and file name.",
+      "type": "string"
+    },
+    "node_overrides": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "description": "Per-node override carried by this recipe — applies to the named node regardless of this recipe's own label scoping.",
+        "properties": {
+          "version": {
+            "description": "Agent version pin, e.g. v0.6.8 or latest — beats versions.yaml for this node.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "description": "Per-node global overrides (Benn's rule: every global is overridable per node, from any recipe). Keys are hostnames.",
+      "propertyNames": {
+        "enum": [
+          "framework",
+          "friday",
+          "lighthouse",
+          "mini",
+          "pixel"
+        ]
+      },
+      "type": "object"
+    },
+    "steps": {
+      "description": "Ordered steps. Each inherits the runner's guarantees: idempotency, retries, os/arch/label filters, dry-run, expect/assert.",
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "arch": {
+            "description": "Only run on this CPU arch.",
+            "enum": [
+              "amd64",
+              "arm64",
+              "arm"
+            ],
+            "type": "string"
+          },
+          "assert": {
+            "description": "Assertion expression evaluated against step output.",
+            "type": "string"
+          },
+          "at": {
+            "description": "Mount step: mount point.",
+            "type": "string"
+          },
+          "attr_prefix": {
+            "description": "Store regex capture groups as attr.\u003cprefix\u003e.1, .2, …",
+            "type": "string"
+          },
+          "command": {
+            "description": "Shell command to run. Plain bash — the agent translates per-OS where possible; prefer built-in step types over long bash.",
+            "type": "string"
+          },
+          "description": {
+            "description": "What this step does (shows in run output + audit log).",
+            "type": "string"
+          },
+          "device": {
+            "description": "Mount step: which device — uuid=…, label=…, or path.",
+            "type": "string"
+          },
+          "expect": {
+            "description": "Validation: stdout must contain this string.",
+            "type": "string"
+          },
+          "expect_exit": {
+            "description": "Validation: expected exit code (default 0).",
+            "type": "integer"
+          },
+          "expect_regex": {
+            "description": "Validation: stdout must match this regex.",
+            "type": "string"
+          },
+          "fstab": {
+            "description": "Mount step: persist to fstab (idempotent; sudo only when needed).",
+            "type": "boolean"
+          },
+          "labels_exclude": {
+            "description": "Step is skipped if the node has ANY of these labels.",
+            "items": {
+              "enum": [
+                "android",
+                "aws",
+                "compute",
+                "docker-host",
+                "gpu",
+                "hermes-host",
+                "image-gen",
+                "infra",
+                "laptop",
+                "llm-inference",
+                "lora-training",
+                "mobile",
+                "nebula-lighthouse",
+                "primary-compute",
+                "trader-host"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "labels_required": {
+            "description": "Node must have ALL of these labels for this step to run.",
+            "items": {
+              "enum": [
+                "android",
+                "aws",
+                "compute",
+                "docker-host",
+                "gpu",
+                "hermes-host",
+                "image-gen",
+                "infra",
+                "laptop",
+                "llm-inference",
+                "lora-training",
+                "mobile",
+                "nebula-lighthouse",
+                "primary-compute",
+                "trader-host"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mount": {
+            "description": "Built-in mount step: label or path of the device/share to mount.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Unique step identifier within the recipe.",
+            "type": "string"
+          },
+          "on_failure": {
+            "description": "What happens when the step fails (default: abort).",
+            "enum": [
+              "continue",
+              "abort"
+            ],
+            "type": "string"
+          },
+          "only_if": {
+            "description": "Skip the step when this condition is false.",
+            "type": "string"
+          },
+          "only_if_attr": {
+            "description": "Skip if this attribute condition is true.",
+            "type": "string"
+          },
+          "options": {
+            "description": "Mount step: mount options.",
+            "type": "string"
+          },
+          "os": {
+            "description": "Only run on this OS.",
+            "enum": [
+              "linux",
+              "darwin",
+              "windows"
+            ],
+            "type": "string"
+          },
+          "package": {
+            "description": "Built-in package step: install this package — agent picks apt/dnf/apk/brew per OS. Idempotent.",
+            "type": "string"
+          },
+          "parse": {
+            "description": "Parse stdout with `pattern:`.",
+            "enum": [
+              "regex"
+            ],
+            "type": "string"
+          },
+          "pattern": {
+            "description": "Regex for parse: — capture groups become {{1}}, {{2}}, … usable in later steps.",
+            "type": "string"
+          },
+          "retries": {
+            "description": "Retry count on failure.",
+            "type": "integer"
+          },
+          "retry_delay": {
+            "description": "Wait between retries, e.g. 10s.",
+            "type": "string"
+          },
+          "schedule": {
+            "description": "Built-in schedule step: '5m', 'hourly', or a cron expression — agent installs an idempotent cron/launchd entry. Pair with command: or script:.",
+            "type": "string"
+          },
+          "script": {
+            "description": "Script filename — recipe-local scripts/ is primary, recipes/scripts/ is the shared fallback.",
+            "type": "string"
+          },
+          "script_args": {
+            "description": "Arguments passed to the script.",
+            "type": "string"
+          },
+          "script_lang": {
+            "description": "Override script language detection.",
+            "enum": [
+              "bash",
+              "go",
+              "python3"
+            ],
+            "type": "string"
+          },
+          "set_attr": {
+            "description": "Store stdout as attribute attr.\u003cname\u003e — readable by later steps, the API, and the dashboard.",
+            "type": "string"
+          },
+          "sources": {
+            "description": "Package name variants per source, e.g. [\"pkg:curl\", \"brew:curl\"] — first matching source wins.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "when": {
+            "description": "Shell test — step only runs when this command exits 0. Re-evaluated every run, use to detect capabilities.",
+            "type": "string"
+          },
+          "when_attr": {
+            "description": "Only run if this attribute condition is true (attr.\u003cname\u003e [== != contains] value).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "test_module": {
+      "description": "Marks this recipe as a test module (excluded from recipe run-all; run via test run).",
+      "type": "boolean"
+    },
+    "version": {
+      "description": "Recipe version (bump on breaking changes).",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "steps"
+  ],
+  "title": "GoGitOps Recipe",
+  "type": "object"
+}

@@ -17,6 +17,29 @@ cloned can use the `GOGITOPS_SSH_PUBKEY` env var fallback.
 Recipes are declarative YAML files that describe operational procedures —
 installing software, updating configs, restarting services, migrating stacks.
 
+## Editor autocomplete (recipe schema)
+
+`gogitops recipe schema` emits a JSON Schema for recipes — from the binary
+itself, so the vocabulary always matches what the parser actually reads.
+Editors then autocomplete step keys, validate structure as you type, and
+(with `-repo`) offer the fleet's real labels and hostnames as enum choices
+(read from mesh.d/).
+
+- **VS Code** — works out of the box in this repo: `.vscode/settings.json`
+  maps `recipes/**/*.yaml` to `recipes/recipe-schema.json` (needs the Red
+  Hat YAML extension).
+- **JetBrains / Neovim / Zed** — every `recipe new` scaffold carries a
+  `# yaml-language-server: $schema=../recipe-schema.json` modeline.
+
+Refresh the schema after agent updates (new step keys ship with releases):
+
+    gogitops recipe schema -repo . -out recipes/recipe-schema.json
+
+The schema is strict (`additionalProperties: false`): keys the parser
+silently ignores light up red instead of doing nothing. `params:`, `tags:`,
+`post_conditions:` are *planned* (see DESIGN.md) — keep them commented
+until they ship.
+
 ## Schema
 
 ```yaml

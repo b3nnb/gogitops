@@ -14,7 +14,7 @@ labels: []
 
 # Optional parameters — passed via --var name=value or env
 # Referenced in steps as {{param_name}}
-params:
+# params: (planned — vars arrive via --var name=value or env today)
   # - name: target_node
   #   description: "Node to migrate to"
   #   required: true
@@ -22,7 +22,7 @@ params:
 
 # Tag-based switching (for failover/migration recipes)
 # Tags are applied to nodes and queried by the recipe engine
-tags:
+# tags: (planned — see DESIGN.md Unified Tag Model)
   # - capable    # Node has all services installed (provisioned)
   # - primary    # Node is currently active
   # - standby    # Node is provisioned but inactive

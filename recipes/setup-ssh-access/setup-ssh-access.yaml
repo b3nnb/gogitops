@@ -3,10 +3,9 @@ description: "Ensure SSH daemon is running, enabled on boot, and agent keys are 
 version: "3.1.0"
 labels: []  # all nodes
 
-params:
-  - name: key_name
-    description: "SSH key to install from install/ssh/ (default: hermes-agent)"
-    required: false
+# Params (documentation-only; the parser reads steps/labels/node_overrides —
+# vars arrive via --var key_name=X or env):
+#   key_name: SSH key to install from install/ssh/ (default: hermes-agent)
 
 steps:
   # --- Detect OS ---
