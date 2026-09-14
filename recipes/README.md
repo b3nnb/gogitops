@@ -1,5 +1,13 @@
 # GoGitOps Recipe Specification
 
+## Use-case cookbook (task-oriented how-tos)
+
+`docs/use-cases/` answers "how do I…" by task — bootstrap a node, install a
+package, schedule a job, mount a drive, collect attributes, target nodes,
+test, drift sweeps — each with copy-pasteable examples. Start there if you're
+new; this file is the full field reference. A searchable docs site built from
+the same files serves on LAN.
+
 ## Bootstrap Recipe — run this first on every new node
 
 **`setup-ssh-access`** is the fleet's foundational recipe: installs the agent's
