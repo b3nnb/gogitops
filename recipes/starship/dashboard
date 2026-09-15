@@ -89,6 +89,17 @@ if down:
   fi
 fi
 
+# ── Friday Triage (decisions waiting on you; silent when zero) ───────────────
+copilot_line=""
+TRIAGE_BIN="$(command -v triage 2>/dev/null || true)"
+[ -z "$TRIAGE_BIN" ] && [ -x "$HOME/.local/bin/triage" ] && TRIAGE_BIN="$HOME/.local/bin/triage"
+if [ -n "$TRIAGE_BIN" ]; then
+  cp_n=$("$TRIAGE_BIN" count 2>/dev/null)
+  if [ -n "$cp_n" ] && [ "$cp_n" -gt 0 ] 2>/dev/null; then
+    copilot_line="🧠 ${cp_n} waiting on you — run 'triage'"
+  fi
+fi
+
 # ── Render ──────────────────────────────────────────────────────────────────
 echo ""
 
@@ -99,6 +110,7 @@ done <<< "$ASCII"
 
 echo ""
 printf "  ${PURPLE}${BOLD}%s${RESET}\n" "$GREETING"
+[ -n "$copilot_line" ] && printf "  ${PURPLE}${BOLD}%s${RESET}\n" "$copilot_line"
 echo ""
 [ -n "$mounts_line" ] && printf "  %b\n" "$mounts_line"
 [ -n "$gpu_line" ] && printf "  ${TEAL}%b${RESET}\n" "$gpu_line"
