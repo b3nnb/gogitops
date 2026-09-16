@@ -1,6 +1,6 @@
 name: new-node
-description: "Full first-time node setup — apt updates first, then SSH fleet keys, nenv, dnclient/Nebula, Docker, Caddy, firewall, CLI tools"
-version: "1.2.0"
+description: "Full first-time node setup — updates first, then base packages, user hygiene, SSH fleet keys, nenv, dnclient/Nebula, Docker, Caddy, firewall, CLI tools, cosmetics"
+version: "1.3.0"
 labels: []   # orchestrated explicitly (fleet-enroll.service, first boot) — not tag-scoped
 
 steps:
@@ -18,6 +18,18 @@ steps:
   - name: apt-autoremove
     description: "Remove obsolete packages after upgrade"
     command: "sudo apt-get -y autoremove"
+    on_failure: continue
+
+  # ── 0b. Base packages + user hygiene (moved from the ISO — Sep 16:
+  #     autoinstall is bootstrap-only; the recipe does the rest) ──
+  - name: base-packages
+    description: "Base CLI packages formerly baked into the ISO"
+    command: "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y wget gnupg jq nmap"
+    on_failure: continue
+
+  - name: force-password-change
+    description: "Force benn password change on first login"
+    command: "sudo chage -d 0 benn"
     on_failure: continue
 
   # ── 1. SSH: install fleet keys (authorized_keys.d pattern) ──
@@ -132,6 +144,17 @@ steps:
   - name: install-extras
     description: "Install useful CLI tools"
     command: "sudo apt-get install -y htop tmux vim neovim tree unzip rsync dnsutils iputils-ping traceroute tcpdump strace lsof sysstat iotop ncdu python3 python3-pip python3-venv golang-go build-essential"
+    on_failure: continue
+
+  # ── 7b. Comfort cosmetics (moved from the ISO) ──
+  - name: motd
+    description: "Fleet MOTD"
+    command: "echo 'Benn Fleet Node — enrolled via gogitops. If anything is missing, Friday backstops it.' | sudo tee /etc/motd >/dev/null"
+    on_failure: continue
+
+  - name: bashrc-aliases
+    description: "Add ll and dc aliases to benn's bashrc (idempotent)"
+    command: "grep -q 'alias ll=' ~/.bashrc 2>/dev/null || printf '\nalias ll=\"ls -alF\"\nalias dc=\"docker compose\"\n' >> ~/.bashrc"
     on_failure: continue
 
   # ── 8. Done ──
