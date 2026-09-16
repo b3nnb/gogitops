@@ -1,0 +1,65 @@
+name: setup-nenv
+description: "Configure nenv CLI to connect to the fleet NetEnv server with a live bearer token"
+version: "1.0.0"
+labels: []
+
+params:
+  - name: server
+    description: "NetEnv server URL (default: http://10.2.0.102:7200)"
+    required: false
+
+steps:
+  # ── Detect user home ──
+  - name: detect-home
+    description: "Get home directory"
+    command: "echo $HOME"
+    parse: regex
+    pattern: "(.+)"
+
+  # ── Create config directory ──
+  - name: create-nenv-config-dir
+    description: "Create ~/.config/nenv/"
+    command: "mkdir -p {{1}}/.config/nenv"
+    on_failure: abort
+
+  # ── Resolve server URL ──
+  - name: resolve-server
+    description: "Determine NetEnv server URL"
+    command: 'echo "{{server:-http://10.2.0.102:7200}}"'
+    parse: regex
+    pattern: "(.+)"
+
+  # ── Check for token ──
+  # Token comes from NENV_TOKEN env var (set by gogitops agent from live beacon config).
+  # This way the token is NEVER baked into the ISO — always pulled live at recipe runtime.
+  - name: check-token
+    description: "Verify a token is available from environment"
+    command: 'test -n "$NENV_TOKEN" && echo "ok" || echo "missing"'
+    parse: regex
+    pattern: "(.+)"
+
+  - name: write-nenv-config
+    description: "Write nenv config.toml with server URL and live token"
+    command: 'printf "server = \"%s\"\ntoken = \"%s\"\nnamespace = \"global\"\n" "{{2}}" "$NENV_TOKEN" > {{1}}/.config/nenv/config.toml && chmod 600 {{1}}/.config/nenv/config.toml'
+    when: "test '{{3}}' = 'ok'"
+    on_failure: abort
+
+  - name: warn-no-token
+    description: "Warn that no token was found"
+    command: 'echo "WARNING: NENV_TOKEN env var not set. Set it via gogitops agent config or: export NENV_TOKEN=<your-token>"'
+    when: "test '{{3}}' = 'missing'"
+    on_failure: continue
+
+  # ── Verify nenv works ──
+  - name: verify-nenv
+    description: "Test nenv can reach the server"
+    command: 'nenv list global 2>&1 | head -3'
+    when: "test '{{3}}' = 'ok'"
+    on_failure: continue
+
+  # ── Install nenv as system secret loader ──
+  - name: nenv-install-loader
+    description: "Install nenv as a user secret loader"
+    command: 'nenv install --user 2>/dev/null || echo "nenv install not available, config file written"'
+    when: "test '{{3}}' = 'ok'"
+    on_failure: continue

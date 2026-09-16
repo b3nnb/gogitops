@@ -1,0 +1,23 @@
+hostname: wednesday
+lan_ip: 10.0.0.213
+
+# Tags (docs/tags.md — plain words; new-node/needs-setup mark it for
+# first-time-setup recipes, flip them off in git once verified enrolled)
+tags:
+  - new-node
+  - needs-setup
+  - wifi
+  - linux
+
+services: []
+
+disk:
+  - mount: /
+    warn_pct: 85
+    crit_pct: 95
+
+agent:
+  check_interval: 5m
+  git_repo: https://github.com/b3nnb/gogitops.git
+  git_branch: main
+  git_pull_interval: 5m

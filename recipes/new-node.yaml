@@ -1,0 +1,145 @@
+name: new-node
+description: "Full first-time node setup — apt updates first, then SSH fleet keys, nenv, dnclient/Nebula, Docker, Caddy, firewall, CLI tools"
+version: "1.2.0"
+labels: []   # orchestrated explicitly (fleet-enroll.service, first boot) — not tag-scoped
+
+steps:
+  # ── 0. Updates first (Benn, Sep 16: run + install ALL updates before anything else) ──
+  - name: apt-update
+    description: "Refresh package indexes"
+    command: "sudo apt-get update"
+    on_failure: abort
+
+  - name: apt-full-upgrade
+    description: "Apply all available updates non-interactively"
+    command: "sudo DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade"
+    on_failure: abort
+
+  - name: apt-autoremove
+    description: "Remove obsolete packages after upgrade"
+    command: "sudo apt-get -y autoremove"
+    on_failure: continue
+
+  # ── 1. SSH: install fleet keys (authorized_keys.d pattern) ──
+  - name: run-setup-ssh
+    description: "Run the SSH setup recipe to install all fleet authorized keys"
+    command: "gogitops recipe run setup-ssh-access"
+    on_failure: continue
+
+  - name: disable-ssh-password
+    description: "Disable SSH password authentication (keys only)"
+    command: "sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && sudo systemctl restart ssh"
+    on_failure: continue
+
+  # ── 2. nenv: connect to NetEnv server (token from gogitops agent env) ──
+  - name: run-setup-nenv
+    description: "Configure nenv CLI with live bearer token from agent environment"
+    command: "gogitops recipe run setup-nenv"
+    on_failure: continue
+
+  # ── 3. dnclient: enroll with Nebula via Defined Networking ──
+  # Pulls API key from nenv (which was just configured in step 2)
+  # Each node gets a unique enrollment code — the API key requests it
+  - name: run-setup-dnclient
+    description: "Enroll with Defined Networking / Nebula mesh"
+    command: "gogitops recipe run setup-dnclient"
+    on_failure: continue
+
+  # ── 4. Docker ──
+  - name: docker-add-keyring
+    description: "Add Docker GPG key"
+    command: "sudo install -m 0755 -d /etc/apt/keyrings && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo tee /etc/apt/keyrings/docker.asc > /dev/null && sudo chmod a+r /etc/apt/keyrings/docker.asc"
+    on_failure: abort
+
+  - name: docker-add-repo
+    description: "Add Docker apt repository"
+    command: 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null'
+    on_failure: abort
+
+  - name: docker-install
+    description: "Install Docker CE + Compose plugin"
+    command: "sudo apt-get update -qq && sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
+    on_failure: abort
+
+  - name: docker-add-user
+    description: "Add benn to docker group"
+    command: "sudo usermod -aG docker benn"
+    on_failure: continue
+
+  - name: docker-enable
+    description: "Enable Docker on boot"
+    command: "sudo systemctl enable docker"
+    on_failure: continue
+
+  # ── 5. Caddy ──
+  - name: caddy-add-keyring
+    description: "Add Caddy GPG key"
+    command: 'curl -1sLf "https://dl.cloudsmith.io/public/caddy/stable/gpg.key" | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null'
+    on_failure: continue
+
+  - name: caddy-add-repo
+    description: "Add Caddy apt repository"
+    command: 'curl -1sLf "https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt" | sudo tee /etc/apt/sources.list.d/caddy-stable.list > /dev/null'
+    on_failure: continue
+
+  - name: caddy-install
+    description: "Install Caddy"
+    command: "sudo apt-get update -qq && sudo apt-get install -y caddy"
+    on_failure: continue
+
+  - name: caddy-enable
+    description: "Enable Caddy on boot"
+    command: "sudo systemctl enable caddy"
+    on_failure: continue
+
+  # ── 6. UFW firewall ──
+  - name: ufw-install
+    description: "Install UFW"
+    command: "sudo apt-get install -y ufw"
+    on_failure: continue
+
+  - name: ufw-defaults
+    description: "Set default firewall policies"
+    command: "sudo ufw default deny incoming && sudo ufw default allow outgoing"
+    on_failure: continue
+
+  - name: ufw-allow-ssh
+    description: "Allow SSH"
+    command: "sudo ufw allow 22/tcp"
+    on_failure: continue
+
+  - name: ufw-allow-lan
+    description: "Allow all traffic from LAN"
+    command: "sudo ufw allow from 10.2.0.0/24"
+    on_failure: continue
+
+  - name: ufw-allow-wifi
+    description: "Allow all traffic from WiFi subnet (Wednesday-class nodes live here)"
+    command: "sudo ufw allow from 10.0.0.0/24"
+    on_failure: continue
+
+  - name: ufw-allow-nebula
+    description: "Allow all traffic from Nebula mesh"
+    command: "sudo ufw allow from 10.200.0.0/24"
+    on_failure: continue
+
+  - name: ufw-enable
+    description: "Enable firewall"
+    command: "sudo ufw --force enable"
+    on_failure: continue
+
+  # ── 7. Extra CLI packages ──
+  - name: install-extras
+    description: "Install useful CLI tools"
+    command: "sudo apt-get install -y htop tmux vim neovim tree unzip rsync dnsutils iputils-ping traceroute tcpdump strace lsof sysstat iotop ncdu python3 python3-pip python3-venv golang-go build-essential"
+    on_failure: continue
+
+  # ── 8. Done ──
+  - name: fleet-ready
+    description: "Mark node as fleet-ready"
+    command: "echo 'Fleet enrollment complete — node is ready. Remove new-node/needs-setup tags in nodes/<hostname>.yaml once verified.'"
+
+  - name: disable-enroll-service
+    description: "Disable the first-boot enrollment service"
+    command: "sudo systemctl disable fleet-enroll.service"
+    on_failure: continue

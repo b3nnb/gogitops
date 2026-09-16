@@ -1,0 +1,96 @@
+name: setup-dnclient
+description: "Install and enroll dnclient (Defined Networking / Nebula) using Benn's nebula-enroll tool. Pulls API credentials from nenv."
+version: "1.0.0"
+labels: []
+
+steps:
+  # ── 1. Verify nenv is configured (prerequisite) ──
+  - name: verify-nenv
+    description: "Confirm nenv CLI is configured and can reach server"
+    command: 'nenv list global 2>/dev/null | head -1'
+    on_failure: abort
+
+  # ── 2. Pull enrollment credentials from nenv ──
+  # These are stored in nenv under the dnclient/namespace:
+  #   dnclient/NEBULA_ENROLL_TOKEN  — API key for Defined Networking
+  #   dnclient/NEBULA_ENROLL_NETWORK_ID — network ID
+  #   dnclient/NEBULA_ENROLL_ROLE_ID — role ID for enrolled nodes
+  - name: get-enroll-token
+    description: "Pull Defined Networking API key from nenv"
+    command: 'nenv get dnclient NEBULA_ENROLL_TOKEN 2>/dev/null'
+    parse: regex
+    pattern: "(.+)"
+
+  - name: get-network-id
+    description: "Pull Nebula network ID from nenv"
+    command: 'nenv get dnclient NEBULA_ENROLL_NETWORK_ID 2>/dev/null'
+    parse: regex
+    pattern: "(.+)"
+
+  - name: get-role-id
+    description: "Pull Nebula role ID from nenv"
+    command: 'nenv get dnclient NEBULA_ENROLL_ROLE_ID 2>/dev/null'
+    parse: regex
+    pattern: "(.+)"
+
+  # ── 3. Check if already enrolled (receipt file exists) ──
+  - name: check-receipt
+    description: "Check if dnclient is already enrolled"
+    command: 'test -f /etc/defined/receipt.json && echo "enrolled" || echo "not-enrolled"'
+    parse: regex
+    pattern: "(.+)"
+
+  # ── 4. Download nebula-enroll tool ──
+  - name: download-enroll-tool
+    description: "Download Benn's nebula-enroll binary from GitHub releases"
+    command: 'sudo curl -fsSL https://github.com/b3nnb/nebula-enroll/releases/download/v1.0.0/nebula-enroll-1.0.0-linux-amd64.tar.gz | sudo tar xz -C /usr/local/bin/ && sudo chmod +x /usr/local/bin/nebula-enroll'
+    when: "test '{{4}}' = 'not-enrolled'"
+    on_failure: abort
+
+  # ── 5. Create TUN device (required by dnclient) ──
+  - name: ensure-tun
+    description: "Ensure /dev/net/tun exists"
+    command: 'sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200 2>/dev/null; sudo chmod 600 /dev/net/tun; test -c /dev/net/tun'
+    when: "test '{{4}}' = 'not-enrolled'"
+    on_failure: continue
+
+  # ── 6. Run enrollment ──
+  # The enroll tool:
+  #   1. Requests a per-node enrollment code from Defined Networking API
+  #   2. Starts dnclient in background
+  #   3. Runs 'dnclient enroll -code <code>'
+  #   4. Writes receipt.json so it doesn't re-enroll on restart
+  #   5. Runs dnclient in foreground
+  - name: run-enrollment
+    description: "Run nebula-enroll with credentials from nenv"
+    command: 'sudo NEBULA_ENROLL_TOKEN="{{1}}" NEBULA_ENROLL_NETWORK_ID="{{2}}" NEBULA_ENROLL_ROLE_ID="{{3}}" NEBULA_ENROLL_TAGS="authorized:false" /usr/local/bin/nebula-enroll 2>&1'
+    when: "test '{{4}}' = 'not-enrolled'"
+    on_failure: abort
+
+  # ── 7. Install dnclient as systemd service ──
+  - name: install-dnclient-service
+    description: "Install dnclient system service"
+    command: 'sudo /usr/local/bin/dnclient install -config /etc/defined -server https://api.defined.net 2>&1'
+    when: "test '{{4}}' = 'not-enrolled'"
+    on_failure: continue
+
+  # ── 8. Enable and start the service ──
+  - name: enable-dnclient
+    description: "Enable dnclient on boot"
+    command: 'sudo systemctl enable dnclient 2>/dev/null; sudo systemctl start dnclient 2>/dev/null || true'
+    when: "test '{{4}}' = 'not-enrolled'"
+    on_failure: continue
+
+  # ── 9. Verify Nebula is up ──
+  - name: verify-nebula
+    description: "Check Nebula interface exists"
+    command: 'ip link show nebula 2>/dev/null | head -2 || ip link show tun0 2>/dev/null | head -2 || echo "waiting for nebula interface"'
+    when: "test '{{4}}' = 'not-enrolled'"
+    on_failure: continue
+
+  # ── 10. Already enrolled — just verify service is running ──
+  - name: verify-existing
+    description: "Verify dnclient is running (already enrolled)"
+    command: 'systemctl is-active dnclient 2>/dev/null || echo "stopped"'
+    when: "test '{{4}}' = 'enrolled'"
+    on_failure: continue
