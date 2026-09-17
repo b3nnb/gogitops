@@ -1,0 +1,19 @@
+name: laptop-caddy-dns
+description: >
+  Adopt the internal caddy port-mapper: point this node's DNS at AdGuard
+  (10.2.0.103 + 1.1.1.1) so internal *.bennbot.io names resolve and serve
+  through the mapper. Idempotent — re-runs are no-ops when already adopted.
+  Blocks gracefully (clear manual instructions) when passwordless sudo is
+  unavailable, e.g. the Framework laptop.
+
+steps:
+  - name: adopt-dns
+    script: adopt_dns.sh
+    set_attr: dns_adopt_result
+
+  - name: verify-internal-names
+    script: verify.sh
+    set_attr: dns_verify_result
+
+  - name: report
+    command: "echo 'ADOPT: {{attr.dns_adopt_result}} | VERIFY: {{attr.dns_verify_result}}'"
