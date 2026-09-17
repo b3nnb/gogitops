@@ -1,6 +1,6 @@
 name: new-node
 description: "Full first-time node setup — updates first, then base packages, user hygiene, SSH fleet keys, nenv, dnclient/Nebula, Docker, Caddy, firewall, CLI tools, cosmetics"
-version: "1.3.0"
+version: "1.4.0"
 labels: []   # orchestrated explicitly (fleet-enroll.service, first boot) — not tag-scoped
 
 steps:
@@ -55,6 +55,18 @@ steps:
   - name: run-setup-dnclient
     description: "Enroll with Defined Networking / Nebula mesh"
     command: "gogitops recipe run setup-dnclient"
+    on_failure: continue
+
+  # ── 3b. Beacon registration (REPO-DEFINED + OPTIONAL, Benn Sep 16: status
+  #     board only, never required; change the URL here = fleet-wide via git) ──
+  - name: register-beacon
+    description: "Point the agent at the fleet status beacon/dashboard"
+    command: "gogitops set dashboard http://10.2.0.102:7781"
+    on_failure: continue
+
+  - name: reload-agent-config
+    description: "Restart agent so it reads the beacon URL (read at start)"
+    command: "gogitops restart"
     on_failure: continue
 
   # ── 4. Docker ──
