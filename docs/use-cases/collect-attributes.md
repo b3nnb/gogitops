@@ -39,6 +39,23 @@ steps:
     command: "echo '{{attr.os}} / {{attr.arch}}' > /tmp/facts.txt"
 ```
 
+## End-to-end: one recipe, submit then use
+
+Submission and consumption together — capture a fact, then let later steps
+(and conditions) act on it:
+
+```yaml
+steps:
+  - name: detect-gpu
+    description: "Capture GPU model from the info script"
+    script: gpu-info.sh              # prints e.g. "NVIDIA GeForce RTX 4070"
+    set_attr: gpu_model              # submission: stdout becomes attr.gpu_model
+
+  - name: record
+    command: "echo 'GPU: {{attr.gpu_model}}' >> $HOME/hw-notes.txt"
+    only_if_attr: "attr.gpu_model"   # usage: run only if the attr was set
+```
+
 Conditionals on attributes ([syntax](conditional-steps.md)):
 
 ```yaml
