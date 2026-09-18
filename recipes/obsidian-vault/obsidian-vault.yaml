@@ -1,6 +1,6 @@
 name: obsidian-vault
 description: "Ensure Obsidian is installed on admin nodes; pre-configure the remote vault connection on remote-admin nodes (non-Friday devices only — Friday hosts the vault natively)"
-version: "1.1.0"
+version: "1.2.0"
 auto_apply: true
 labels: [admin]
 
@@ -51,6 +51,14 @@ steps:
     on_failure: continue
     retries: 2
     retry_delay: 5s
+
+  - name: install-obsidian-appimage
+    description: "Install Obsidian AppImage to ~/Applications (NO sudo needed) - fallback for nodes without passwordless sudo or package channels"
+    command: "mkdir -p $HOME/Applications && URL=$(curl -s --max-time 15 https://api.github.com/repos/obsidianmd/obsidian-releases/releases/latest | grep -oE 'https://[^\"]*\.AppImage' | head -1) && [ -n \"$URL\" ] && curl -sL --max-time 180 \"$URL\" -o $HOME/Applications/Obsidian.AppImage && chmod +x $HOME/Applications/Obsidian.AppImage && mkdir -p $HOME/.local/bin && ln -sf $HOME/Applications/Obsidian.AppImage $HOME/.local/bin/obsidian"
+    when: "! (command -v obsidian >/dev/null 2>&1 || flatpak list 2>/dev/null | grep -q md.obsidian.Obsidian || snap list 2>/dev/null | grep -q '^obsidian' || ls /Applications ~/Applications 2>/dev/null | grep -qi obsidian) && ! test -x $HOME/Applications/Obsidian.AppImage && uname -s | grep -qi linux"
+    on_failure: continue
+    retries: 2
+    retry_delay: 10s
 
   # ── Remote vault connection — remote-admin nodes ONLY ─────────────────
   # Friday (admin but NOT remote-admin) skips this whole block on label scope.
