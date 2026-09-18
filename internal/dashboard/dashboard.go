@@ -224,6 +224,15 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   .st-toggle:hover { border-color: var(--accent); }
   .st-summary .svc-name { color: var(--text-dim); }
   .st-list.st-hidden { display: none; }
+  /* Attributes section */
+  .dd-head { display: flex; align-items: baseline; justify-content: space-between; margin: 16px 0 6px 0; }
+  .dd-head h3 { margin: 0; }
+  .attr-count { color: var(--text-dim); font-size: 11px; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+  .attr-row { display: flex; gap: 10px; padding: 4px 0; font-size: 12.5px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+  .attr-row:last-child { border-bottom: none; }
+  .attr-key { flex: 0 0 190px; font-family: "SF Mono", "Fira Code", monospace; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attr-val { flex: 1; font-family: "SF Mono", "Fira Code", monospace; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 640px) { .attr-key { flex-basis: 130px; } }
   .loading { color: var(--text-dim); font-style: italic; }
   /* Disk usage bars */
   .disk-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13px; }
@@ -512,6 +521,7 @@ function esc(s) {
 var openNode = null;
 var refreshTimer = null;
 var selftestsOpen = {};  // per-node: SELFTESTS full list expanded
+var attrsOpen = {};        // per-node: ATTRIBUTES section showing the yaml view
 
 function toggleDetail(name) {
   var row = document.getElementById('detail-' + name);
@@ -541,6 +551,39 @@ function toggleSelftests(name) {
   if (btn) btn.textContent = selftestsOpen[name] ? 'hide passing' : 'show all';
 }
 
+function toggleAttrs(name) {
+  attrsOpen[name] = !attrsOpen[name];
+  loadDetail(name, true); // re-render with the new view state
+}
+
+// yamlScalar quotes a single-line string only when YAML needs it.
+// JSON double-quoted strings are valid YAML double-quoted scalars.
+function yamlScalar(s) {
+  if (s === '' || !isNaN(Number(s)) || s === 'true' || s === 'false' || s === 'null' || s === '~' ||
+      /^[\s#\-?:\[\]{},&*!|>'"%@\u0060]/.test(s) || /:\s/.test(s) || /\s#/.test(s) || /\s$/.test(s)) {
+    return JSON.stringify(s);
+  }
+  return s;
+}
+
+// yamlOf renders the attr map as a YAML document — the reference for
+// attr.x substitution and when_attr conditions in recipes.
+function yamlOf(obj) {
+  var keys = Object.keys(obj).sort();
+  var out = '';
+  for (var i = 0; i < keys.length; i++) {
+    var v = String(obj[keys[i]]);
+    if (v.indexOf('\n') >= 0) {
+      out += keys[i] + ': |-\n';
+      var lines = v.split('\n');
+      for (var j = 0; j < lines.length; j++) out += '  ' + lines[j] + '\n';
+    } else {
+      out += keys[i] + ': ' + yamlScalar(v) + '\n';
+    }
+  }
+  return out;
+}
+
 function loadDetail(name, quiet) {
   var box = document.getElementById('dd-' + name);
   if (!box) return;
@@ -548,13 +591,14 @@ function loadDetail(name, quiet) {
   Promise.all([
     fetch('/api/node/' + name).then(function(r) { return r.json(); }).catch(function() { return null; }),
     fetch('/api/node/' + name + '/logs?limit=10').then(function(r) { return r.json(); }).catch(function() { return null; }),
-    fetch('/api/node/' + name + '/tests').then(function(r) { return r.json(); }).catch(function() { return null; })
+    fetch('/api/node/' + name + '/tests').then(function(r) { return r.json(); }).catch(function() { return null; }),
+    fetch('/api/node/' + name + '/attrs').then(function(r) { return r.json(); }).catch(function() { return null; })
   ]).then(function(res) {
-    renderDetail(name, res[0], Array.isArray(res[1]) ? {logs: res[1]} : res[1], res[2]);
+    renderDetail(name, res[0], Array.isArray(res[1]) ? {logs: res[1]} : res[1], res[2], res[3]);
   });
 }
 
-function renderDetail(name, d, logs, tests) {
+function renderDetail(name, d, logs, tests, attrs) {
   var box = document.getElementById('dd-' + name);
   if (!box) return;
   if (!d || (!d.hostname && d.error)) {
@@ -670,6 +714,24 @@ function renderDetail(name, d, logs, tests) {
         html += '</div>';
       } else {
         html += '<div class="svc-row st-summary"><span></span><span class="svc-name">agent pre-v0.7.15 — full list available after it self-updates</span><span></span></div>';
+      }
+    }
+  }
+  // Attributes — the node's live device attr store; list view, plus a YAML
+  // view to copy for attr.x / when_attr recipe reference
+  if (attrs && Object.keys(attrs).length > 0) {
+    var akeys = Object.keys(attrs).sort();
+    html += '<div class="dd-head"><h3>ATTRIBUTES <span class="attr-count">' + akeys.length + ' keys</span></h3>' +
+            '<button class="st-toggle" onclick="toggleAttrs(\'' + esc(name) + '\')">' + (attrsOpen[name] ? 'hide yaml' : 'view yaml') + '</button></div>';
+    if (attrsOpen[name]) {
+      html += '<div class="code-block"><div class="code-label">device attr store &mdash; yaml (copy for recipe reference)</div>' +
+              '<button class="copy-btn" onclick="copyCode(\'attrsYaml\', this)">copy</button>' +
+              '<pre id="attrsYaml">' + esc(yamlOf(attrs)) + '</pre></div>';
+    } else {
+      for (var a = 0; a < akeys.length; a++) {
+        var av = String(attrs[akeys[a]]);
+        html += '<div class="attr-row"><span class="attr-key" title="' + esc(akeys[a]) + '">' + esc(akeys[a]) + '</span>' +
+                '<span class="attr-val" title="' + esc(av).replace(/\n/g, ' &middot; ') + '">' + esc(av) + '</span></div>';
       }
     }
   }

@@ -124,6 +124,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(r.URL.Path, "/tests") && strings.HasPrefix(r.URL.Path, "/api/node/"):
 		name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/node/"), "/tests")
 		h.handleNodeTestsAPI(w, r, name)
+	case strings.HasSuffix(r.URL.Path, "/attrs") && strings.HasPrefix(r.URL.Path, "/api/node/"):
+		name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/node/"), "/attrs")
+		h.handleNodeAttrsAPI(w, r, name)
 	case strings.HasSuffix(r.URL.Path, "/logs") && strings.HasPrefix(r.URL.Path, "/api/node/"):
 		name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/node/"), "/logs")
 		h.handleNodeLogsAPI(w, r, name)
@@ -536,6 +539,29 @@ func (h *Handler) handleNodeTestsAPI(w http.ResponseWriter, r *http.Request, nam
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get("http://" + addr + "/v1/tests")
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	io.Copy(w, resp.Body)
+}
+
+// handleNodeAttrsAPI proxies a node agent's /v1/attrs (live device attr
+// store) for the dashboard drill-down.
+func (h *Handler) handleNodeAttrsAPI(w http.ResponseWriter, r *http.Request, name string) {
+	addr := h.nodeAddress(r, name)
+	if addr == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "node not found"})
+		return
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + addr + "/v1/attrs")
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
