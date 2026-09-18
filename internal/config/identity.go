@@ -314,7 +314,11 @@ func saveOwnMeshEntry(repoDir, hostname string, p Peer) {
 	}
 	path := meshPeerPath(repoDir, hostname)
 	if prev, err := os.ReadFile(path); err == nil && string(prev) == string(out) {
-		return // steady state: no churn, no submit
+		// Steady state for the mesh file — but a pending nodes/<hostname>.yaml
+		// enrollment must still submit (it rides this same branch). submitMeshFile
+		// no-ops when nothing is staged, so this is churn-free.
+		submitMeshFile(repoDir, hostname)
+		return
 	}
 	if err := os.WriteFile(path, out, 0644); err != nil {
 		return
