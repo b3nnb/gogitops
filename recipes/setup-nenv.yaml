@@ -1,6 +1,6 @@
 name: setup-nenv
 description: "Install + configure the nenv CLI to reach the fleet NetEnv server with a live bearer token"
-version: "1.3.0"
+version: "1.3.1"
 auto_apply: true
 labels: []
 
@@ -22,14 +22,10 @@ steps:
     command: 'NENV_BIN=$(command -v nenv 2>/dev/null || true); [ -z "$NENV_BIN" ] && [ -x "$HOME/.local/bin/nenv" ] && NENV_BIN="$HOME/.local/bin/nenv"; if [ -n "$NENV_BIN" ]; then echo "already-present"; exit 0; fi; OS=$(uname -s | tr "[:upper:]" "[:lower:]"); ARCH=$(uname -m); [ "$ARCH" = "x86_64" ] && ARCH=amd64; [ "$ARCH" = "aarch64" ] && ARCH=arm64; git -C {{repo}} fetch -q origin binaries 2>/dev/null || true; git -C {{repo}} show "origin/binaries:bin/nenv-$OS-$ARCH" > "$HOME/.local/bin/nenv" 2>/dev/null || { echo "missing: nenv-$OS-$ARCH not found on the binaries branch"; exit 1; }; chmod 755 "$HOME/.local/bin/nenv"; "$HOME/.local/bin/nenv" --help >/dev/null 2>&1 || { echo "broken: nenv binary will not run on this platform"; exit 1; }; echo "installed: nenv-$OS-$ARCH"'
     expect_regex: "(already-present|installed: nenv-)"
     on_failure: abort
-  - name: create-nenv-config-dir
-    description: "Create ~/.config/nenv/"
-    command: 'mkdir -p "$HOME/.config/nenv"'
-    on_failure: abort
-
   - name: write-nenv-config
-    description: "Write nenv config.toml from the live agent-env token (abort if missing)"
-    command: 'test -n "$NENV_TOKEN" && printf "server = \"%s\"\ntoken = \"%s\"\nnamespace = \"global\"\n" "${GOENV_NENV_SERVER:-http://10.2.0.102:7200}" "$NENV_TOKEN" > "$HOME/.config/nenv/config.toml" && chmod 600 "$HOME/.config/nenv/config.toml" || { echo "missing: NENV_TOKEN not set in agent environment"; exit 1; }'
+    description: "Write nenv config.toml from the live agent-env token; no-op when the existing config already works (bootstrap token needed only once per node)"
+    command: 'NENV_BIN=$(command -v nenv 2>/dev/null || true); [ -z "$NENV_BIN" ] && [ -x "$HOME/.local/bin/nenv" ] && NENV_BIN="$HOME/.local/bin/nenv"; if [ -n "$NENV_BIN" ] && "$NENV_BIN" list global >/dev/null 2>&1; then echo "already-configured"; exit 0; fi; mkdir -p "$HOME/.config/nenv"; test -n "$NENV_TOKEN" && printf "server = \"%s\"\ntoken = \"%s\"\nnamespace = \"global\"\n" "${GOENV_NENV_SERVER:-http://10.2.0.102:7200}" "$NENV_TOKEN" > "$HOME/.config/nenv/config.toml" && chmod 600 "$HOME/.config/nenv/config.toml" || { echo "missing: NENV_TOKEN not set in agent environment and no working config"; exit 1; }; echo "written"'
+    expect_regex: "(already-configured|written)"
     on_failure: abort
 
   - name: verify-nenv

@@ -1,7 +1,7 @@
 name: nas-bifrost-mount
-description: "Mount NAS Bifrost share (//10.2.0.103/Bifrost) at /media/benn/Bifrost via systemd .mount + .automount units — boot-safe, lazy (first access mounts). macOS: /Volumes/Bifrost via mount_smbfs."
-version: "1.1.0"
-labels: [laptop]
+description: "Mount NAS Bifrost share — Linux: systemd .mount + .automount at /media/benn/Bifrost (boot-safe lazy, login-triggered); macOS: /Volumes/Bifrost via mount_smbfs (Keychain auth) with a login LaunchAgent."
+version: "1.2.0"
+labels: [laptop, mac]
 auto_apply: true
 
 steps:
@@ -13,6 +13,16 @@ steps:
     options: vers=3.0,soft,actimeo=30
     expect_regex: 'state=(mounted|already-mounted|units-active|mounted-fallback|units-armed)'
 
+  # ── Linux: touch the mountpoint at every login so the lazy automount is
+  #    already mounted when the desktop session starts (no root, idempotent)
   - name: login-mount-trigger
-    description: "User unit: touch the mountpoint at every login so the lazy automount is already mounted when the desktop session starts (no root, idempotent)"
+    os: linux
+    description: "User unit: trigger the lazy automount at login (Files sidebar shows the share immediately)"
     command: 'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; mkdir -p "$HOME/.config/systemd/user"; printf "%s\n" "[Unit]" "Description=Trigger Bifrost automount at login (gogitops)" "[Service]" "Type=oneshot" "ExecStart=/bin/sh -c \"for i in 1 2 3 4 5 6 7 8 9 10 11 12; do ls /media/benn/Bifrost >/dev/null 2>&1 && exit 0; sleep 5; done; true\"" "[Install]" "WantedBy=default.target" > "$HOME/.config/systemd/user/gogitops-mount-trigger-bifrost.service" && systemctl --user daemon-reload && systemctl --user enable gogitops-mount-trigger-bifrost.service >/dev/null 2>&1 && systemctl --user start gogitops-mount-trigger-bifrost.service && echo trigger-armed'
+
+  # ── macOS: LaunchAgent mounts the share at login (mount_smbfs auth from
+  #    Keychain — store the NAS password in Keychain once; Finder-visible)
+  - name: login-mount-trigger
+    os: darwin
+    description: "LaunchAgent: mount /Volumes/Bifrost at login via mount_smbfs (idempotent)"
+    command: 'mkdir -p "$HOME/Library/LaunchAgents"; printf "%s\n" "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" "<plist version=\"1.0\">" "<dict>" "  <key>Label</key>" "  <string>com.gogitops.mount-trigger-bifrost</string>" "  <key>ProgramArguments</key>" "  <array>" "    <string>/bin/sh</string>" "    <string>-c</string>" "    <string>mount | grep -q \"on /Volumes/Bifrost\" || mount_smbfs //10.2.0.103/Bifrost /Volumes/Bifrost</string>" "  </array>" "  <key>RunAtLoad</key>" "  <true/>" "</dict>" "</plist>" > "$HOME/Library/LaunchAgents/com.gogitops.mount-trigger-bifrost.plist" && launchctl unload "$HOME/Library/LaunchAgents/com.gogitops.mount-trigger-bifrost.plist" >/dev/null 2>&1; launchctl load "$HOME/Library/LaunchAgents/com.gogitops.mount-trigger-bifrost.plist" && echo trigger-armed'
