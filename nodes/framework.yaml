@@ -1,25 +1,23 @@
 hostname: framework
-nebula_ip: ""
+nebula_ip: ''
 lan_ip: 10.0.0.229
-
 labels:
-  - compute
-  - laptop
-  - nas
-
+- compute
+- laptop
+- nas
+- admin
+- remote-admin
 services:
-  - name: nebula
-    type: systemd
-    unit: dnclient.service
-
+- name: nebula
+  type: systemd
+  unit: dnclient.service
 disk:
-  - mount: /
-    warn_pct: 85
-    crit_pct: 95
-
+- mount: /
+  warn_pct: 85
+  crit_pct: 95
 agent:
   check_interval: 5m
   git_repo: git@github.com:b3nnb/gogitops.git
   git_branch: main
   git_pull_interval: 5m
-  recipes_interval: 10m   # daemon recipe auto-apply (convergence loop, v0.7.8)
+  recipes_interval: 10m

@@ -1,35 +1,33 @@
 hostname: mini
-nebula_ip: ""
+nebula_ip: ''
 lan_ip: 10.0.0.251
-
 labels:
-  - compute
-  - mac
-  - nas
-  - gpu
-  - llm-inference
-  - image-gen
-  - lora-training
-
+- compute
+- mac
+- nas
+- gpu
+- llm-inference
+- image-gen
+- lora-training
+- admin
+- remote-admin
 services:
-  - name: ollama
-    type: tcp
-    port: 11434
-  - name: comfyui
-    type: tcp
-    port: 8188
-  - name: exo
-    type: tcp
-    port: 52415
-
+- name: ollama
+  type: tcp
+  port: 11434
+- name: comfyui
+  type: tcp
+  port: 8188
+- name: exo
+  type: tcp
+  port: 52415
 disk:
-  - mount: /
-    warn_pct: 85
-    crit_pct: 95
-
+- mount: /
+  warn_pct: 85
+  crit_pct: 95
 agent:
   check_interval: 5m
   git_repo: git@github.com:b3nnb/gogitops.git
   git_branch: main
   git_pull_interval: 5m
-  recipes_interval: 10m   # daemon recipe auto-apply (convergence loop, v0.7.8)
+  recipes_interval: 10m

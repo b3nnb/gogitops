@@ -1,71 +1,77 @@
 hostname: friday
 machine_id: 0977c274f3c54f2c87bd59e763c2ca26
-nebula_ip: ""
+nebula_ip: ''
 lan_ip: 10.2.0.102
-
 labels:
-  - primary-compute
-  - docker-host
-  - hermes-host
-  - trader-host
-  - gpu
-  - stack:trader
-  - stack:ctl
-  - stack:curation
-  - stack:netenv
-  - stack:qdrant
-
+- primary-compute
+- docker-host
+- hermes-host
+- trader-host
+- gpu
+- stack:trader
+- stack:ctl
+- stack:curation
+- stack:netenv
+- stack:qdrant
+- admin
 services:
-  - name: hermes-gateway
-    type: systemd
-    unit: hermes-gateway.service
-    user: true
-  - name: friday-voice
-    type: systemd
-    unit: friday-voice.service
-  - name: friday-calls
-    type: systemd
-    unit: friday-calls.service
-  - name: nebula
-    type: systemd
-    unit: dnclient.service
-  - name: docker
-    type: docker
-    check: daemon-alive
-  - name: ctl-stack
-    type: docker-compose
-    path: /home/benn/Documents/code/Docker/ctl
-    containers: [ctl-backend-1, ctl-frontend-1, ctl-trader-1, ctl-worker-1, ctl-db-1, ctl-searxng-1, ctl-studio-worker-1]
-  - name: netenv
-    type: docker-compose
-    path: /home/benn/Documents/code/netenv
-    containers: [netenv-netenv-1, netenv-db-1]
-  - name: qdrant
-    type: docker
-    check: container-alive
-    container: qdrant-hermes
-  - name: github-runner
-    type: docker
-    check: container-alive
-    container: github-runner
-  - name: curation-tool
-    type: tcp
-    port: 7842
-  - name: ollama
-    type: tcp
-    port: 11434
-  - name: godawg-trader-api
-    type: tcp
-    port: 8091
-
+- name: hermes-gateway
+  type: systemd
+  unit: hermes-gateway.service
+  user: true
+- name: friday-voice
+  type: systemd
+  unit: friday-voice.service
+- name: friday-calls
+  type: systemd
+  unit: friday-calls.service
+- name: nebula
+  type: systemd
+  unit: dnclient.service
+- name: docker
+  type: docker
+  check: daemon-alive
+- name: ctl-stack
+  type: docker-compose
+  path: /home/benn/Documents/code/Docker/ctl
+  containers:
+  - ctl-backend-1
+  - ctl-frontend-1
+  - ctl-trader-1
+  - ctl-worker-1
+  - ctl-db-1
+  - ctl-searxng-1
+  - ctl-studio-worker-1
+- name: netenv
+  type: docker-compose
+  path: /home/benn/Documents/code/netenv
+  containers:
+  - netenv-netenv-1
+  - netenv-db-1
+- name: qdrant
+  type: docker
+  check: container-alive
+  container: qdrant-hermes
+- name: github-runner
+  type: docker
+  check: container-alive
+  container: github-runner
+- name: curation-tool
+  type: tcp
+  port: 7842
+- name: ollama
+  type: tcp
+  port: 11434
+- name: godawg-trader-api
+  type: tcp
+  port: 8091
 disk:
-  - mount: /
-    warn_pct: 85
-    crit_pct: 95
-  - mount: /media/benn/Bifrost
-    warn_pct: 85
-    crit_pct: 95
-
+- mount: /
+  warn_pct: 85
+  crit_pct: 95
+- mount: /media/benn/Bifrost
+  warn_pct: 85
+  crit_pct: 95
 agent:
   check_interval: 5m
   git_repo: git@github.com:b3nnb/gogitops.git

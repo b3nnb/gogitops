@@ -1,0 +1,112 @@
+name: obsidian-vault
+description: "Ensure Obsidian is installed on admin nodes; pre-configure the remote vault connection on remote-admin nodes (non-Friday devices only — Friday hosts the vault natively)"
+version: "1.0.0"
+labels: [admin]
+
+# Label contract (nodes/<hostname>.yaml):
+#   admin        — Benn's admin machines; recipe scope. Friday, Mini, Framework.
+#   remote-admin — narrower: devices that connect to the vault REMOTELY (non-Friday).
+#                  Friday is excluded on purpose: the canonical vault lives there.
+
+steps:
+  # ── Environment ────────────────────────────────────────────────────────
+  - name: detect-os
+    description: "Record operating system"
+    command: "uname -s | tr '[:upper:]' '[:lower:]'"
+    set_attr: os
+
+  - name: detect-arch
+    description: "Record CPU architecture"
+    command: "uname -m"
+    set_attr: arch
+
+  - name: detect-obsidian-before
+    description: "Check whether Obsidian is already present in any install form"
+    command: "(command -v obsidian >/dev/null 2>&1 && echo PATH) || (flatpak list 2>/dev/null | grep -q md.obsidian.Obsidian && echo FLATPAK) || (snap list 2>/dev/null | grep -q '^obsidian' && echo SNAP) || (ls /Applications ~/Applications 2>/dev/null | grep -qi obsidian && echo APPS) || (find $HOME -maxdepth 3 -name 'Obsidian*.AppImage' 2>/dev/null | head -1 | grep -q AppImage && echo APPIMAGE) || echo not-installed"
+    set_attr: obsidian_before
+
+  # ── Install: detect the local install channel, never assume ────────────
+  # Friday's pattern is flatpak; remote nodes may differ. Idempotent guards.
+  - name: install-obsidian-flatpak
+    description: "Install Obsidian via system flatpak (Friday's channel)"
+    command: "sudo -n flatpak install -y --noninteractive flathub md.obsidian.Obsidian"
+    when: "! (command -v obsidian >/dev/null 2>&1 || flatpak list 2>/dev/null | grep -q md.obsidian.Obsidian || snap list 2>/dev/null | grep -q '^obsidian' || ls /Applications ~/Applications 2>/dev/null | grep -qi obsidian) && command -v flatpak >/dev/null 2>&1"
+    on_failure: continue
+    retries: 2
+    retry_delay: 5s
+
+  - name: install-obsidian-snap
+    description: "Install Obsidian via snap (flatpak not present)"
+    command: "sudo -n snap install obsidian --classic"
+    when: "! (command -v obsidian >/dev/null 2>&1 || snap list 2>/dev/null | grep -q '^obsidian' || ls /Applications ~/Applications 2>/dev/null | grep -qi obsidian) && command -v snap >/dev/null 2>&1 && ! command -v flatpak >/dev/null 2>&1"
+    on_failure: continue
+    retries: 2
+    retry_delay: 5s
+
+  - name: install-obsidian-brew
+    description: "Install Obsidian via Homebrew cask (macOS nodes)"
+    command: "brew install --cask obsidian"
+    when: "! (command -v obsidian >/dev/null 2>&1 || ls /Applications 2>/dev/null | grep -qi obsidian) && command -v brew >/dev/null 2>&1"
+    on_failure: continue
+    retries: 2
+    retry_delay: 5s
+
+  # ── Remote vault connection — remote-admin nodes ONLY ─────────────────
+  # Friday (admin but NOT remote-admin) skips this whole block on label scope.
+  - name: create-vault-dir
+    description: "Create the remote vault directory (mirrors Friday's vault path)"
+    command: "mkdir -p \"$HOME/Documents/Obsidian Vault\""
+    labels_required: [remote-admin]
+    on_failure: abort
+
+  - name: drop-vault-pointer
+    description: "Write the vault path pointer so agents and tools find the vault"
+    command: "mkdir -p $HOME/.config/gogitops && printf '%s/Documents/Obsidian Vault\\n' \"$HOME\" > $HOME/.config/gogitops/obsidian-vault.path"
+    labels_required: [remote-admin]
+    on_failure: continue
+
+  - name: ensure-syncthing
+    description: "Ensure Syncthing (vault transport) is installed — agent picks the package manager"
+    package: syncthing
+    sources: "[pkg:syncthing]"
+    when: "! command -v syncthing >/dev/null 2>&1"
+    labels_required: [remote-admin]
+    on_failure: continue
+
+  - name: report-syncthing-state
+    description: "Report whether Syncthing is running on this node"
+    command: "(systemctl --user is-active syncthing 2>/dev/null || systemctl is-active syncthing 2>/dev/null || echo inactive) | head -1"
+    labels_required: [remote-admin]
+    set_attr: syncthing_state
+    on_failure: continue
+
+  # ── Verify + report ───────────────────────────────────────────────────
+  - name: detect-obsidian-after
+    description: "Confirm Obsidian is present in some install form"
+    command: "(command -v obsidian >/dev/null 2>&1 && echo PATH) || (flatpak list 2>/dev/null | grep -q md.obsidian.Obsidian && echo FLATPAK) || (snap list 2>/dev/null | grep -q '^obsidian' && echo SNAP) || (ls /Applications ~/Applications 2>/dev/null | grep -qi obsidian && echo APPS) || echo not-installed"
+    set_attr: obsidian_after
+
+  - name: verify-obsidian
+    description: "Assert Obsidian ended up installed somewhere"
+    command: "test \"{{attr.obsidian_after}}\" != \"not-installed\""
+    assert: "Obsidian installed (channel: {{attr.obsidian_after}})"
+    on_failure: abort
+
+  - name: vault-status
+    description: "Report vault role: host (Friday) or remote (remote-admin)"
+    command: "echo 'host (vault is local) - remote-admin block skipped by design'"
+    labels_exclude: [remote-admin]
+    set_attr: vault_role
+    on_failure: continue
+
+  - name: vault-role-remote
+    description: "Report vault role: remote"
+    command: "echo 'remote (vault syncs from Friday via Syncthing; dir + pointer staged)'"
+    labels_required: [remote-admin]
+    set_attr: vault_role
+    on_failure: continue
+
+  - name: deploy-summary
+    description: "Compile the full deployment report as one attribute"
+    command: "echo 'os={{attr.os}} obsidian={{attr.obsidian_after}} role={{attr.vault_role}} syncthing={{attr.syncthing_state}}'"
+    set_attr: deploy_summary
