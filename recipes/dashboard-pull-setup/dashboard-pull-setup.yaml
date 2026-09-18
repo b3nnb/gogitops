@@ -1,0 +1,49 @@
+name: dashboard-pull-setup
+description: "Make this node's agent pull-able by the fleet dashboard/beacon (Friday :7781): bind all interfaces, register the beacon URL, fix hand-rolled units that hardcode -bind 127.0.0.1, open ufw to the dashboard node, restart, verify. macOS note: daemon is hand-started — flags apply at next start."
+version: "1.0.0"
+labels: []
+
+steps:
+  - name: set-bind
+    description: "agent.env: bind 0.0.0.0 so the dashboard can poll :7780"
+    command: "{{self}} set bind 0.0.0.0"
+    on_failure: continue
+
+  - name: set-beacon
+    description: "agent.env: beacon/dashboard URL — the agent also registers itself there"
+    command: "{{self}} set dashboard http://10.2.0.102:7781"
+    on_failure: continue
+
+  - name: fix-unit-bind
+    description: "Hand-rolled user units with hardcoded -bind 127.0.0.1 (framework): rewrite the flag — env config cannot override a CLI flag"
+    command: 'U=$HOME/.config/systemd/user/gogitops.service; if [ -f "$U" ] && grep -q "bind 127\.0\.0\.1" "$U"; then sed -i "s/bind 127\.0\.0\.1/bind 0.0.0.0/" "$U" && systemctl --user daemon-reload && echo user-unit-rebound; else echo user-unit-ok; fi'
+    os: linux
+    on_failure: continue
+
+  - name: restart-agent
+    description: "Restart via the service manager — exec-restart keeps old argv, so a sed'd unit needs a real systemctl restart"
+    command: 'for U in gogitops gogitops-daemon; do if systemctl --user is-active $U >/dev/null 2>&1; then systemctl --user restart $U && echo restarted-user-$U; exit 0; fi; done; if systemctl is-active gogitops-daemon >/dev/null 2>&1; then sudo -n systemctl restart gogitops-daemon && echo restarted-system; else echo WARN-no-unit-restarted; fi'
+    os: linux
+    on_failure: continue
+
+  - name: ufw-allow-dashboard
+    description: "If ufw is active: allow the dashboard node to reach the agent API (no-op when inactive/absent)"
+    command: 'if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then sudo -n ufw allow from 10.2.0.102 to any port 7780 proto tcp >/dev/null && echo ufw-rule-added; else echo ufw-not-active; fi'
+    os: linux
+    on_failure: continue
+
+  - name: verify-pullable
+    description: "Agent API must answer on the LAN IP — the address the beacon polls (retries while the freshly restarted daemon binds)"
+    command: 'IP=$(ip -4 route get 10.2.0.102 2>/dev/null | grep -oP "src \K[0-9.]+"); ok=0; for i in 1 2 3 4 5 6; do if [ -n "$IP" ] && curl -s --max-time 5 http://$IP:7780/v1/health | grep -q hostname; then ok=1; break; fi; sleep 5; done; if [ $ok = 1 ]; then echo pull-ready ip=$IP; else echo WARN-not-pullable-on-lan; exit 1; fi'
+    os: linux
+
+  - name: verify-beacon-sees-node
+    description: "Beacon status API lists this node (registration lands within a tick of restart)"
+    command: 'sleep 5; curl -s --max-time 5 http://10.2.0.102:7781/api/status | grep -q "{{hostname}}" && echo beacon-lists-{{hostname}} || { echo WARN-beacon-missing-node; exit 1; }'
+    on_failure: continue
+
+  - name: darwin-note
+    description: "macOS: daemon is hand-started (no unit) — start it with -bind 0.0.0.0 -dashboard http://10.2.0.102:7781"
+    command: 'echo "note: darwin daemon is hand-started; bind/beacon flags apply at the next manual start"'
+    os: darwin
+    on_failure: continue

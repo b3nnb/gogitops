@@ -2028,6 +2028,11 @@ func recipeRun(args []string, all *runAllCtx) {
 	// Detect OS/arch
 	vars["os"] = runtime.GOOS
 	vars["arch"] = runtime.GOARCH
+	// {{self}} = the binary running this recipe — steps invoke the CURRENT
+	// agent, never a PATH-shadowing stale install (Friday/Mini footgun)
+	if selfPath, err := os.Executable(); err == nil {
+		vars["self"] = selfPath
+	}
 
 	// Attribute map — persists across steps within a recipe run.
 	// Hydrated from the device attr store first, so every recipe can read
