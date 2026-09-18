@@ -14,25 +14,25 @@ import (
 
 // ANSI color codes
 const (
-	reset   = "\033[0m"
-	bold    = "\033[1m"
-	dim     = "\033[2m"
-	italic  = "\033[3m"
+	reset  = "\033[0m"
+	bold   = "\033[1m"
+	dim    = "\033[2m"
+	italic = "\033[3m"
 
 	// Benn's palette
-	purple      = "\033[38;5;141m" // bright purple
-	teal        = "\033[38;5;38m"  // deep teal
-	tealBright  = "\033[38;5;51m"  // bright cyan-teal
-	green       = "\033[38;5;46m"  // bright green
-	greenDim    = "\033[38;5;34m"  // darker green
-	red         = "\033[38;5;196m" // bright red
-	redDim      = "\033[38;5;124m" // darker red
-	yellow      = "\033[38;5;226m" // bright yellow
-	yellowDim   = "\033[38;5;178m" // amber
-	orange      = "\033[38;5;208m" // orange
-	white       = "\033[38;5;255m" // bright white
-	grey        = "\033[38;5;245m" // light grey
-	greyDark    = "\033[38;5;240m" // dark grey
+	purple     = "\033[38;5;141m" // bright purple
+	teal       = "\033[38;5;38m"  // deep teal
+	tealBright = "\033[38;5;51m"  // bright cyan-teal
+	green      = "\033[38;5;46m"  // bright green
+	greenDim   = "\033[38;5;34m"  // darker green
+	red        = "\033[38;5;196m" // bright red
+	redDim     = "\033[38;5;124m" // darker red
+	yellow     = "\033[38;5;226m" // bright yellow
+	yellowDim  = "\033[38;5;178m" // amber
+	orange     = "\033[38;5;208m" // orange
+	white      = "\033[38;5;255m" // bright white
+	grey       = "\033[38;5;245m" // light grey
+	greyDark   = "\033[38;5;240m" // dark grey
 )
 
 // HealthResponse mirrors the agent's /v1/health JSON structure
@@ -51,10 +51,10 @@ type HealthResponse struct {
 }
 
 type SystemInfo struct {
-	OS      string `json:"os"`
-	Arch    string `json:"arch"`
-	IP      string `json:"ip"`
-	HostID  string `json:"host_id"`
+	OS     string `json:"os"`
+	Arch   string `json:"arch"`
+	IP     string `json:"ip"`
+	HostID string `json:"host_id"`
 }
 
 // FetchHealth queries an agent's health endpoint

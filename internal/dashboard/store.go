@@ -13,14 +13,14 @@ import (
 
 // NodeCheck represents a single health check record for a node.
 type NodeCheck struct {
-	NodeName     string
-	DisplayIP    string
-	Healthy      bool
-	ServicesUp   int
+	NodeName      string
+	DisplayIP     string
+	Healthy       bool
+	ServicesUp    int
 	ServicesTotal int
-	Version      string
-	CheckedAt    time.Time
-	ResponseMs   int
+	Version       string
+	CheckedAt     time.Time
+	ResponseMs    int
 }
 
 // Store wraps a SQLite database for persisting node health checks.
