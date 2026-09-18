@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/bennbanks/gogitops/internal/agentlog"
@@ -244,9 +246,22 @@ func (a *Agent) RestartHandler(w http.ResponseWriter, r *http.Request) {
 		"hostname": a.node.Hostname,
 	})
 
-	// Flush response then exit — systemd will restart us
+	// Flush response, then restart IN PLACE: syscall.Exec replaces this
+	// process image with the same binary — same PID, no reliance on a
+	// service manager or spawn context. Same mechanism the self-updater
+	// uses (proven on every node): cron/launchd-spawned relaunches hang
+	// pre-main on macOS — exec sidesteps that entirely. Fall back to
+	// exit 0 (systemd Restart=always / cron keepalive) if exec fails.
 	go func() {
 		time.Sleep(500 * time.Millisecond)
+		a.logger.Action("agent", "agent restarting in place")
+		if runtime.GOOS != "windows" {
+			if exe, err := os.Executable(); err == nil {
+				if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
+					a.logger.Errorf("agent", "exec restart failed (%v) — falling back to exit", err)
+				}
+			}
+		}
 		a.logger.Action("agent", "agent exiting for restart")
 		os.Exit(0)
 	}()
@@ -456,12 +471,12 @@ func (a *Agent) nebulaIP() string {
 }
 
 // nebulaRunning: up if any of
-//   1. a nebula process is running (self-hosted nebula binary)
-//   2. a dnclient process is running (Defined Networking's wrapper — it
-//      embeds nebula, so the process name never contains "nebula"; this
-//      was the source of the long-standing false "down" on dnclient nodes)
-//   3. any interface carries a 10.200.0.x address (the tunnel exists —
-//      strongest signal, works regardless of process naming)
+//  1. a nebula process is running (self-hosted nebula binary)
+//  2. a dnclient process is running (Defined Networking's wrapper — it
+//     embeds nebula, so the process name never contains "nebula"; this
+//     was the source of the long-standing false "down" on dnclient nodes)
+//  3. any interface carries a 10.200.0.x address (the tunnel exists —
+//     strongest signal, works regardless of process naming)
 func (a *Agent) nebulaRunning() bool {
 	for _, pat := range []string{"nebula", "dnclient"} {
 		if err := exec.Command("pgrep", "-f", pat).Run(); err == nil {
