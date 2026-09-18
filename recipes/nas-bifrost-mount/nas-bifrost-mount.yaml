@@ -2,6 +2,7 @@ name: nas-bifrost-mount
 description: "Mount NAS Bifrost share (//10.2.0.103/Bifrost) at /media/benn/Bifrost via systemd .mount + .automount units — boot-safe, lazy (first access mounts). macOS: /Volumes/Bifrost via mount_smbfs."
 version: "1.0.0"
 labels: [laptop]
+auto_apply: true
 
 steps:
   - name: mount-bifrost

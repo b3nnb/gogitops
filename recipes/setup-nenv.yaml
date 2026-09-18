@@ -2,6 +2,7 @@ name: setup-nenv
 description: "Configure nenv CLI to connect to the fleet NetEnv server with a live bearer token"
 version: "1.0.0"
 labels: []
+auto_apply: true
 
 params:
   - name: server

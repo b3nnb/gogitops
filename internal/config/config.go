@@ -63,7 +63,8 @@ type AgentConfig struct {
 	GitRepo         string `yaml:"git_repo"`
 	GitBranch       string `yaml:"git_branch"`
 	GitPullInterval string `yaml:"git_pull_interval"`
-	TestsInterval   string `yaml:"tests_interval"` // agent self-test cadence ("30m"; "off"/"0" disables)
+	TestsInterval   string `yaml:"tests_interval"`   // agent self-test cadence ("30m"; "off"/"0" disables)
+	RecipesInterval string `yaml:"recipes_interval"` // daemon recipe auto-apply ("off" default; e.g. "10m" — new/changed recipes converge, full sweep daily)
 }
 
 type MeshConfig struct {

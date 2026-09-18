@@ -175,6 +175,7 @@ func buildRecipeSchema(labels, hostnames []string) map[string]any {
 			"version":        str("Recipe version (bump on breaking changes)."),
 			"labels":         fleetLabels,
 			"test_module":    map[string]any{"type": "boolean", "description": "Marks this recipe as a test module (excluded from recipe run-all; run via test run)."},
+			"auto_apply":     map[string]any{"type": "boolean", "description": "Daemon convergence (recipes_interval): only recipes with auto_apply: true are applied by the agent's auto-apply loop. Manual recipe run / run-all is unaffected. Default false."},
 			"node_overrides": nodeOverrides,
 			"steps": map[string]any{
 				"type":        "array",

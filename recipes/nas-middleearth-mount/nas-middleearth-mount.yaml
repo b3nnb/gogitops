@@ -2,6 +2,7 @@ name: nas-middleearth-mount
 description: "Mount NAS MiddleEarth share (//10.2.0.103/MiddleEarth) at /media/benn/MiddleEarth via systemd .mount + .automount units — boot-safe, lazy (first access mounts). macOS: /Volumes/MiddleEarth via mount_smbfs."
 version: "1.0.0"
 labels: [laptop]
+auto_apply: true
 
 steps:
   - name: mount-middleearth

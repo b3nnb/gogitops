@@ -1967,6 +1967,7 @@ type recipe struct {
 	Version     string   `yaml:"version"`
 	Labels      []string `yaml:"labels"`
 	TestModule  bool     `yaml:"test_module"`
+	AutoApply   bool     `yaml:"auto_apply"`
 	Params      []struct {
 		Name        string `yaml:"name"`
 		Description string `yaml:"description"`
@@ -2571,6 +2572,9 @@ func parseRecipe(content string) recipe {
 			} else if strings.HasPrefix(trimmed, "test_module:") {
 				v := strings.TrimSpace(strings.TrimPrefix(trimmed, "test_module:"))
 				r.TestModule = v == "true" || v == "yes"
+			} else if strings.HasPrefix(trimmed, "auto_apply:") {
+				v := strings.TrimSpace(strings.TrimPrefix(trimmed, "auto_apply:"))
+				r.AutoApply = v == "true" || v == "yes"
 			} else if strings.HasPrefix(trimmed, "steps:") {
 				inSteps = true
 			}
@@ -4114,6 +4118,22 @@ func runDaemon(args []string) {
 		go runFleetTestLoop(testsInterval, repoPath, hostname, wbhook, node.Labels)
 	} else {
 		log.Printf("fleet tests disabled (tests_interval=%q)", node.Agent.TestsInterval)
+	}
+
+	// Recipe auto-apply (convergence): with recipes_interval set, the daemon
+	// applies new/changed/failed recipes itself — no manual recipe run needed.
+	// Default off; mirrors tests_interval semantics ("off"/"0" or unset).
+	recipesInterval := time.Duration(0)
+	if ri := node.Agent.RecipesInterval; ri != "" {
+		if ri != "off" && ri != "0" {
+			if d, err := time.ParseDuration(ri); err == nil {
+				recipesInterval = d
+			}
+		}
+	}
+	if recipesInterval > 0 {
+		log.Printf("recipe auto-apply enabled: converging every %s (changed/new/failed recipes; full sweep every 24h)", recipesInterval)
+		go runRecipeApplyLoop(recipesInterval, repoPath, hostname, wbhook)
 	}
 
 	interval := time.Duration(*intervalS) * time.Second

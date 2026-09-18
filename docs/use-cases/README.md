@@ -44,6 +44,7 @@ steps:
 | Call a typed native function (no shell) | [native-functions](native-functions.md) |
 | Prove my recipe works (tests) | [test-your-recipe](test-your-recipe.md) |
 | Run recipes / find drift / fix a wedged repo | [run-and-troubleshoot](run-and-troubleshoot.md) |
+| Make the daemon apply recipes itself (convergence) | [auto-apply-recipes](auto-apply-recipes.md) |
 
 Related: [tags & labels guide](../tags.md) · [recipe spec](../recipe-spec.md) ·
 [capability placement (DESIGN.md)](../design.md)
