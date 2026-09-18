@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -31,7 +33,7 @@ func resolveWebhook(url string) string {
 	if len(url) > 5 && url[:5] == "nenv:" {
 		ref := url[5:] // e.g. "ctl/ALERT_DISCORD_WEBHOOK"
 		ns, key := splitNenvRef(ref)
-		out, err := exec.Command("nenv", "get", ns, key).Output()
+		out, err := exec.Command(nenvBin(), "get", ns, key).Output()
 		if err == nil {
 			resolved := trimNewline(string(out))
 			if resolved != "" {
@@ -40,6 +42,23 @@ func resolveWebhook(url string) string {
 		}
 	}
 	return url
+}
+
+// nenvBin resolves the nenv CLI with a ~/.local/bin fallback — systemd user
+// daemons run with the default PATH, which does not include ~/.local/bin
+// (user-mode nenv installs live there; server hosts use /usr/local/bin).
+func nenvBin() string {
+	if _, err := exec.LookPath("nenv"); err == nil {
+		return "nenv"
+	}
+	home, herr := os.UserHomeDir()
+	if herr == nil {
+		cand := filepath.Join(home, ".local", "bin", "nenv")
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
+	}
+	return "nenv"
 }
 
 func splitNenvRef(ref string) (string, string) {

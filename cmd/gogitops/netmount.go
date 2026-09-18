@@ -157,11 +157,16 @@ func credsFromNenv(spec, home string) (string, string, bool) {
 	file := filepath.Join(home, ".smbcredentials")
 
 	// Built with plain shell indirection ($NU/$NP) — no secrets in the text.
-	bootstrap := fmt.Sprintf(`if ! command -v nenv >/dev/null 2>&1; then
+	// nenv resolves with a ~/.local/bin fallback: daemons run with the systemd
+	// default PATH where ~/.local/bin is absent (framework, other user-mode
+	// installs), while server hosts keep nenv in /usr/local/bin.
+	bootstrap := fmt.Sprintf(`NENV_BIN=$(command -v nenv 2>/dev/null || true)
+if [ -z "$NENV_BIN" ] && [ -x "$HOME/.local/bin/nenv" ]; then NENV_BIN="$HOME/.local/bin/nenv"; fi
+if [ -z "$NENV_BIN" ]; then
   echo "warn=nenv-cli-not-installed"
 fi
-NU=$(nenv get %s %s 2>/dev/null)
-NP=$(nenv get %s %s 2>/dev/null)
+NU=$(${NENV_BIN:-nenv} get %s %s 2>/dev/null)
+NP=$(${NENV_BIN:-nenv} get %s %s 2>/dev/null)
 if [ -n "$NU" ] && [ -n "$NP" ]; then
   { echo "username=$NU"; echo "password=$NP"; } > %s
   chmod 600 %s

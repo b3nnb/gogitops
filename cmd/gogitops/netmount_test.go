@@ -92,8 +92,9 @@ func TestCredsFromNenv(t *testing.T) {
 		t.Errorf("file = %q", file)
 	}
 	for _, want := range []string{
-		"nenv get global NAS_USERNAME",
-		"nenv get global NAS_PASSWORD",
+		"get global NAS_USERNAME",
+		"get global NAS_PASSWORD",
+		"NENV_BIN=",
 		"creds-refreshed-from-nenv",
 		"chmod 600 /home/benn/.smbcredentials",
 		"state=fail reason=no-credentials",

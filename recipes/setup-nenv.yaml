@@ -1,62 +1,36 @@
 name: setup-nenv
 description: "Configure nenv CLI to connect to the fleet NetEnv server with a live bearer token"
-version: "1.1.0"
-labels: []
+version: "1.2.0"
 auto_apply: true
+labels: []
 
-params:
-  - name: server
-    description: "NetEnv server URL (default: http://10.2.0.102:7200)"
-    required: false
+# Token delivery: NENV_TOKEN env var on the gogitops agent (systemd unit
+# Environment=). Config is written from the LIVE token at recipe runtime —
+# never baked into the ISO or committed. Server override: GOENV_NENV_SERVER.
+#
+# Capture-free by design: the engine's parse: regex stores capture GROUPS
+# into {{1}}..{{n}} (overwritten by each parse step) — NOT step outputs.
+# The v1.0/v1.1 {{1}}/{{2}}/{{3}} positional design never worked. All state
+# here flows through bash env ($HOME, $NENV_TOKEN) — no {{n}} at all.
 
 steps:
-  # ── Detect user home ──
-  - name: detect-home
-    description: "Get home directory"
-    command: "echo $HOME"
-    parse: regex
-    pattern: "(.+)"
-
-  # ── Create config directory ──
   - name: create-nenv-config-dir
     description: "Create ~/.config/nenv/"
-    command: "mkdir -p {{1}}/.config/nenv"
-    on_failure: abort
-
-  # ── Resolve server URL ──
-  - name: resolve-server
-    description: "Determine NetEnv server URL"
-    command: 'echo "{{server:-http://10.2.0.102:7200}}"'
-    parse: regex
-    pattern: "(.+)"
-
-  # ── Check for token ──
-  # Token comes from NENV_TOKEN env var (set by gogitops agent from live beacon config).
-  # This way the token is NEVER baked into the ISO — always pulled live at recipe runtime.
-  # Missing token = hard fail (abort): convergence must retry, not record a false-ok.
-  - name: check-token
-    description: "Verify a token is available from environment (abort if missing)"
-    command: 'test -n "$NENV_TOKEN" && echo "ok" || { echo "missing: NENV_TOKEN not set in agent environment"; exit 1; }'
-    parse: regex
-    pattern: "(.+)"
+    command: 'mkdir -p "$HOME/.config/nenv"'
     on_failure: abort
 
   - name: write-nenv-config
-    description: "Write nenv config.toml with server URL and live token"
-    command: 'printf "server = \"%s\"\ntoken = \"%s\"\nnamespace = \"global\"\n" "{{2}}" "$NENV_TOKEN" > {{1}}/.config/nenv/config.toml && chmod 600 {{1}}/.config/nenv/config.toml'
-    when: "test '{{3}}' = 'ok'"
+    description: "Write nenv config.toml from the live agent-env token (abort if missing)"
+    command: 'test -n "$NENV_TOKEN" && printf "server = \"%s\"\ntoken = \"%s\"\nnamespace = \"global\"\n" "${GOENV_NENV_SERVER:-http://10.2.0.102:7200}" "$NENV_TOKEN" > "$HOME/.config/nenv/config.toml" && chmod 600 "$HOME/.config/nenv/config.toml" || { echo "missing: NENV_TOKEN not set in agent environment"; exit 1; }'
     on_failure: abort
 
-  # ── Verify nenv works ──
   - name: verify-nenv
-    description: "Test nenv can reach the server"
-    command: 'nenv list global 2>&1 | head -3'
-    when: "test '{{3}}' = 'ok'"
-    on_failure: continue
+    description: "Test nenv reaches the server and lists the global namespace"
+    command: 'NENV_BIN=$(command -v nenv 2>/dev/null || true); [ -z "$NENV_BIN" ] && [ -x "$HOME/.local/bin/nenv" ] && NENV_BIN="$HOME/.local/bin/nenv"; test -n "$NENV_BIN" || { echo "missing: nenv CLI not found"; exit 1; }; "$NENV_BIN" list global >/dev/null 2>&1 && echo "reachable" || { echo "failed: nenv cannot reach the server (config.toml written — check server URL/token)"; exit 1; }'
+    expect: "reachable"
+    on_failure: abort
 
-  # ── Install nenv as system secret loader ──
   - name: nenv-install-loader
-    description: "Install nenv as a user secret loader"
-    command: 'nenv install --user 2>/dev/null || echo "nenv install not available, config file written"'
-    when: "test '{{3}}' = 'ok'"
+    description: "Install nenv as a user secret loader (best-effort)"
+    command: 'NENV_BIN=$(command -v nenv 2>/dev/null || true); [ -z "$NENV_BIN" ] && [ -x "$HOME/.local/bin/nenv" ] && NENV_BIN="$HOME/.local/bin/nenv"; "$NENV_BIN" install --user >/dev/null 2>&1 || echo "nenv install not available, config file written"'
     on_failure: continue
