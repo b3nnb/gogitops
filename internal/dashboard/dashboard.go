@@ -51,6 +51,14 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
     text-transform: uppercase;
     letter-spacing: 1px;
   }
+  .topbar .ver {
+    font-size: 12px;
+    font-family: "SF Mono", "Fira Code", monospace;
+    color: var(--bg);
+    background: var(--accent);
+    border-radius: 10px;
+    padding: 2px 10px;
+  }
   .topbar .time {
     margin-left: auto;
     font-size: 13px;
@@ -351,6 +359,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
 <div class="topbar">
   <span class="brand">gogitops</span>
   <span class="subtitle">status dashboard</span>
+  <span class="ver">{{if .Version}}{{.Version}}{{else}}dev{{end}}</span>
   <span class="time">{{.Now}}</span>
 </div>
 
@@ -660,6 +669,13 @@ function loadDeploySettings() {
 }
 
 function updateDeploy() {
+  // Escape-proof: build shell text from char codes — no source backslash
+  // counting, ever. (The old hand-escaped version had \'\' string
+  // collisions + doubled backslashes that killed the whole script block.)
+  var BS = String.fromCharCode(92);   // backslash
+  var LF = String.fromCharCode(10);   // newline
+  var NL = BS + LF;                   // shell line continuation
+
   var host = document.getElementById('deployHostname').value || '<hostname>';
   var bind = document.getElementById('deployBind').value || '0.0.0.0';
   var port = document.getElementById('deployPort').value || '7780';
@@ -667,53 +683,81 @@ function updateDeploy() {
   var dash = document.getElementById('deployDash').value.trim() || DASH_URL;
   var repo = document.getElementById('deployRepo').value.trim();
 
-  var cmd = 'gogitops daemon \\\n  -hostname ' + host + ' \\\n  -bind ' + bind + ' \\\n  -port ' + port + ' \\\n  -interval 60 \\\n  -dashboard ' + dash;
+  var cmd = 'gogitops daemon ' + NL +
+    '  -hostname ' + host + ' ' + NL +
+    '  -bind ' + bind + ' ' + NL +
+    '  -port ' + port + ' ' + NL +
+    '  -interval 60 ' + NL +
+    '  -dashboard ' + dash;
   document.getElementById('cmdCode').textContent = cmd;
 
   // One-liner install: download from releases + run
   var goos = arch.split('/')[0];
   var goarch = arch.split('/')[1];
-  var ext = goos === 'darwin' ? 'darwin-' + goarch : goos + '-' + goarch;
-  var installCmd = 'curl -sL ' + dash + '/api/binary/' + goos + '/' + goarch + ' -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\n' + cmd;
+  var installCmd = 'curl -sL ' + dash + '/api/binary/' + goos + '/' + goarch + ' -o /usr/local/bin/gogitops && ' + NL +
+    'chmod +x /usr/local/bin/gogitops && ' + NL + cmd;
   if (goos === 'darwin') {
-    installCmd = '# macOS: download binary, ad-hoc sign, then run\ncurl -sL ' + dash + '/api/binary/' + goos + '/' + goarch + ' -o /usr/local/bin/gogitops && \\\nchmod +x /usr/local/bin/gogitops && \\\ncodesign --force --sign - /usr/local/bin/gogitops && \\\n' + cmd;
+    installCmd = '# macOS: download binary, ad-hoc sign, then run' + LF +
+      'curl -sL ' + dash + '/api/binary/' + goos + '/' + goarch + ' -o /usr/local/bin/gogitops && ' + NL +
+      'chmod +x /usr/local/bin/gogitops && ' + NL +
+      'codesign --force --sign - /usr/local/bin/gogitops && ' + NL + cmd;
   }
   // Bake installer config: agent.env + config repo clone
   if (goos === 'linux' && (dash || repo)) {
-    var envLines = 'GOGITOPS_HOSTNAME=' + host + '\\nGOGITOPS_BIND=' + bind + '\\nGOGITOPS_PORT=' + port + '\\nGOGITOPS_DASHBOARD_URL=' + dash + '\\n';
-    if (repo) { envLines += 'GOGITOPS_REPO_URL=' + repo + '\\n'; }
-    installCmd = 'sudo mkdir -p /etc/gogitops && \\\nprintf '' + envLines + '' | sudo tee /etc/gogitops/agent.env > /dev/null && \\\n' + installCmd;
+    var envLines = 'GOGITOPS_HOSTNAME=' + host + LF +
+      'GOGITOPS_BIND=' + bind + LF +
+      'GOGITOPS_PORT=' + port + LF +
+      'GOGITOPS_DASHBOARD_URL=' + dash + LF;
+    if (repo) { envLines += 'GOGITOPS_REPO_URL=' + repo + LF; }
+    installCmd = 'sudo mkdir -p /etc/gogitops && ' + NL +
+      "printf '%s' '" + envLines + "' | sudo tee /etc/gogitops/agent.env > /dev/null && " + NL + installCmd;
   }
   if (repo) {
-    installCmd = installCmd.replace('gogitops daemon', 'git clone ' + repo + ' ~/.config/gogitops && \\\ngogitops daemon');
+    installCmd = installCmd.replace('gogitops daemon', 'git clone ' + repo + ' ~/.config/gogitops && ' + NL + 'gogitops daemon');
   }
   document.getElementById('installCode').textContent = installCmd;
 
   // Systemd unit
-  var systemd = '[Unit]\nDescription=GoGitOps Agent\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/gogitops daemon \\\n  -hostname ' + host + ' \\\n  -bind ' + bind + ' \\\n  -port ' + port + ' \\\n  -interval 60 \\\n  -dashboard ' + dash + '\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target';
+  var systemd = '[Unit]' + LF + 'Description=GoGitOps Agent' + LF + 'After=network.target' + LF + LF +
+    '[Service]' + LF + 'Type=simple' + LF +
+    'ExecStart=/usr/local/bin/gogitops daemon ' + NL +
+    '  -hostname ' + host + ' ' + NL +
+    '  -bind ' + bind + ' ' + NL +
+    '  -port ' + port + ' ' + NL +
+    '  -interval 60 ' + NL +
+    '  -dashboard ' + dash + LF +
+    'Restart=always' + LF + 'RestartSec=5' + LF + LF +
+    '[Install]' + LF + 'WantedBy=multi-user.target';
   document.getElementById('systemdCode').textContent = systemd;
 
   // LaunchAgent
-  var launchd = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n    <key>Label</key>\n    <string>com.benn.gogitops</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>/usr/local/bin/gogitops</string>\n        <string>daemon</string>\n        <string>-hostname</string>\n        <string>' + host + '</string>\n        <string>-bind</string>\n        <string>' + bind + '</string>\n        <string>-port</string>\n        <string>' + port + '</string>\n        <string>-interval</string>\n        <string>60</string>\n        <string>-dashboard</string>\n        <string>' + dash + '</string>\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n    <key>KeepAlive</key>\n    <true/>\n    <key>StandardOutPath</key>\n    <string>/tmp/gogitops.log</string>\n    <key>StandardErrorPath</key>\n    <string>/tmp/gogitops.err</string>\n</dict>\n</plist>';
-  document.getElementById('launchdCode').textContent = launchd;
+  var P = function(s) { return '<string>' + s + '</string>'; };
+  var launchd = '<?xml version="1.0" encoding="UTF-8"?>' + LF +
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' + LF +
+    '<plist version="1.0">' + LF + '<dict>' + LF +
+    '    <key>Label</key>' + LF + '    ' + P('com.benn.gogitops') + LF +
+    '    <key>ProgramArguments</key>' + LF + '    <array>' + LF +
+    '        ' + P('/usr/local/bin/gogitops') + LF +
+    '        ' + P('daemon') + LF +
+    '        ' + P('-hostname') + LF + '        ' + P(host) + LF +
+    '        ' + P('-bind') + LF + '        ' + P(bind) + LF +
+    '        ' + P('-port') + LF + '        ' + P(port) + LF +
+    '        ' + P('-interval') + LF + '        ' + P('60') + LF +
+    '        ' + P('-dashboard') + LF + '        ' + P(dash) + LF +
+    '    </array>' + LF +
+    '    <key>RunAtLoad</key>' + LF + '    <true/>' + LF +
+    '    <key>KeepAlive</key>' + LF + '    <true/>' + LF +
+    '    <key>StandardOutPath</key>' + LF + '    ' + P('/tmp/gogitops.log') + LF +
+    '    <key>StandardErrorPath</key>' + LF + '    ' + P('/tmp/gogitops.err') + LF +
+    '  </dict>' + LF + '</plist>';
   if (repo || dash) {
     var envDict = '';
-    if (dash) { envDict += '        <key>GOGITOPS_DASHBOARD_URL</key>\n        <string>' + dash + '</string>\n'; }
-    if (repo) { envDict += '        <key>GOGITOPS_REPO_URL</key>\n        <string>' + repo + '</string>\n'; }
-    launchd = launchd.replace('    </dict>\n</plist>', '    <key>EnvironmentVariables</key>\n    <dict>\n' + envDict + '    </dict>\n  </dict>\n</plist>');
+    if (dash) { envDict += '    <key>GOGITOPS_DASHBOARD_URL</key>' + LF + '    ' + P(dash) + LF; }
+    if (repo) { envDict += '    <key>GOGITOPS_REPO_URL</key>' + LF + '    ' + P(repo) + LF; }
+    launchd = launchd.replace('  </dict>' + LF + '</plist>',
+      '    <key>EnvironmentVariables</key>' + LF + '    <dict>' + LF + envDict + '    </dict>' + LF + '  </dict>' + LF + '</plist>');
   }
-}
-
-function copyCode(id, btn) {
-  var text = document.getElementById(id).textContent;
-  navigator.clipboard.writeText(text).then(function() {
-    btn.textContent = 'copied!';
-    btn.classList.add('copied');
-    setTimeout(function() {
-      btn.textContent = 'copy';
-      btn.classList.remove('copied');
-    }, 2000);
-  });
+  document.getElementById('launchdCode').textContent = launchd;
 }
 
 // Init deploy on load
