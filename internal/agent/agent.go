@@ -455,15 +455,20 @@ func (a *Agent) nebulaIP() string {
 	return config.DetectNebulaIP()
 }
 
+// nebulaRunning: up if any of
+//   1. a nebula process is running (self-hosted nebula binary)
+//   2. a dnclient process is running (Defined Networking's wrapper — it
+//      embeds nebula, so the process name never contains "nebula"; this
+//      was the source of the long-standing false "down" on dnclient nodes)
+//   3. any interface carries a 10.200.0.x address (the tunnel exists —
+//      strongest signal, works regardless of process naming)
 func (a *Agent) nebulaRunning() bool {
-	if _, err := os.Stat("/proc"); err == nil {
-		cmd := exec.Command("pgrep", "-f", "nebula")
-		if err := cmd.Run(); err == nil {
+	for _, pat := range []string{"nebula", "dnclient"} {
+		if err := exec.Command("pgrep", "-f", pat).Run(); err == nil {
 			return true
 		}
 	}
-	cmd := exec.Command("pgrep", "-f", "nebula")
-	return cmd.Run() == nil
+	return config.DetectNebulaIP() != ""
 }
 
 // listDirNames returns directory names in a path
