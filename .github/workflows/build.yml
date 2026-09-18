@@ -147,6 +147,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout netenv repo
+        uses: actions/checkout@v4
+        with:
+          repository: b3nnb/netenv
+          path: netenv-repo
+          token: ${{ secrets.GH_PAT }}
+
       - name: Build all platform binaries
         run: |
           mkdir -p binout/bin
@@ -156,6 +163,12 @@ jobs:
             name="gogitops-$p"
             [ "$os" = "windows" ] && name="$name.exe"
             GOOS=$os GOARCH=$arch go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME} -X github.com/bennbanks/gogitops/internal/agent.Version=${GITHUB_REF_NAME}" -o "binout/bin/$name" ./cmd/gogitops
+          done
+          # nenv CLI (netenv client) rides the same rail — nodes install it
+          # via the setup-nenv recipe straight from this branch.
+          for p in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+            os="${p%-*}"; arch="${p#*-}"
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go -C netenv-repo build -ldflags "-s -w" -o "../binout/bin/nenv-$p" ./cmd/nenv
           done
           echo "${GITHUB_REF_NAME}" > binout/VERSION
           ls -la binout/bin/

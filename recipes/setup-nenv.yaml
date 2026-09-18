@@ -1,19 +1,27 @@
 name: setup-nenv
-description: "Configure nenv CLI to connect to the fleet NetEnv server with a live bearer token"
-version: "1.2.0"
+description: "Install + configure the nenv CLI to reach the fleet NetEnv server with a live bearer token"
+version: "1.3.0"
 auto_apply: true
 labels: []
 
-# Token delivery: NENV_TOKEN env var on the gogitops agent (systemd unit
-# Environment=). Config is written from the LIVE token at recipe runtime —
-# never baked into the ISO or committed. Server override: GOENV_NENV_SERVER.
+# Full node-side nenv convergence, no manual steps:
+#   1. install-nenv-cli  — pull the nenv binary for this OS/arch from the
+#      fleet's binaries branch (same git/SSH auth the agent self-update
+#      already uses; skips when the CLI is already present)
+#   2. config.toml       — written from the LIVE NENV_TOKEN env var set on
+#      the gogitops agent (systemd unit Environment=) — never baked into the
+#      ISO or committed. Server override: GOENV_NENV_SERVER.
 #
 # Capture-free by design: the engine's parse: regex stores capture GROUPS
 # into {{1}}..{{n}} (overwritten by each parse step) — NOT step outputs.
-# The v1.0/v1.1 {{1}}/{{2}}/{{3}} positional design never worked. All state
-# here flows through bash env ($HOME, $NENV_TOKEN) — no {{n}} at all.
+# All state here flows through bash env ($HOME, $NENV_TOKEN, {{repo}}).
 
 steps:
+  - name: install-nenv-cli
+    description: "Install the nenv CLI from the fleet binaries branch (skips when present)"
+    command: 'NENV_BIN=$(command -v nenv 2>/dev/null || true); [ -z "$NENV_BIN" ] && [ -x "$HOME/.local/bin/nenv" ] && NENV_BIN="$HOME/.local/bin/nenv"; if [ -n "$NENV_BIN" ]; then echo "already-present"; exit 0; fi; OS=$(uname -s | tr "[:upper:]" "[:lower:]"); ARCH=$(uname -m); [ "$ARCH" = "x86_64" ] && ARCH=amd64; [ "$ARCH" = "aarch64" ] && ARCH=arm64; git -C {{repo}} fetch -q origin binaries 2>/dev/null || true; git -C {{repo}} show "origin/binaries:bin/nenv-$OS-$ARCH" > "$HOME/.local/bin/nenv" 2>/dev/null || { echo "missing: nenv-$OS-$ARCH not found on the binaries branch"; exit 1; }; chmod 755 "$HOME/.local/bin/nenv"; "$HOME/.local/bin/nenv" --help >/dev/null 2>&1 || { echo "broken: nenv binary will not run on this platform"; exit 1; }; echo "installed: nenv-$OS-$ARCH"'
+    expect_regex: "(already-present|installed: nenv-)"
+    on_failure: abort
   - name: create-nenv-config-dir
     description: "Create ~/.config/nenv/"
     command: 'mkdir -p "$HOME/.config/nenv"'
