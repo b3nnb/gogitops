@@ -3,6 +3,10 @@
   "additionalProperties": false,
   "description": "Declarative operational procedure. Emitted by `gogitops recipe schema` — regenerate after agent updates: gogitops recipe schema -repo . -out recipes/recipe-schema.json",
   "properties": {
+    "auto_apply": {
+      "description": "Daemon convergence (recipes_interval): only recipes with auto_apply: true are applied by the agent's auto-apply loop. Manual recipe run / run-all is unaffected. Default false.",
+      "type": "boolean"
+    },
     "description": {
       "description": "Human-readable description of what this recipe does.",
       "type": "string"
@@ -11,19 +15,14 @@
       "description": "Which nodes run this recipe (empty = all). Union of every label in mesh.d/ — add new labels to mesh.d first.",
       "items": {
         "enum": [
-          "android",
-          "aws",
           "compute",
           "docker-host",
           "gpu",
           "hermes-host",
           "image-gen",
-          "infra",
           "laptop",
           "llm-inference",
           "lora-training",
-          "mobile",
-          "nebula-lighthouse",
           "primary-compute",
           "trader-host"
         ],
@@ -52,9 +51,7 @@
         "enum": [
           "framework",
           "friday",
-          "lighthouse",
-          "mini",
-          "pixel"
+          "mini"
         ]
       },
       "type": "object"
@@ -134,19 +131,14 @@
             "description": "Step is skipped if the node has ANY of these labels.",
             "items": {
               "enum": [
-                "android",
-                "aws",
                 "compute",
                 "docker-host",
                 "gpu",
                 "hermes-host",
                 "image-gen",
-                "infra",
                 "laptop",
                 "llm-inference",
                 "lora-training",
-                "mobile",
-                "nebula-lighthouse",
                 "primary-compute",
                 "trader-host"
               ],
@@ -158,19 +150,14 @@
             "description": "Node must have ALL of these labels for this step to run.",
             "items": {
               "enum": [
-                "android",
-                "aws",
                 "compute",
                 "docker-host",
                 "gpu",
                 "hermes-host",
                 "image-gen",
-                "infra",
                 "laptop",
                 "llm-inference",
                 "lora-training",
-                "mobile",
-                "nebula-lighthouse",
                 "primary-compute",
                 "trader-host"
               ],
@@ -269,6 +256,27 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "tags": {
+            "additionalProperties": false,
+            "description": "Built-in tag step: add/remove labels on THIS node's own nodes/\u003chostname\u003e.yaml (idempotent, comment-preserving; submits via the node/\u003chostname\u003e branch — CI opens the self-sync PR).",
+            "properties": {
+              "add": {
+                "description": "Labels to add to this node.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "remove": {
+                "description": "Labels to remove from this node.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
           },
           "when": {
             "description": "Shell test — step only runs when this command exits 0. Re-evaluated every run, use to detect capabilities.",

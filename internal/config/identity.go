@@ -337,7 +337,17 @@ func saveOwnMeshEntry(repoDir, hostname string, p Peer) {
 // behavior) — a node without push credentials simply keeps its entry current
 // locally; never fatal.
 func submitMeshFile(repoDir, hostname string) {
-	rel := filepath.ToSlash(filepath.Join("mesh.d", hostname+".yaml"))
+	SubmitSelfFiles(repoDir, hostname)
+}
+
+// SubmitSelfFiles stages and pushes the node's OWN disjoint files —
+// mesh.d/<hostname>.yaml and nodes/<hostname>.yaml — to
+// refs/heads/node/<hostname>. Beyond mesh refresh and first enrollment
+// this also carries RECIPE-driven changes to the node's own config
+// (the tags: step), so a node's self-modifications all ride the same
+// single-writer submission mailbox. Every failure degrades to
+// local-only; never fatal.
+func SubmitSelfFiles(repoDir, hostname string) {
 	run := func(args ...string) (string, bool) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = repoDir
@@ -347,18 +357,23 @@ func submitMeshFile(repoDir, hostname string) {
 	if out, ok := run("rev-parse", "--is-inside-work-tree"); !ok || out != "true" {
 		return // not a git repo (tests, ad-hoc checkouts) — local-only
 	}
-	if out, ok := run("add", "--", rel); !ok {
-		fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: git add: %s\n", out)
-		return
+	meshRel := filepath.ToSlash(filepath.Join("mesh.d", hostname+".yaml"))
+	if _, err := os.Stat(filepath.Join(repoDir, meshRel)); err == nil {
+		if out, ok := run("add", "--", meshRel); !ok {
+			fmt.Fprintf(os.Stderr, "[gogitops] submit local-only: git add %s: %s\n", meshRel, out)
+			return
+		}
 	}
 	enrolling := false
+	nodeCfgChanged := false
 	nodeCfgRel := filepath.ToSlash(filepath.Join("nodes", hostname+".yaml"))
 	if _, err := os.Stat(filepath.Join(repoDir, nodeCfgRel)); err == nil {
-		// enrollment: our node config exists locally but not on origin/main
-		// yet → include it in the same submission
 		if _, ok := run("cat-file", "-e", "origin/main:"+nodeCfgRel); !ok {
-			if _, ok := run("add", "--", nodeCfgRel); ok {
-				enrolling = true
+			enrolling = true
+		}
+		if _, ok := run("add", "--", nodeCfgRel); ok {
+			if _, ok := run("diff", "--cached", "--quiet", "--", nodeCfgRel); !ok {
+				nodeCfgChanged = true
 			}
 		}
 	}
@@ -368,9 +383,11 @@ func submitMeshFile(repoDir, hostname string) {
 	msg := "mesh: " + hostname + " self-refresh (agent)"
 	if enrolling {
 		msg = "node: " + hostname + " enrollment (agent)"
+	} else if nodeCfgChanged {
+		msg = "node: " + hostname + " self-sync (agent)"
 	}
 	if out, ok := run("commit", "-m", msg); !ok {
-		fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: git commit: %s\n", out)
+		fmt.Fprintf(os.Stderr, "[gogitops] submit local-only: git commit: %s\n", out)
 		return
 	}
 	// Push to the node's own branch — a submission mailbox owned by exactly
@@ -378,10 +395,10 @@ func submitMeshFile(repoDir, hostname string) {
 	// node's commits). CI opens/updates the PR; main stays human-gated.
 	branch := "refs/heads/node/" + hostname
 	if out, ok := run("push", "--force", "origin", "HEAD:"+branch); !ok {
-		fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: git push: %s\n", out)
+		fmt.Fprintf(os.Stderr, "[gogitops] submit local-only: git push: %s\n", out)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[gogitops] mesh submitted to %s — CI opens the self-sync PR\n", branch)
+	fmt.Fprintf(os.Stderr, "[gogitops] submitted to %s — CI opens the self-sync PR\n", branch)
 }
 
 // SyncSelfToMesh refreshes a KNOWN machine's own mesh entry at daemon

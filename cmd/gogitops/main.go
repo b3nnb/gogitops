@@ -157,6 +157,8 @@ func main() {
 			runDashboard(os.Args[2:])
 		case "recipe":
 			cmdRecipe(os.Args[2:])
+		case "tags":
+			cmdTags(os.Args[2:])
 		case "inspect":
 			cmdInspect(os.Args[2:])
 		case "update":
@@ -1696,6 +1698,8 @@ func recipeNew(args []string) {
 #   package: X + sources: "[pkg:X, brew:alt]"   → agent picks apt/dnf/apk/brew/...
 #   schedule: hourly + command: Y              → agent installs idempotent cron
 #   mount: <label> + device: + at: + options: + fstab:  → idempotent mount
+#   tags: {add: [x], remove: [y]}  → edit THIS node's own labels (idempotent,
+#                                   comment-preserving; submits node/<hostname>)
 #   when: guard runs on every OS (detect capabilities, don't assume them)
 # Per-node overrides (any recipe may carry these):
 #   node_overrides:
@@ -1920,6 +1924,61 @@ func cmdFunctions(args []string) {
 	fmt.Printf("  \033[38;5;178muser space:\033[0m repo modules/ (script: steps) — may CALL stdlib, never define in it\n\n")
 }
 
+// ── tags: manage this node's own labels ────────────────────────────────────
+
+// cmdTags implements `gogitops tags apply` — add/remove labels on this
+// node's own nodes/<hostname>.yaml. Idempotent and comment-preserving;
+// changes submit through the node's own node/<hostname> branch (CI opens
+// the self-sync PR). Invoked directly from the terminal and by the
+// recipe runner's `tags:` step translation.
+func cmdTags(args []string) {
+	if len(args) == 0 || args[0] != "apply" {
+		fmt.Fprintf(os.Stderr, "usage: gogitops tags apply [-repo path] [-hostname name] [-add a,b] [-remove c,d]\n\n"+
+			"Add/remove labels on this node's own nodes/<hostname>.yaml.\n"+
+			"Idempotent, comment-preserving; submits via the node/<hostname> branch.\n")
+		os.Exit(1)
+	}
+	fs := flag.NewFlagSet("tags apply", flag.ExitOnError)
+	repoDir := fs.String("repo", ".", "path to gogitops repo")
+	hostname := fs.String("hostname", "", "node hostname (default: detected system hostname)")
+	addCSV := fs.String("add", "", "comma-separated labels to add")
+	removeCSV := fs.String("remove", "", "comma-separated labels to remove")
+	fs.Parse(args[1:])
+
+	splitCSV := func(csv string) []string {
+		var out []string
+		for _, t := range strings.Split(csv, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				out = append(out, t)
+			}
+		}
+		return out
+	}
+	add := splitCSV(*addCSV)
+	remove := splitCSV(*removeCSV)
+	if len(add) == 0 && len(remove) == 0 {
+		fmt.Println("tags: nothing to do")
+		return
+	}
+	host := *hostname
+	if host == "" {
+		host = config.DetectHostname()
+	}
+	resolved := resolveRepoDir(*repoDir)
+
+	before, after, changed, err := config.ApplySelfTags(resolved, host, add, remove)
+	if err != nil {
+		cli.PrintError("tags: " + err.Error())
+		os.Exit(1)
+	}
+	if !changed {
+		fmt.Printf("tags: no change (%s = %v)\n", host, before)
+		return
+	}
+	fmt.Printf("tags: %s %v → %v\n", host, before, after)
+	config.SubmitSelfFiles(resolved, host)
+}
+
 // ── Recipe runner ─────────────────────────────────────────────────────────
 
 type recipeStep struct {
@@ -1959,6 +2018,16 @@ type recipeStep struct {
 	MountOptions string   `yaml:"options"`
 	MountFstab   bool     `yaml:"fstab"`
 	MountCreds   string   `yaml:"credentials"`
+	Tags         *stepTags `yaml:"tags"`
+}
+
+// stepTags is the declarative tag-management step: add/remove labels on
+// THIS node's own nodes/<hostname>.yaml. Idempotent, comment-preserving;
+// changes ride the node's own node/<hostname> submission branch (CI opens
+// the self-sync PR — the fleet sees them after merge).
+type stepTags struct {
+	Add    []string `yaml:"add"`
+	Remove []string `yaml:"remove"`
 }
 
 type recipe struct {
@@ -2218,6 +2287,24 @@ func recipeRun(args []string, all *runAllCtx) {
 		}
 		if step.Mount != "" {
 			cmd = translateMount(step)
+		}
+
+		// Tags step: translated into a self-invoking command (same pattern
+		// as mount) so it inherits the full pipeline — dry-run printing,
+		// retries, expect/parse, verbose. The tags subcommand does the
+		// real work: comment-preserving edit + node-branch submission.
+		if step.Tags != nil && (len(step.Tags.Add) > 0 || len(step.Tags.Remove) > 0) {
+			exe := "gogitops"
+			if e, err := os.Executable(); err == nil {
+				exe = shellQuote(e)
+			}
+			cmd = substituteVars(exe+" tags apply -repo {{repo}} -hostname {{hostname}}", vars)
+			if len(step.Tags.Add) > 0 {
+				cmd += " -add " + shellQuote(strings.Join(step.Tags.Add, ","))
+			}
+			if len(step.Tags.Remove) > 0 {
+				cmd += " -remove " + shellQuote(strings.Join(step.Tags.Remove, ","))
+			}
 		}
 
 		// OS filter
@@ -2544,9 +2631,15 @@ func recipeRun(args []string, all *runAllCtx) {
 
 // parseRecipe does a simple line-based YAML parse for recipe files.
 // Avoids adding gopkg.in/yaml.v3 dependency.
+var (
+	tagAddFlowRe    = regexp.MustCompile(`add:\s*\[([^\]]*)\]`)
+	tagRemoveFlowRe = regexp.MustCompile(`remove:\s*\[([^\]]*)\]`)
+)
+
 func parseRecipe(content string) recipe {
 	r := recipe{}
 	var inSteps bool
+	var inTags bool // inside a step's `tags:` block (nested add:/remove:)
 	var currentStep *recipeStep
 
 	for _, line := range strings.Split(content, "\n") {
@@ -2621,6 +2714,42 @@ func parseRecipe(content string) recipe {
 		val := strings.TrimSpace(parts[1])
 		// Only strip outer wrapping quotes (double or single)
 		val = unquoteYAML(val)
+
+		// tags: step — block form (tags: + nested add:/remove:) and flow
+		// form (tags: {add: [...], remove: [...]}).
+		if key == "tags" && currentStep != nil {
+			currentStep.Tags = &stepTags{}
+			if val == "" {
+				inTags = true
+				continue
+			}
+			inTags = false
+			if strings.HasPrefix(val, "{") {
+				inner := strings.TrimSuffix(strings.TrimPrefix(val, "{"), "}")
+				if m := tagAddFlowRe.FindStringSubmatch(inner); m != nil {
+					currentStep.Tags.Add = parseSourceList(m[1])
+				}
+				if m := tagRemoveFlowRe.FindStringSubmatch(inner); m != nil {
+					currentStep.Tags.Remove = parseSourceList(m[1])
+				}
+			} else {
+				// tags: [a, b] — bare list shorthand = add-only
+				currentStep.Tags.Add = parseSourceList(val)
+			}
+			continue
+		}
+		if inTags && currentStep != nil {
+			switch key {
+			case "add":
+				currentStep.Tags.Add = parseSourceList(val)
+				continue
+			case "remove":
+				currentStep.Tags.Remove = parseSourceList(val)
+				continue
+			default:
+				inTags = false // any other key ends the tags block
+			}
+		}
 
 		switch key {
 		case "name":

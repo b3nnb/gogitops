@@ -22,9 +22,21 @@ type NodeConfig struct {
 	Macs         []string    `yaml:"macs,omitempty"`
 	PortableMacs []string    `yaml:"portable_macs,omitempty"`
 	Labels       []string    `yaml:"labels"`
+	// Tags is the hand-written alias for Labels (nodes/*.yaml written by
+	// humans say `tags:`; machine-written files say `labels:`). LoadNode
+	// normalizes: Labels wins, Tags fills when Labels is empty.
+	Tags         []string    `yaml:"tags,omitempty"`
 	Services     []Service   `yaml:"services"`
 	Disk         []DiskCheck `yaml:"disk"`
 	Agent        AgentConfig `yaml:"agent"`
+}
+
+// normalize reconciles the tags:/labels: alias — hand-written node files
+// (wednesday-style) use `tags:`, machine-written ones use `labels:`.
+func (n *NodeConfig) normalize() {
+	if len(n.Labels) == 0 && len(n.Tags) > 0 {
+		n.Labels = n.Tags
+	}
 }
 
 func (n NodeConfig) Address() string {
@@ -143,6 +155,7 @@ func LoadNode(repoDir, hostname string) (*NodeConfig, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse node config: %w", err)
 	}
+	cfg.normalize()
 	return &cfg, nil
 }
 
@@ -158,8 +171,12 @@ func LoadNodeStrict(repoDir, hostname string) (*NodeConfig, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse node config: %w", err)
 	}
+	cfg.normalize()
 	return &cfg, nil
 }
+
+// LoadNodeStrict loads a node config WITHOUT the auto-registration side
+// effect — errors when the yaml is missing.
 
 // LoadMesh loads the mesh peer list. The mesh is a FOLDER — mesh.d/ — one
 // yaml per node (mesh.d/<hostname>.yaml, same peers: schema, one entry per

@@ -135,6 +135,15 @@ func buildRecipeSchema(labels, hostnames []string) map[string]any {
 		"only_if_attr":    str("Skip if this attribute condition is true."),
 		"labels_required": reqLabels,
 		"labels_exclude":  exclLabels,
+		"tags": map[string]any{
+			"type":        "object",
+			"description": "Built-in tag step: add/remove labels on THIS node's own nodes/<hostname>.yaml (idempotent, comment-preserving; submits via the node/<hostname> branch — CI opens the self-sync PR).",
+			"properties": map[string]any{
+				"add":    strList("Labels to add to this node.", nil),
+				"remove": strList("Labels to remove from this node.", nil),
+			},
+			"additionalProperties": false,
+		},
 		"mount":           str("Built-in mount step: volume name (network shares — default path component + macOS /Volumes name), or local device label."),
 		"device":          str("Mount step: what to mount — //server/share (SMB), server:/path (NFS), uuid=…, label=…, or /dev/path (local)."),
 		"at":              str("Mount step: mount point. Default /mnt/<label> local, /media/<user>/<name> network (Linux); ignored on macOS for network shares)."),
