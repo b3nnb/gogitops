@@ -2,9 +2,9 @@
 package dashboard
 
 import (
-	"fmt"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -25,15 +25,15 @@ type NodeConfig struct {
 
 // liveResult holds the outcome of a real-time health check against a node.
 type liveResult struct {
-	NodeName     string
+	NodeName      string
 	DisplayIP     string
-	Healthy      bool
-	ServicesUp   int
+	Healthy       bool
+	ServicesUp    int
 	ServicesTotal int
-	Version      string
-	ResponseMs   int
-	Error        string
-	CheckedAt    time.Time
+	Version       string
+	ResponseMs    int
+	Error         string
+	CheckedAt     time.Time
 	// fleet test suite (scraped from the agent's /v1/tests; -1 = unknown/old agent)
 	TestsPass    int
 	TestsFail    int
@@ -43,32 +43,32 @@ type liveResult struct {
 
 // apiNodeStatus is the JSON shape returned by /api/status.
 type apiNodeStatus struct {
-	NodeName     string  `json:"node_name"`
-	DisplayIP    string  `json:"ip"`
-	Online       bool    `json:"online"`
-	Healthy      bool    `json:"healthy"`
-	HealthStatus string  `json:"health_status"` // "healthy" | "degraded" | "down"
-	ServicesUp   int     `json:"services_up"`
-	ServicesTotal int    `json:"services_total"`
-	Version      string  `json:"version"`
-	ResponseMs   int     `json:"response_time_ms"`
-	Error        string  `json:"error,omitempty"`
-	CheckedAt    string  `json:"checked_at"`
-	Uptime24h    float64 `json:"uptime_24h_pct"`
-	TestsPass    int     `json:"tests_pass"`
-	TestsFail    int     `json:"tests_fail"`
-	TestsSkip    int     `json:"tests_skip"`
-	TestsFailing []string `json:"tests_failing,omitempty"`
+	NodeName      string   `json:"node_name"`
+	DisplayIP     string   `json:"ip"`
+	Online        bool     `json:"online"`
+	Healthy       bool     `json:"healthy"`
+	HealthStatus  string   `json:"health_status"` // "healthy" | "degraded" | "down"
+	ServicesUp    int      `json:"services_up"`
+	ServicesTotal int      `json:"services_total"`
+	Version       string   `json:"version"`
+	ResponseMs    int      `json:"response_time_ms"`
+	Error         string   `json:"error,omitempty"`
+	CheckedAt     string   `json:"checked_at"`
+	Uptime24h     float64  `json:"uptime_24h_pct"`
+	TestsPass     int      `json:"tests_pass"`
+	TestsFail     int      `json:"tests_fail"`
+	TestsSkip     int      `json:"tests_skip"`
+	TestsFailing  []string `json:"tests_failing,omitempty"`
 }
 
 // Handler serves the dashboard HTML and the API endpoints.
 type Handler struct {
-	store     *Store
-	nodes     []NodeConfig
-	mu        sync.Mutex
-	cache     []liveResult // last live check results for /api/status
-	dashURL   string       // the dashboard's own external URL (told to registering agents)
-	binDir    string       // directory containing pre-built binaries for /api/binary/
+	store   *Store
+	nodes   []NodeConfig
+	mu      sync.Mutex
+	cache   []liveResult // last live check results for /api/status
+	dashURL string       // the dashboard's own external URL (told to registering agents)
+	binDir  string       // directory containing pre-built binaries for /api/binary/
 }
 
 // NewHandler creates a new dashboard handler.
@@ -120,6 +120,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleSetSettings(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/binary/"):
 		h.handleBinary(w, r)
+	case strings.HasSuffix(r.URL.Path, "/logs") && strings.HasPrefix(r.URL.Path, "/api/node/"):
+		name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/node/"), "/logs")
+		h.handleNodeLogsAPI(w, r, name)
 	case strings.HasPrefix(r.URL.Path, "/api/node/"):
 		name := strings.TrimPrefix(r.URL.Path, "/api/node/")
 		h.handleNodeAPI(w, r, name)
@@ -157,21 +160,21 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s := apiNodeStatus{
-			NodeName:     res.NodeName,
-			DisplayIP:    res.DisplayIP,
-			Online:       online,
-			Healthy:      res.Healthy,
-			HealthStatus: healthStatus,
-			ServicesUp:   res.ServicesUp,
+			NodeName:      res.NodeName,
+			DisplayIP:     res.DisplayIP,
+			Online:        online,
+			Healthy:       res.Healthy,
+			HealthStatus:  healthStatus,
+			ServicesUp:    res.ServicesUp,
 			ServicesTotal: res.ServicesTotal,
-			Version:      res.Version,
-			ResponseMs:   res.ResponseMs,
-			Uptime24h:    uptime,
-			CheckedAt:    res.CheckedAt.Format(time.RFC3339),
-			TestsPass:    res.TestsPass,
-			TestsFail:    res.TestsFail,
-			TestsSkip:    res.TestsSkip,
-			TestsFailing: res.TestsFailing,
+			Version:       res.Version,
+			ResponseMs:    res.ResponseMs,
+			Uptime24h:     uptime,
+			CheckedAt:     res.CheckedAt.Format(time.RFC3339),
+			TestsPass:     res.TestsPass,
+			TestsFail:     res.TestsFail,
+			TestsSkip:     res.TestsSkip,
+			TestsFailing:  res.TestsFailing,
 		}
 		if res.Error != "" {
 			s.Error = res.Error
@@ -195,20 +198,20 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	// Build template data
 	type row struct {
-		NodeName      string
-		DisplayIP     string
-		Online        bool
-		OnlineEmoji   string // 🟢 or 🔴
-		HealthStatus  string // "healthy", "degraded", "down"
-		HealthEmoji   string
-		Services      string // "12/12"
-		Version       string
-		LastCheckin   string // relative time
-		Uptime24h     string // "99.8%"
-		ResponseMs    int
-		Address       string // for drill-down link
-		Tests         string // "✅ 29" | "❌ 2 failing" | "—"
-		TestsFailing  string // tooltip: failing test names
+		NodeName     string
+		DisplayIP    string
+		Online       bool
+		OnlineEmoji  string // 🟢 or 🔴
+		HealthStatus string // "healthy", "degraded", "down"
+		HealthEmoji  string
+		Services     string // "12/12"
+		Version      string
+		LastCheckin  string // relative time
+		Uptime24h    string // "99.8%"
+		ResponseMs   int
+		Address      string // for drill-down link
+		Tests        string // "✅ 29" | "❌ 2 failing" | "—"
+		TestsFailing string // tooltip: failing test names
 	}
 
 	rows := make([]row, 0, len(results))
@@ -449,28 +452,56 @@ func formatUptime(pct float64) string {
 	return strconv.FormatFloat(pct, 'f', 1, 64) + "%"
 }
 
-// handleNodeAPI returns the full health payload from a single node's agent.
-// This is the drill-down: fetches /v1/health from the agent directly.
-func (h *Handler) handleNodeAPI(w http.ResponseWriter, r *http.Request, name string) {
-	// Find the node's address — check static config then registered nodes
-	var addr string
+// nodeAddress resolves a node's agent address from static config, then
+// registered nodes.
+func (h *Handler) nodeAddress(r *http.Request, name string) string {
 	for _, n := range h.nodes {
 		if n.Name == name {
-			addr = n.Address
-			break
+			return n.Address
 		}
 	}
-	if addr == "" {
-		regNodes, err := h.store.GetRegisteredNodes(r.Context())
-		if err == nil {
-			for _, rn := range regNodes {
-				if rn.NodeName == name {
-					addr = rn.Address
-					break
-				}
+	regNodes, err := h.store.GetRegisteredNodes(r.Context())
+	if err == nil {
+		for _, rn := range regNodes {
+			if rn.NodeName == name {
+				return rn.Address
 			}
 		}
 	}
+	return ""
+}
+
+// handleNodeLogsAPI proxies a node agent's /v1/logs (recent activity) for
+// the dashboard drill-down.
+func (h *Handler) handleNodeLogsAPI(w http.ResponseWriter, r *http.Request, name string) {
+	addr := h.nodeAddress(r, name)
+	if addr == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "node not found"})
+		return
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	limit := r.URL.Query().Get("limit")
+	if limit == "" {
+		limit = "10"
+	}
+	resp, err := client.Get("http://" + addr + "/v1/logs?limit=" + limit)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	io.Copy(w, resp.Body)
+}
+
+// handleNodeAPI returns the full health payload from a single node's agent.
+// This is the drill-down: fetches /v1/health from the agent directly.
+func (h *Handler) handleNodeAPI(w http.ResponseWriter, r *http.Request, name string) {
+	addr := h.nodeAddress(r, name)
 	if addr == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
@@ -571,7 +602,7 @@ func (h *Handler) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 // Agents send this on startup to announce themselves to the dashboard.
 type registrationRequest struct {
 	Hostname  string `json:"hostname"`
-	Address   string `json:"address"`   // e.g. "10.2.0.102:7780"
+	Address   string `json:"address"`    // e.g. "10.2.0.102:7780"
 	DisplayIP string `json:"display_ip"` // e.g. "10.2.0.102 (lan) / 10.200.0.2 (neb)"
 }
 

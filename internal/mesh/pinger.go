@@ -21,6 +21,7 @@ type PeerHealth struct {
 	Labels         []string          `json:"labels"`
 	Services       map[string]string `json:"services"`
 	DiskWarns      []string          `json:"disk_warns,omitempty"`
+	Disk           []DiskMount       `json:"disk,omitempty"`
 	PeersReachable []string          `json:"peers_reachable"`
 	PeersUnreach   []string          `json:"peers_unreachable,omitempty"`
 	LastGitPull    string            `json:"last_git_pull,omitempty"`
@@ -28,12 +29,20 @@ type PeerHealth struct {
 	System         SystemInfo        `json:"system"`
 }
 
+// DiskMount is per-mount disk usage on the wire
+type DiskMount struct {
+	Mount   string `json:"mount"`
+	UsedPct int    `json:"used_pct"`
+	WarnPct int    `json:"warn_pct"`
+	CritPct int    `json:"crit_pct"`
+}
+
 // SystemInfo is lightweight runtime system metadata
 type SystemInfo struct {
-	OS      string `json:"os"`
-	Arch    string `json:"arch"`
-	IP      string `json:"ip"`
-	HostID  string `json:"host_id"`
+	OS     string `json:"os"`
+	Arch   string `json:"arch"`
+	IP     string `json:"ip"`
+	HostID string `json:"host_id"`
 }
 
 // Pinger manages peer health checks
@@ -45,7 +54,7 @@ type Pinger struct {
 // NewPinger creates a peer pinger
 func NewPinger(mesh *config.MeshConfig) *Pinger {
 	return &Pinger{
-		mesh: mesh,
+		mesh:   mesh,
 		client: &http.Client{Timeout: 5 * time.Second},
 	}
 }

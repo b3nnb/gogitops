@@ -20,12 +20,21 @@ type Status struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// DiskStatus is per-mount disk usage (always populated, not only warnings)
+type DiskStatus struct {
+	Mount   string `json:"mount"`
+	UsedPct int    `json:"used_pct"`
+	WarnPct int    `json:"warn_pct"`
+	CritPct int    `json:"crit_pct"`
+}
+
 // CheckResult is the aggregate health snapshot
 type CheckResult struct {
-	Services   []Status         `json:"services"`
-	DiskWarns  []string         `json:"disk_warns"`
-	DiskCrits  []string         `json:"disk_crits"`
-	Healthy    bool             `json:"healthy"`
+	Services  []Status     `json:"services"`
+	Disk      []DiskStatus `json:"disk,omitempty"`
+	DiskWarns []string     `json:"disk_warns"`
+	DiskCrits []string     `json:"disk_crits"`
+	Healthy   bool         `json:"healthy"`
 }
 
 // CheckService runs a single service check
@@ -162,6 +171,12 @@ func RunAllChecks(node *config.NodeConfig) CheckResult {
 		if err != nil {
 			continue
 		}
+		result.Disk = append(result.Disk, DiskStatus{
+			Mount:   dc.Mount,
+			UsedPct: pct,
+			WarnPct: dc.WarnPct,
+			CritPct: dc.CritPct,
+		})
 		mountWarn := fmt.Sprintf("%s %d%%", dc.Mount, pct)
 		if pct >= dc.CritPct {
 			result.DiskCrits = append(result.DiskCrits, mountWarn)

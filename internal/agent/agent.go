@@ -67,6 +67,18 @@ func (a *Agent) SetRepoDir(repoDir string) {
 	a.repoDir = repoDir
 }
 
+// toDiskMounts maps health disk results to the mesh wire type.
+func toDiskMounts(in []health.DiskStatus) []mesh.DiskMount {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]mesh.DiskMount, 0, len(in))
+	for _, d := range in {
+		out = append(out, mesh.DiskMount{Mount: d.Mount, UsedPct: d.UsedPct, WarnPct: d.WarnPct, CritPct: d.CritPct})
+	}
+	return out
+}
+
 // HealthHandler serves GET /v1/health — the peer ping endpoint.
 func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	result := health.RunAllChecks(a.node)
@@ -91,6 +103,7 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		Labels:         a.node.Labels,
 		Services:       svcMap,
 		DiskWarns:      append(result.DiskWarns, result.DiskCrits...),
+		Disk:           toDiskMounts(result.Disk),
 		PeersReachable: reachable,
 		PeersUnreach:   unreachable,
 		System: mesh.SystemInfo{

@@ -126,45 +126,41 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   }
   .refresh-info a { color: var(--accent); text-decoration: none; }
   .refresh-info a:hover { text-decoration: underline; }
-  /* Drill-down panel */
-  .drilldown {
-    display: none;
-    margin-top: 24px;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 24px;
-    position: relative;
+  /* Inline drill-down (expands under the tapped row — mobile-first) */
+  .detail-row { display: none; }
+  .detail-row.open { display: table-row; }
+  .detail-row > td {
+    padding: 0 0 18px 0 !important;
+    border-bottom: 1px solid var(--border) !important;
   }
-  .drilldown.active { display: block; }
-  .drilldown .close-btn {
-    position: absolute;
-    top: 12px;
-    right: 16px;
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    font-size: 18px;
-    cursor: pointer;
+  .dd {
+    background: rgba(255,255,255,0.02);
+    border-top: 2px solid var(--accent);
+    padding: 18px 18px 0 18px;
   }
-  .drilldown .close-btn:hover { color: var(--text); }
-  .drilldown h2 {
-    font-size: 18px;
-    font-weight: 600;
-    margin-bottom: 4px;
-  }
-  .drilldown .sub {
+  .dd .dd-sub {
     font-size: 13px;
     color: var(--text-dim);
-    margin-bottom: 20px;
+    margin-bottom: 14px;
   }
-  .drilldown .metrics-grid {
+  .dd h3 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-dim);
+    margin: 16px 0 6px 0;
+  }
+  .dd .metrics-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 16px;
   }
   @media (max-width: 640px) {
-    .drilldown .metrics-grid { grid-template-columns: 1fr; }
+    .dd .metrics-grid { grid-template-columns: 1fr 1fr; }
+    th:nth-child(6), td:nth-child(6),
+    th:nth-child(7), td:nth-child(7),
+    th:nth-child(8), td:nth-child(8),
+    th:nth-child(9), td:nth-child(9) { display: none; }  /* tests, checkin, version, uptime — detail view has them */
   }
   .metric-card {
     background: rgba(255,255,255,0.02);
@@ -205,6 +201,21 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   .service-list .svc-status.down { color: var(--red); }
   .service-list .svc-status.error { color: var(--red); }
   .loading { color: var(--text-dim); font-style: italic; }
+  /* Disk usage bars */
+  .disk-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13px; }
+  .disk-row .disk-mount { flex: 0 0 170px; font-family: "SF Mono", "Fira Code", monospace; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .disk-row .disk-track { flex: 1; height: 8px; background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden; }
+  .disk-row .disk-fill { height: 100%; border-radius: 4px; background: var(--green); }
+  .disk-row .disk-fill.warn { background: var(--yellow); }
+  .disk-row .disk-fill.crit { background: var(--red); }
+  .disk-row .disk-pct { flex: 0 0 44px; text-align: right; font-family: "SF Mono", "Fira Code", monospace; color: var(--text-dim); }
+  /* Activity log lines */
+  .log-line { display: flex; gap: 10px; padding: 4px 0; font-size: 12.5px; border-bottom: 1px solid rgba(255,255,255,0.03); font-family: "SF Mono", "Fira Code", monospace; }
+  .log-line:last-child { border-bottom: none; }
+  .log-line .log-ts { flex: 0 0 42px; color: var(--text-dim); }
+  .log-line .log-cat { flex: 0 0 62px; color: var(--accent); }
+  .log-line .log-msg { flex: 1; color: var(--text); word-break: break-word; }
+  .dd .dd-fail { color: var(--red); font-size: 13px; padding: 8px 0; }
 
   /* Deploy panel */
   .deploy-panel {
@@ -366,7 +377,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
     </thead>
     <tbody>
     {{range .Rows}}
-      <tr onclick="drillDown('{{.NodeName}}')">
+      <tr onclick="toggleDetail('{{.NodeName}}')" class="node-row">
         <td class="node-name">{{.NodeName}}</td>
         <td class="ip">{{.DisplayIP}}</td>
         <td><span class="badge {{if .Online}}online{{else}}offline{{end}}">{{.OnlineEmoji}} {{if .Online}}online{{else}}offline{{end}}</span></td>
@@ -377,19 +388,13 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
         <td class="version">{{.Version}}</td>
         <td class="uptime">{{.Uptime24h}}</td>
       </tr>
+      <tr class="detail-row" id="detail-{{.NodeName}}">
+        <td colspan="9"><div class="dd" id="dd-{{.NodeName}}"></div></td>
+      </tr>
     {{end}}
     </tbody>
   </table>
-  <p class="refresh-info">click a row to drill down &middot; <a href="/api/status">JSON API</a></p>
-
-  <!-- Drill-down panel -->
-  <div class="drilldown" id="drilldown">
-    <button class="close-btn" onclick="closeDrillDown()">&times;</button>
-    <h2 id="dd-name"></h2>
-    <div class="sub" id="dd-sub"></div>
-    <div class="metrics-grid" id="dd-grid"></div>
-    <div class="service-list" id="dd-services"></div>
-  </div>
+  <p class="refresh-info">tap a row to expand full details &middot; <a href="/api/status">JSON API</a></p>
 {{end}}
 
   <!-- Deploy Agent panel -->
@@ -472,95 +477,135 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
 <script>
 var DASH_URL = '{{.DashURL}}';
 
-function drillDown(name) {
-  var panel = document.getElementById('drilldown');
-  var grid = document.getElementById('dd-grid');
-  var svcList = document.getElementById('dd-services');
-
-  document.getElementById('dd-name').textContent = name;
-  document.getElementById('dd-sub').textContent = 'Loading...';
-  grid.innerHTML = '';
-  svcList.innerHTML = '<div class="loading">Fetching metrics...</div>';
-  panel.classList.add('active');
-
-  fetch('/api/node/' + name)
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      if (d.error && !d.hostname) {
-        document.getElementById('dd-sub').textContent = 'Offline — ' + d.error;
-        grid.innerHTML = '';
-        svcList.innerHTML = '';
-        return;
-      }
-
-      var upSec = d.uptime_seconds || 0;
-      var upStr = upSec < 60 ? upSec + 's'
-                : upSec < 3600 ? Math.floor(upSec/60) + 'm ' + (upSec%60) + 's'
-                : upSec < 86400 ? Math.floor(upSec/3600) + 'h ' + Math.floor((upSec%3600)/60) + 'm'
-                : Math.floor(upSec/86400) + 'd ' + Math.floor((upSec%86400)/3600) + 'h';
-
-      var sys = d.system || {};
-      var peersUp = (d.peers_reachable || []).length;
-      var peersDown = (d.peers_unreachable || []).length;
-      var svcUp = 0, svcDown = 0;
-      for (var k in d.services) {
-        if (d.services[k] === 'running') svcUp++; else svcDown++;
-      }
-
-      document.getElementById('dd-sub').textContent =
-        (d.agent_version || 'dev') + ' · uptime ' + upStr +
-        (d.nebula_running ? ' · nebula ✅' : ' · nebula ❌');
-
-      grid.innerHTML =
-        metricCard('Services', svcUp + '/' + (svcUp+svcDown) + ' running', 'mono') +
-        metricCard('Uptime', upStr, 'mono') +
-        metricCard('Peers', peersUp + ' up / ' + peersDown + ' down', 'mono') +
-        metricCard('Nebula', d.nebula_running ? '✅ running' : '❌ down', '') +
-        metricCard('OS', sys.os + '/' + sys.arch, 'mono') +
-        metricCard('Host ID', sys.host_id || '—', 'mono') +
-        metricCard('Outbound IP', sys.ip || '—', 'mono') +
-        metricCard('Labels', (d.labels || []).join(', '), '');
-
-      var svcHtml = '<div class="label" style="margin-bottom:8px">SERVICES</div>';
-      for (var k in d.services) {
-        var v = d.services[k];
-        var cls = v === 'running' ? 'running' : 'down';
-        var icon = v === 'running' ? '✅' : '❌';
-        svcHtml += '<div class="svc-row"><span>' + icon + '</span><span class="svc-name">' + k + '</span><span class="svc-status ' + cls + '">' + v + '</span></div>';
-      }
-      if (d.disk_warns && d.disk_warns.length > 0) {
-        svcHtml += '<div class="label" style="margin-top:12px;margin-bottom:8px">DISK WARNINGS</div>';
-        for (var i = 0; i < d.disk_warns.length; i++) {
-          svcHtml += '<div class="svc-row"><span>⚠️</span><span class="svc-name">' + d.disk_warns[i] + '</span></div>';
-        }
-      }
-      if (d.peers_reachable && d.peers_reachable.length > 0) {
-        svcHtml += '<div class="label" style="margin-top:12px;margin-bottom:8px">REACHABLE PEERS</div>';
-        for (var i = 0; i < d.peers_reachable.length; i++) {
-          svcHtml += '<div class="svc-row"><span>✅</span><span class="svc-name">' + d.peers_reachable[i] + '</span></div>';
-        }
-      }
-      if (d.peers_unreachable && d.peers_unreachable.length > 0) {
-        svcHtml += '<div class="label" style="margin-top:12px;margin-bottom:8px">UNREACHABLE PEERS</div>';
-        for (var i = 0; i < d.peers_unreachable.length; i++) {
-          svcHtml += '<div class="svc-row"><span>❌</span><span class="svc-name">' + d.peers_unreachable[i] + '</span></div>';
-        }
-      }
-      svcList.innerHTML = svcHtml;
-    })
-    .catch(function(e) {
-      document.getElementById('dd-sub').textContent = 'Error: ' + e.message;
-      grid.innerHTML = '';
-      svcList.innerHTML = '';
-    });
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, function(ch) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+  });
 }
 
-function metricCard(label, value, cls) {
-  return '<div class="metric-card"><div class="label">' + label + '</div><div class="value ' + cls + '">' + value + '</div></div>';
+var openNode = null;
+var refreshTimer = null;
+
+function toggleDetail(name) {
+  var row = document.getElementById('detail-' + name);
+  if (!row) return;
+  var isOpen = row.classList.contains('open');
+  closeAllDetails();
+  if (!isOpen) {
+    row.classList.add('open');
+    openNode = name;
+    loadDetail(name);
+    refreshTimer = setInterval(function() { if (openNode) loadDetail(openNode, true); }, 30000);
+  }
 }
 
-function closeDrillDown() {
-  document.getElementById('drilldown').classList.remove('active');
+function closeAllDetails() {
+  document.querySelectorAll('.detail-row.open').forEach(function(el) { el.classList.remove('open'); });
+  openNode = null;
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+}
+
+function loadDetail(name, quiet) {
+  var box = document.getElementById('dd-' + name);
+  if (!box) return;
+  if (!quiet) box.innerHTML = '<div class="loading">Fetching details…</div>';
+  Promise.all([
+    fetch('/api/node/' + name).then(function(r) { return r.json(); }).catch(function() { return null; }),
+    fetch('/api/node/' + name + '/logs?limit=10').then(function(r) { return r.json(); }).catch(function() { return null; })
+  ]).then(function(res) { renderDetail(name, res[0], Array.isArray(res[1]) ? {logs: res[1]} : res[1]); });
+}
+
+function renderDetail(name, d, logs) {
+  var box = document.getElementById('dd-' + name);
+  if (!box) return;
+  if (!d || (!d.hostname && d.error)) {
+    box.innerHTML = '<div class="dd-fail">offline — ' + esc((d && d.error) || 'unreachable') + '</div>' + renderLogs(logs);
+    return;
+  }
+
+  var upSec = d.uptime_seconds || 0;
+  var upStr = upSec < 60 ? upSec + 's'
+            : upSec < 3600 ? Math.floor(upSec/60) + 'm'
+            : upSec < 86400 ? Math.floor(upSec/3600) + 'h ' + Math.floor((upSec%3600)/60) + 'm'
+            : Math.floor(upSec/86400) + 'd ' + Math.floor((upSec%86400)/3600) + 'h';
+  var sys = d.system || {};
+  var peersUp = (d.peers_reachable || []).length;
+  var peersDown = (d.peers_unreachable || []).length;
+  var svcUp = 0, svcDown = 0;
+  for (var k in d.services) { if (d.services[k] === 'running') svcUp++; else svcDown++; }
+
+  var html = '<div class="dd-sub">' + esc(d.agent_version || 'dev') + ' &middot; uptime ' + upStr +
+             (d.nebula_running ? ' &middot; nebula ' + esc(d.nebula_ip || '✅') : ' &middot; nebula ❌') + '</div>';
+
+  html += '<div class="metrics-grid">';
+  html += metricCard('Services', svcUp + '/' + (svcUp+svcDown) + ' running');
+  html += metricCard('Peers', peersUp + ' up / ' + peersDown + ' down');
+  html += metricCard('OS', (sys.os || '—') + '/' + (sys.arch || ''));
+  html += metricCard('Host ID', sys.host_id || '—');
+  html += metricCard('Outbound IP', sys.ip || '—');
+  html += metricCard('Labels', (d.labels || []).join(', ') || '—');
+  html += '</div>';
+
+  // Disk usage bars (per-mount, always shown)
+  if (d.disk && d.disk.length > 0) {
+    html += '<h3>DISK</h3>';
+    for (var i = 0; i < d.disk.length; i++) {
+      var m = d.disk[i];
+      var cls = m.used_pct >= m.crit_pct ? 'crit' : (m.used_pct >= m.warn_pct ? 'warn' : '');
+      html += '<div class="disk-row"><span class="disk-mount">' + esc(m.mount) + '</span>' +
+              '<span class="disk-track"><span class="disk-fill ' + cls + '" style="width:' + Math.min(100, m.used_pct) + '%"></span></span>' +
+              '<span class="disk-pct">' + m.used_pct + '%</span></div>';
+    }
+  }
+  if (d.disk_warns && d.disk_warns.length > 0) {
+    html += '<div class="dd-fail">⚠ ' + esc(d.disk_warns.join(' · ')) + '</div>';
+  }
+
+  // Services — failures first
+  html += '<h3>SERVICES</h3>';
+  var names = Object.keys(d.services).sort(function(a, b) {
+    return (d.services[a] === 'running') - (d.services[b] === 'running');
+  });
+  for (var j = 0; j < names.length; j++) {
+    var k2 = names[j], v = d.services[k2];
+    var icon = v === 'running' ? '✅' : '❌';
+    var cls2 = v === 'running' ? 'running' : 'down';
+    html += '<div class="svc-row"><span>' + icon + '</span><span class="svc-name">' + esc(k2) + '</span><span class="svc-status ' + cls2 + '">' + esc(v) + '</span></div>';
+  }
+
+  // Peers — unreachable first (failures first)
+  if (peersDown > 0 || peersUp > 0) {
+    html += '<h3>PEERS</h3>';
+    if (d.peers_unreachable && d.peers_unreachable.length > 0) {
+      for (var u = 0; u < d.peers_unreachable.length; u++) {
+        html += '<div class="svc-row"><span>❌</span><span class="svc-name">' + esc(d.peers_unreachable[u]) + '</span><span class="svc-status down">unreachable</span></div>';
+      }
+    }
+    for (var r2 = 0; r2 < (d.peers_reachable || []).length; r2++) {
+      html += '<div class="svc-row"><span>✅</span><span class="svc-name">' + esc(d.peers_reachable[r2]) + '</span><span class="svc-status running">reachable</span></div>';
+    }
+  }
+
+  html += renderLogs(logs);
+  box.innerHTML = html;
+}
+
+function renderLogs(logs) {
+  if (!logs) return '';
+  var entries = Array.isArray(logs) ? logs : (logs.logs || []);
+  if (entries.length === 0) return '';
+  var out = '<h3>RECENT ACTIVITY</h3>';
+  entries = entries.slice(0, 10);
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    var ts = (e.ts || '').replace(/^\d{4}-\d{2}-\d{2}T/, '').replace(/\+.*/, '');
+    out += '<div class="log-line"><span class="log-ts">' + esc(ts) + '</span><span class="log-cat">' + esc(e.cat || e.level || '') + '</span><span class="log-msg">' + esc(e.msg || e.message || '') + '</span></div>';
+  }
+  return out;
+}
+
+function metricCard(label, value) {
+  return '<div class="metric-card"><div class="label">' + label + '</div><div class="value mono">' + esc(value) + '</div></div>';
 }
 
 /* Deploy Agent */
