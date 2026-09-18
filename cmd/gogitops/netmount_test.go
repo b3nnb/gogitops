@@ -48,7 +48,7 @@ func TestTranslateNetworkMountDarwin(t *testing.T) {
 		MountDevice: "//10.2.0.103/Bifrost",
 		MountAt:     "/media/benn/Bifrost", // must be IGNORED on darwin
 	}
-	out := translateNetworkMountDarwin(step, step.Mount, step.MountDevice, false, "")
+	out := translateNetworkMountDarwin(step, step.Mount, step.MountDevice, false, "", "")
 	for _, want := range []string{
 		"M_AT=/Volumes/Bifrost",
 		"mount_smbfs //10.2.0.103/Bifrost",
@@ -66,8 +66,53 @@ func TestTranslateNetworkMountDarwin(t *testing.T) {
 
 func TestTranslateNetworkMountDarwinNFS(t *testing.T) {
 	step := recipeStep{Name: "n", Mount: "media", MountDevice: "nas:/export/media"}
-	out := translateNetworkMountDarwin(step, step.Mount, step.MountDevice, true, "")
+	out := translateNetworkMountDarwin(step, step.Mount, step.MountDevice, true, "", "")
 	if !strings.Contains(out, "mount_nfs") {
 		t.Error("darwin NFS translation missing mount_nfs")
+	}
+}
+
+func TestParseNenvRef(t *testing.T) {
+	ns, key := parseNenvRef("nenv:global/NAS_USERNAME")
+	if ns != "global" || key != "NAS_USERNAME" {
+		t.Errorf("parseNenvRef global form = %s/%s", ns, key)
+	}
+	ns, key = parseNenvRef("nenv:NAS_PASSWORD")
+	if ns != "global" || key != "NAS_PASSWORD" {
+		t.Errorf("parseNenvRef bare form = %s/%s", ns, key)
+	}
+}
+
+func TestCredsFromNenv(t *testing.T) {
+	file, boot, ok := credsFromNenv("nenv:global/NAS_USERNAME,nenv:global/NAS_PASSWORD", "/home/benn")
+	if !ok {
+		t.Fatal("credsFromNenv should match nenv refs")
+	}
+	if file != "/home/benn/.smbcredentials" {
+		t.Errorf("file = %q", file)
+	}
+	for _, want := range []string{
+		"nenv get global NAS_USERNAME",
+		"nenv get global NAS_PASSWORD",
+		"creds-refreshed-from-nenv",
+		"chmod 600 /home/benn/.smbcredentials",
+		"state=fail reason=no-credentials",
+	} {
+		if !strings.Contains(boot, want) {
+			t.Errorf("bootstrap missing %q", want)
+		}
+	}
+	// secrets must never be baked: no value reads, only key names
+	if strings.Contains(boot, "nenv export") {
+		t.Error("bootstrap must not bulk-export secrets")
+	}
+
+	// non-nenv spec → not handled
+	if _, _, ok := credsFromNenv("~/.smbcredentials", "/home/benn"); ok {
+		t.Error("plain path must not be treated as nenv spec")
+	}
+	// single ref → rejected (needs user+pass)
+	if _, _, ok := credsFromNenv("nenv:global/NAS_PASSWORD", "/home/benn"); ok {
+		t.Error("single-ref spec must be rejected")
 	}
 }

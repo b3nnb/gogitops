@@ -8,6 +8,6 @@ steps:
     mount: MiddleEarth
     device: //10.2.0.103/MiddleEarth
     at: /media/benn/MiddleEarth
-    credentials: ~/.smbcredentials
+    credentials: nenv:global/NAS_USERNAME,nenv:global/NAS_PASSWORD
     options: vers=3.0,soft,actimeo=30
     expect_regex: 'state=(mounted|already-mounted|units-active|mounted-fallback|units-armed)'

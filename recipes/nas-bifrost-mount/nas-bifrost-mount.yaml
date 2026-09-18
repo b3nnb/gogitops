@@ -8,6 +8,6 @@ steps:
     mount: Bifrost
     device: //10.2.0.103/Bifrost
     at: /media/benn/Bifrost
-    credentials: ~/.smbcredentials
+    credentials: nenv:global/NAS_USERNAME,nenv:global/NAS_PASSWORD
     options: vers=3.0,soft,actimeo=30
     expect_regex: 'state=(mounted|already-mounted|units-active|mounted-fallback|units-armed)'

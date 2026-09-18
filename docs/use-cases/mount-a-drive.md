@@ -58,10 +58,16 @@ steps:
     mount: Bifrost                 # volume name (path component + unit name)
     device: //10.2.0.103/Bifrost   # SMB share (//user@server/share also works)
     at: /media/benn/Bifrost        # optional — default /media/<user>/<name>
-    credentials: ~/.smbcredentials # optional — default when the file exists
+    credentials: nenv:global/NAS_USERNAME,nenv:global/NAS_PASSWORD  # or a file path; optional
     options: vers=3.0,soft,actimeo=30
 ```
 
+- **Credentials from NetEnv** — `credentials: nenv:global/NAS_USERNAME,nenv:global/NAS_PASSWORD`
+  makes the agent itself ensure `~/.smbcredentials`: it resolves both refs at
+  runtime inside the step (secret values never appear in the translated
+  script, dry-run, or logs), writes the file chmod 600, and falls back to an
+  existing file with a warning if nenv is unreachable. No manual file, no
+  secrets in git.
 - **Linux** — the agent writes `media-benn-Bifrost.mount` +
   `media-benn-<name>`-style `.automount` units to `/etc/systemd/system`,
   installs `cifs-utils` when missing, daemon-reloads, enables the automount,

@@ -97,27 +97,87 @@ func translateNetworkMount(step recipeStep) string {
 		home = os.Getenv("HOME")
 	}
 
-	// Resolve credentials file (cifs only). Explicit path, ~/.smbcredentials
-	// when present, or none (guest) with a warning.
+	// Resolve credentials (cifs only). Three sources, in order:
+	//   credentials: nenv:<ns>/<user>,nenv:<ns>/<pass>  → agent ensures the
+	//     credentials file at RUNTIME (never embeds secret values)
+	//   credentials: <path>                             → use that file
+	//   (empty)                                         → ~/.smbcredentials
+	//     when present, else guest with a warning
 	creds := ""
 	credsWarn := ""
+	credsBootstrap := ""
 	if !nfs && step.MountCreds != "none" && step.MountCreds != "guest" {
-		c := step.MountCreds
-		if c == "" {
-			c = "~/.smbcredentials"
-		}
-		c = expandHomePath(c, home)
-		if _, err := os.Stat(c); err == nil {
-			creds = c
+		if file, bootstrap, ok := credsFromNenv(step.MountCreds, home); ok {
+			creds, credsBootstrap = file, bootstrap
 		} else {
-			credsWarn = fmt.Sprintf(`echo "warn=no-credentials-file path=%s hint='create a credentials file (username=/password= lines, chmod 600) or set credentials:'"`, shellQuote(c))
+			c := step.MountCreds
+			if c == "" {
+				c = "~/.smbcredentials"
+			}
+			c = expandHomePath(c, home)
+			if _, err := os.Stat(c); err == nil {
+				creds = c
+			} else {
+				credsWarn = fmt.Sprintf(`echo "warn=no-credentials-file path=%s hint='create a credentials file (username=/password= lines, chmod 600), set credentials: nenv:ns/KEY,ns/KEY, or store creds in nenv'"`, shellQuote(c))
+			}
 		}
 	}
 
 	if runtime.GOOS == "darwin" {
-		return translateNetworkMountDarwin(step, name, dev, nfs, credsWarn)
+		return translateNetworkMountDarwin(step, name, dev, nfs, credsWarn, credsBootstrap)
 	}
-	return translateNetworkMountLinux(step, name, dev, nfs, creds, credsWarn, userName, uid, gid, home)
+	return translateNetworkMountLinux(step, name, dev, nfs, creds, credsWarn, credsBootstrap, userName, uid, gid, home)
+}
+
+// parseNenvRef splits "nenv:<ns>/<key>" (or "nenv:<key>" → global ns).
+func parseNenvRef(ref string) (ns, key string) {
+	ref = strings.TrimPrefix(strings.TrimSpace(ref), "nenv:")
+	ns, key = "global", ref
+	if i := strings.Index(ref, "/"); i >= 0 {
+		ns, key = ref[:i], ref[i+1:]
+	}
+	return ns, key
+}
+
+// credsFromNenv handles credentials: values that reference NetEnv —
+// "nenv:<ns>/<userkey>,nenv:<ns>/<passkey>". The agent resolves the refs at
+// RUNTIME inside the generated bash (values never appear in the translated
+// script, dry-run output, or logs) and ensures the credentials file exists
+// before the mount proceeds. Returns (file path, bootstrap bash, true).
+func credsFromNenv(spec, home string) (string, string, bool) {
+	if !strings.Contains(spec, "nenv:") {
+		return "", "", false
+	}
+	refs := strings.Split(spec, ",")
+	if len(refs) < 2 {
+		return "", "", false
+	}
+	uns, ukey := parseNenvRef(refs[0])
+	pns, pkey := parseNenvRef(refs[1])
+	file := filepath.Join(home, ".smbcredentials")
+
+	// Built with plain shell indirection ($NU/$NP) — no secrets in the text.
+	bootstrap := fmt.Sprintf(`if ! command -v nenv >/dev/null 2>&1; then
+  echo "warn=nenv-cli-not-installed"
+fi
+NU=$(nenv get %s %s 2>/dev/null)
+NP=$(nenv get %s %s 2>/dev/null)
+if [ -n "$NU" ] && [ -n "$NP" ]; then
+  { echo "username=$NU"; echo "password=$NP"; } > %s
+  chmod 600 %s
+  echo "note=creds-refreshed-from-nenv file=%s"
+elif [ -f %s ]; then
+  echo "warn=nenv-unresolved-using-existing-creds file=%s"
+else
+  echo "state=fail reason=no-credentials hint='nenv keys unset/unreachable and no credentials file — configure nenv (setup-nenv recipe) or create the file'"
+  exit 1
+fi
+`,
+		shellQuote(uns), shellQuote(ukey),
+		shellQuote(pns), shellQuote(pkey),
+		shellQuote(file), shellQuote(file), shellQuote(file),
+		shellQuote(file), shellQuote(file))
+	return file, bootstrap, true
 }
 
 // currentUserInfo is os/user.Current with a nil-safe fallback.
@@ -131,7 +191,7 @@ func currentUserInfo() *user.User {
 
 // ── Linux: systemd .mount + .automount units ───────────────────────────────
 
-func translateNetworkMountLinux(step recipeStep, name, dev string, nfs bool, creds, credsWarn, userName, uid, gid, home string) string {
+func translateNetworkMountLinux(step recipeStep, name, dev string, nfs bool, creds, credsWarn, credsBootstrap, userName, uid, gid, home string) string {
 	at := step.MountAt
 	if at == "" {
 		at = "/media/" + userName + "/" + name
@@ -250,6 +310,8 @@ if findmnt -rn "$M_AT" >/dev/null 2>&1; then
   echo "state=already-mounted device=$(findmnt -rn -o SOURCE "$M_AT") point=$M_AT"
   exit 0
 fi
+# Ensure credentials (nenv-backed) before the privileged part.
+%s
 RF=$(mktemp /tmp/gogitops-mount.XXXXXX)
 chmod 600 "$RF"
 cat > "$RF" <<'GOGITOPS_MOUNT_ROOT'
@@ -286,6 +348,7 @@ exit 1
 		shellQuote(at),
 		shellQuote(unitN),
 		credsWarn,
+		credsBootstrap,
 		rootScript,
 	)
 	return script
@@ -293,7 +356,7 @@ exit 1
 
 // ── macOS: /Volumes/<name>, recipe path ignored ────────────────────────────
 
-func translateNetworkMountDarwin(step recipeStep, name, dev string, nfs bool, credsWarn string) string {
+func translateNetworkMountDarwin(step recipeStep, name, dev string, nfs bool, credsWarn, credsBootstrap string) string {
 	at := "/Volumes/" + name
 	note := ""
 	if step.MountAt != "" {
