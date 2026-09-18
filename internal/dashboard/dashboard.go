@@ -3,6 +3,10 @@ package dashboard
 
 import "html/template"
 
+// Version is the dashboard binary's build version — set from cmd/gogitops at
+// startup so the topbar pill shows the real release instead of a stale "dev".
+var Version = "dev"
+
 // dashboardTmpl is the embedded HTML template for the status dashboard.
 // Uses a dark theme matching NetEnv's dark UI (#0f1117 bg, #1a1d27 cards, #4f8ef7 blue accent).
 var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE html>
@@ -115,6 +119,8 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   .services { font-family: "SF Mono", "Fira Code", monospace; font-size: 13px; }
   .uptime { font-family: "SF Mono", "Fira Code", monospace; font-size: 13px; }
   .version { color: var(--text-dim); font-size: 12px; }
+  .tests-ok { color: var(--text-dim); font-size: 12px; }
+  .tests-bad { color: var(--red); font-weight: 500; }
   .response { color: var(--text-dim); font-size: 11px; }
   .last-checkin { color: var(--text-dim); font-size: 13px; }
   /* Empty state */
@@ -191,10 +197,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
     font-family: "SF Mono", "Fira Code", monospace;
     font-size: 14px;
   }
-  .service-list {
-    margin-top: 16px;
-  }
-  .service-list .svc-row {
+  .svc-row {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -202,12 +205,25 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
     border-bottom: 1px solid rgba(255,255,255,0.04);
     font-size: 13px;
   }
-  .service-list .svc-row:last-child { border-bottom: none; }
-  .service-list .svc-name { font-weight: 500; flex: 1; }
-  .service-list .svc-status { font-family: "SF Mono", monospace; font-size: 12px; }
-  .service-list .svc-status.running { color: var(--green); }
-  .service-list .svc-status.down { color: var(--red); }
-  .service-list .svc-status.error { color: var(--red); }
+  .svc-row:last-child { border-bottom: none; }
+  .svc-name { font-weight: 500; flex: 1; }
+  .svc-status { font-family: "SF Mono", monospace; font-size: 12px; }
+  .svc-status.running { color: var(--green); }
+  .svc-status.down { color: var(--red); }
+  .svc-status.error { color: var(--red); }
+  .svc-status.skipped { color: var(--text-dim); }
+  .st-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--accent);
+    font-size: 11px;
+    padding: 3px 10px;
+    cursor: pointer;
+  }
+  .st-toggle:hover { border-color: var(--accent); }
+  .st-summary .svc-name { color: var(--text-dim); }
+  .st-list.st-hidden { display: none; }
   .loading { color: var(--text-dim); font-style: italic; }
   /* Disk usage bars */
   .disk-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13px; }
@@ -364,48 +380,6 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
 </div>
 
 <div class="container">
-{{if .Empty}}
-  <div class="empty">
-    <h2>No nodes configured</h2>
-    <p>Deploy an agent below — it will register automatically.</p>
-  </div>
-{{else}}
-  <table>
-    <thead>
-      <tr>
-        <th>Node</th>
-        <th>IP</th>
-        <th>Online</th>
-        <th>Health</th>
-        <th>Services</th>
-        <th>Tests</th>
-        <th>Last Checkin</th>
-        <th>Version</th>
-        <th>24h Uptime</th>
-      </tr>
-    </thead>
-    <tbody>
-    {{range .Rows}}
-      <tr onclick="toggleDetail('{{.NodeName}}')" class="node-row">
-        <td class="node-name">{{.NodeName}}</td>
-        <td class="ip">{{.DisplayIP}}</td>
-        <td><span class="badge {{if .Online}}online{{else}}offline{{end}}">{{.OnlineEmoji}} {{if .Online}}online{{else}}offline{{end}}</span></td>
-        <td><span class="badge {{.HealthStatus}}">{{.HealthEmoji}} {{.HealthStatus}}</span></td>
-        <td class="services">{{.Services}}</td>
-        <td class="tests" title="{{.TestsFailing}}">{{.Tests}}</td>
-        <td class="last-checkin">{{.LastCheckin}}</td>
-        <td class="version">{{.Version}}</td>
-        <td class="uptime">{{.Uptime24h}}</td>
-      </tr>
-      <tr class="detail-row" id="detail-{{.NodeName}}">
-        <td colspan="9"><div class="dd" id="dd-{{.NodeName}}"></div></td>
-      </tr>
-    {{end}}
-    </tbody>
-  </table>
-  <p class="refresh-info">tap a row to expand full details &middot; <a href="/api/status">JSON API</a></p>
-{{end}}
-
   <!-- Deploy Agent panel -->
   <div class="deploy-panel">
     <div class="deploy-header" id="deployToggle" onclick="toggleDeploy()">
@@ -481,6 +455,49 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
       </div>
     </div>
   </div>
+
+{{if .Empty}}
+  <div class="empty">
+    <h2>No nodes configured</h2>
+    <p>Use the Deploy Agent panel above — it will register automatically.</p>
+  </div>
+{{else}}
+  <table>
+    <thead>
+      <tr>
+        <th>Node</th>
+        <th>IP</th>
+        <th>Online</th>
+        <th>Health</th>
+        <th>Services</th>
+        <th>Selftests</th>
+        <th>Last Checkin</th>
+        <th>Version</th>
+        <th>Uptime</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Rows}}
+      <tr onclick="toggleDetail('{{.NodeName}}')" class="node-row">
+        <td class="node-name">{{.NodeName}}</td>
+        <td class="ip">{{.DisplayIP}}</td>
+        <td><span class="badge {{if .Online}}online{{else}}offline{{end}}" title="{{if .Online}}online{{else}}offline{{end}}">{{.OnlineEmoji}}</span></td>
+        <td><span class="badge {{.HealthStatus}}">{{.HealthStatus}}</span></td>
+        <td class="services">{{.Services}}</td>
+        <td class="{{.TestsClass}}" title="{{.TestsFailing}}">{{.Tests}}</td>
+        <td class="last-checkin">{{.LastCheckin}}</td>
+        <td class="version">{{.Version}}</td>
+        <td class="uptime" title="agent uptime &middot; 24h availability">{{.Uptime}}</td>
+      </tr>
+      <tr class="detail-row" id="detail-{{.NodeName}}">
+        <td colspan="9"><div class="dd" id="dd-{{.NodeName}}"></div></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="refresh-info">tap a row to expand full details &middot; <a href="/api/status">JSON API</a></p>
+{{end}}
+
 </div>
 
 <script>
@@ -494,6 +511,7 @@ function esc(s) {
 
 var openNode = null;
 var refreshTimer = null;
+var selftestsOpen = {};  // per-node: SELFTESTS full list expanded
 
 function toggleDetail(name) {
   var row = document.getElementById('detail-' + name);
@@ -514,17 +532,29 @@ function closeAllDetails() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
 }
 
+function toggleSelftests(name) {
+  selftestsOpen[name] = !selftestsOpen[name];
+  var list = document.getElementById('st-list-' + name);
+  if (list) list.classList.toggle('st-hidden', !selftestsOpen[name]);
+  var box = document.getElementById('dd-' + name);
+  var btn = box ? box.querySelector('.st-toggle') : null;
+  if (btn) btn.textContent = selftestsOpen[name] ? 'hide passing' : 'show all';
+}
+
 function loadDetail(name, quiet) {
   var box = document.getElementById('dd-' + name);
   if (!box) return;
   if (!quiet) box.innerHTML = '<div class="loading">Fetching details…</div>';
   Promise.all([
     fetch('/api/node/' + name).then(function(r) { return r.json(); }).catch(function() { return null; }),
-    fetch('/api/node/' + name + '/logs?limit=10').then(function(r) { return r.json(); }).catch(function() { return null; })
-  ]).then(function(res) { renderDetail(name, res[0], Array.isArray(res[1]) ? {logs: res[1]} : res[1]); });
+    fetch('/api/node/' + name + '/logs?limit=10').then(function(r) { return r.json(); }).catch(function() { return null; }),
+    fetch('/api/node/' + name + '/tests').then(function(r) { return r.json(); }).catch(function() { return null; })
+  ]).then(function(res) {
+    renderDetail(name, res[0], Array.isArray(res[1]) ? {logs: res[1]} : res[1], res[2]);
+  });
 }
 
-function renderDetail(name, d, logs) {
+function renderDetail(name, d, logs, tests) {
   var box = document.getElementById('dd-' + name);
   if (!box) return;
   if (!d || (!d.hostname && d.error)) {
@@ -595,6 +625,54 @@ function renderDetail(name, d, logs) {
     }
   }
 
+  // Selftests — failures always visible; passing/skipped behind a toggle.
+  if (tests) {
+    var tp = tests.pass || 0, tf = tests.fail || 0, tsk = tests.skip || 0;
+    if (tp + tf + tsk > 0) {
+      var named = [];
+      var results = tests.results || [];
+      for (var ri = 0; ri < results.length; ri++) {
+        if (results[ri] && results[ri].name) named.push(results[ri]);
+      }
+      var failing = [], passing = [], skipped = [];
+      for (var si = 0; si < named.length; si++) {
+        if (named[si].status === 'fail') failing.push(named[si]);
+        else if (named[si].status === 'skip') skipped.push(named[si]);
+        else passing.push(named[si]);
+      }
+      // pre-v0.7.15 agents serialize results as empty objects — fall back
+      // to the attrs.tests.failing summary so failures still show
+      if (failing.length === 0 && tf > 0 && tests.attrs && tests.attrs['tests.failing']) {
+        var fb = tests.attrs['tests.failing'].split(',');
+        for (var fi = 0; fi < fb.length; fi++) {
+          var fname = fb[fi].trim();
+          if (fname) failing.push({name: fname, module: ''});
+        }
+      }
+      var ran = (tests.when || '').split('T').pop().split(':').slice(0, 2).join(':');
+      html += '<h3>SELFTESTS</h3>';
+      for (var f = 0; f < failing.length; f++) {
+        html += '<div class="svc-row"><span>❌</span><span class="svc-name">' + esc((failing[f].module ? failing[f].module + '/' : '') + failing[f].name) + '</span><span class="svc-status down">failing</span></div>';
+      }
+      if (tf === 0) {
+        html += '<div class="svc-row"><span>✅</span><span class="svc-name">all ' + tp + ' selftests passing</span><span class="svc-status running">✓</span></div>';
+      }
+      if (named.length > 0) {
+        html += '<div class="svc-row st-summary"><span></span><span class="svc-name">' + tp + ' passing &middot; ' + tsk + ' skipped &middot; ' + tf + ' failing' + (ran ? ' &middot; ran ' + ran : '') + '</span><span class="svc-status ' + (tf > 0 ? 'down' : 'running') + '">' + (tp + tf + tsk) + '</span></div>';
+        html += '<div class="svc-row"><span></span><span class="svc-name"><button class="st-toggle" onclick="toggleSelftests(\'' + esc(name) + '\')">' + (selftestsOpen[name] ? 'hide passing' : 'show all ' + (tp + tf + tsk)) + '</button></span><span></span></div>';
+        html += '<div class="st-list' + (selftestsOpen[name] ? '' : ' st-hidden') + '" id="st-list-' + esc(name) + '">';
+        for (var p = 0; p < passing.length; p++) {
+          html += '<div class="svc-row"><span>✅</span><span class="svc-name">' + esc((passing[p].module ? passing[p].module + '/' : '') + passing[p].name) + '</span><span class="svc-status running">pass</span></div>';
+        }
+        for (var k = 0; k < skipped.length; k++) {
+          html += '<div class="svc-row"><span>⏭</span><span class="svc-name">' + esc((skipped[k].module ? skipped[k].module + '/' : '') + skipped[k].name) + '</span><span class="svc-status skipped">skip</span></div>';
+        }
+        html += '</div>';
+      } else {
+        html += '<div class="svc-row st-summary"><span></span><span class="svc-name">agent pre-v0.7.15 — full list available after it self-updates</span><span></span></div>';
+      }
+    }
+  }
   html += renderLogs(logs);
   box.innerHTML = html;
 }

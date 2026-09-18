@@ -35,10 +35,11 @@ type liveResult struct {
 	Error         string
 	CheckedAt     time.Time
 	// fleet test suite (scraped from the agent's /v1/tests; -1 = unknown/old agent)
-	TestsPass    int
-	TestsFail    int
-	TestsSkip    int
-	TestsFailing []string
+	TestsPass     int
+	TestsFail     int
+	TestsSkip     int
+	TestsFailing  []string
+	UptimeSeconds float64 // agent process uptime seconds, from /v1/health
 }
 
 // apiNodeStatus is the JSON shape returned by /api/status.
@@ -120,6 +121,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleSetSettings(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/binary/"):
 		h.handleBinary(w, r)
+	case strings.HasSuffix(r.URL.Path, "/tests") && strings.HasPrefix(r.URL.Path, "/api/node/"):
+		name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/node/"), "/tests")
+		h.handleNodeTestsAPI(w, r, name)
 	case strings.HasSuffix(r.URL.Path, "/logs") && strings.HasPrefix(r.URL.Path, "/api/node/"):
 		name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/node/"), "/logs")
 		h.handleNodeLogsAPI(w, r, name)
@@ -203,14 +207,14 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Online       bool
 		OnlineEmoji  string // 🟢 or 🔴
 		HealthStatus string // "healthy", "degraded", "down"
-		HealthEmoji  string
 		Services     string // "12/12"
 		Version      string
 		LastCheckin  string // relative time
-		Uptime24h    string // "99.8%"
+		Uptime       string // "3d 5h · 98.4%" — agent uptime + 24h availability
 		ResponseMs   int
 		Address      string // for drill-down link
-		Tests        string // "✅ 29" | "❌ 2 failing" | "—"
+		Tests        string // "44 ✓" | "2 failing" | "—"
+		TestsClass   string // "tests-ok" | "tests-bad" | ""
 		TestsFailing string // tooltip: failing test names
 	}
 
@@ -242,25 +246,24 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		// Health status: service-level (only meaningful if online)
 		if !online {
 			rw.HealthStatus = "down"
-			rw.HealthEmoji = "⚫"
 		} else if res.ServicesUp == res.ServicesTotal && res.ServicesTotal > 0 {
 			rw.HealthStatus = "healthy"
-			rw.HealthEmoji = "💚"
 		} else {
 			rw.HealthStatus = "degraded"
-			rw.HealthEmoji = "🟡"
 		}
 
 		uptime, _ := h.store.Get24hSummary(r.Context(), res.NodeName)
-		rw.Uptime24h = formatUptime(uptime)
+		rw.Uptime = formatUptimeCombo(res.UptimeSeconds, uptime)
 
 		switch {
 		case res.TestsPass <= 0 && res.TestsFail == 0:
 			rw.Tests = "—" // unknown: old agent or unreachable
 		case res.TestsFail == 0:
-			rw.Tests = fmt.Sprintf("✅ %d", res.TestsPass)
+			rw.Tests = fmt.Sprintf("%d ✓", res.TestsPass)
+			rw.TestsClass = "tests-ok"
 		default:
-			rw.Tests = fmt.Sprintf("❌ %d failing", res.TestsFail)
+			rw.Tests = fmt.Sprintf("%d failing", res.TestsFail)
+			rw.TestsClass = "tests-bad"
 			rw.TestsFailing = strings.Join(res.TestsFailing, ", ")
 		}
 
@@ -270,6 +273,7 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"Rows":    rows,
 		"Empty":   len(allNodes) == 0,
+		"Version": Version,
 		"Now":     time.Now().Format("15:04:05 MST"),
 		"DashURL": h.dashURL,
 	}
@@ -370,9 +374,10 @@ func (h *Handler) checkNode(ctx context.Context, cfg NodeConfig) liveResult {
 		defer testsResp.Body.Close()
 		if testsResp.StatusCode == http.StatusOK {
 			var tr struct {
-				Pass    int `json:"pass"`
-				Fail    int `json:"fail"`
-				Skip    int `json:"skip"`
+				Pass    int               `json:"pass"`
+				Fail    int               `json:"fail"`
+				Skip    int               `json:"skip"`
+				Attrs   map[string]string `json:"attrs"`
 				Results []struct {
 					Module string `json:"module"`
 					Name   string `json:"name"`
@@ -386,6 +391,16 @@ func (h *Handler) checkNode(ctx context.Context, cfg NodeConfig) liveResult {
 						res.TestsFailing = append(res.TestsFailing, x.Module+"/"+x.Name)
 					}
 				}
+				// Old agents serialize results as empty objects (unexported
+				// struct fields) — fall back to the attrs.tests.failing summary
+				// so failing names still surface on the dashboard.
+				if len(res.TestsFailing) == 0 && tr.Attrs["tests.failing"] != "" {
+					for _, n := range strings.Split(tr.Attrs["tests.failing"], ",") {
+						if n = strings.TrimSpace(n); n != "" {
+							res.TestsFailing = append(res.TestsFailing, n)
+						}
+					}
+				}
 			}
 		} else {
 			res.TestsPass = -1 // agent running, but no test endpoint (old binary)
@@ -396,8 +411,9 @@ func (h *Handler) checkNode(ctx context.Context, cfg NodeConfig) liveResult {
 
 	// Decode the health response — we only need services and version.
 	var health struct {
-		AgentVersion string            `json:"agent_version"`
-		Services     map[string]string `json:"services"`
+		AgentVersion  string            `json:"agent_version"`
+		Services      map[string]string `json:"services"`
+		UptimeSeconds float64           `json:"uptime_seconds"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
 		res.Error = "decode error"
@@ -406,6 +422,7 @@ func (h *Handler) checkNode(ctx context.Context, cfg NodeConfig) liveResult {
 
 	res.Healthy = true
 	res.Version = health.AgentVersion
+	res.UptimeSeconds = health.UptimeSeconds
 	up, total := 0, 0
 	for _, v := range health.Services {
 		total++
@@ -452,6 +469,42 @@ func formatUptime(pct float64) string {
 	return strconv.FormatFloat(pct, 'f', 1, 64) + "%"
 }
 
+// formatUptimeDuration renders agent process uptime: "45s", "12m", "5h 12m", "3d 5h".
+func formatUptimeDuration(sec float64) string {
+	if sec <= 0 {
+		return ""
+	}
+	d := time.Duration(sec) * time.Second
+	days := int(d / (24 * time.Hour))
+	hours := int(d/time.Hour) % 24
+	mins := int(d/time.Minute) % 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh", days, hours)
+	case hours > 0:
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	case mins > 0:
+		return fmt.Sprintf("%dm", mins)
+	default:
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+}
+
+// formatUptimeCombo renders "3d 5h · 98.4%" — agent uptime + 24h availability.
+// Falls back to whichever piece exists (old agents report no uptime_seconds).
+func formatUptimeCombo(sysSec, pct float64) string {
+	dur := formatUptimeDuration(sysSec)
+	avail := formatUptime(pct)
+	switch {
+	case dur == "":
+		return avail
+	case avail == "—":
+		return dur
+	default:
+		return dur + " · " + avail
+	}
+}
+
 // nodeAddress resolves a node's agent address from static config, then
 // registered nodes.
 func (h *Handler) nodeAddress(r *http.Request, name string) string {
@@ -469,6 +522,29 @@ func (h *Handler) nodeAddress(r *http.Request, name string) string {
 		}
 	}
 	return ""
+}
+
+// handleNodeTestsAPI proxies a node agent's /v1/tests (fleet selftest suite)
+// for the dashboard drill-down — full per-test results.
+func (h *Handler) handleNodeTestsAPI(w http.ResponseWriter, r *http.Request, name string) {
+	addr := h.nodeAddress(r, name)
+	if addr == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "node not found"})
+		return
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + addr + "/v1/tests")
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	io.Copy(w, resp.Body)
 }
 
 // handleNodeLogsAPI proxies a node agent's /v1/logs (recent activity) for
