@@ -73,6 +73,10 @@
             ],
             "type": "string"
           },
+          "args": {
+            "description": "func step inputs: key=value,key2=v2 (or JSON object when values contain commas). {{vars}} substitute here too.",
+            "type": "string"
+          },
           "assert": {
             "description": "Assertion expression evaluated against step output.",
             "type": "string"
@@ -116,6 +120,15 @@
           "fstab": {
             "description": "Mount step (local devices): persist to fstab (idempotent; sudo only when needed). Network shares use systemd .mount/.automount units.",
             "type": "boolean"
+          },
+          "func": {
+            "description": "Native function step: run a stdlib function in-process (typed, no shell). See `gogitops functions`.",
+            "enum": [
+              "net.port-check",
+              "storage.disk-free",
+              "system.info"
+            ],
+            "type": "string"
           },
           "labels_exclude": {
             "description": "Step is skipped if the node has ANY of these labels.",

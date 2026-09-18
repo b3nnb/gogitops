@@ -2,7 +2,7 @@
 
 Task-oriented how-tos for writing and running recipes. Each page answers one
 question with a copy-pasteable example. Full field reference lives in
-[recipes/README.md](../../recipes/README.md) (the spec) — this cookbook is
+[recipes/README.md](../recipe-spec.md) (the spec) — this cookbook is
 organized by *what you're trying to do*.
 
 **Looking for something?** Every file here is plain markdown — search with
@@ -41,11 +41,12 @@ steps:
 | Run a step only when something is true | [conditional-steps](conditional-steps.md) |
 | Check a step worked (validation, retries) | [validate-and-retry](validate-and-retry.md) |
 | Put real logic in a script/module | [write-a-script-step](write-a-script-step.md) |
+| Call a typed native function (no shell) | [native-functions](native-functions.md) |
 | Prove my recipe works (tests) | [test-your-recipe](test-your-recipe.md) |
 | Run recipes / find drift / fix a wedged repo | [run-and-troubleshoot](run-and-troubleshoot.md) |
 
-Related: [tags & labels guide](../tags.md) · [recipe spec](../../recipes/README.md) ·
-[capability placement (DESIGN.md)](../../DESIGN.md)
+Related: [tags & labels guide](../tags.md) · [recipe spec](../recipe-spec.md) ·
+[capability placement (DESIGN.md)](../design.md)
 
 ## Where code lives (the placement ladder)
 

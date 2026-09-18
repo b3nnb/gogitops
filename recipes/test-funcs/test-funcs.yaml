@@ -1,0 +1,39 @@
+# Selftest: native function steps (func:). Runs on every node, no shell.
+name: test-funcs
+description: >
+  Regression selftest for the native function library. Exercises every
+  stdlib func: step — typed outputs, {{func.*}} var passing, port-check
+  up/down semantics, and the reserved-namespace rules. Run via:
+  gogitops test run test-funcs (or recipe run test-funcs).
+version: 1.0.0
+test_module: true
+
+steps:
+  - name: disk-free
+    description: stdlib storage function, math in the outputs
+    func: storage.disk-free
+    args: path=/
+    expect: total_gb=
+    set_attr: disk_free
+
+  - name: var-passing
+    description: outputs from step 1 flow into this command as {{func.*}}
+    command: echo "saw {{func.used_pct}}% used of {{func.total_gb}}GB"
+    expect_regex: "saw [0-9]+\\.??[0-9]*% used of [0-9]+\\.[0-9]+GB"
+
+  - name: port-check-localhost
+    description: down port returns up=false as a RESULT, not a failure
+    func: net.port-check
+    args: host=127.0.0.1,port=1,timeout=300ms
+    expect: up=false
+
+  - name: port-check-nas
+    description: DNS port on the NAS — the fleet's actual dependency
+    func: net.port-check
+    args: host=10.2.0.103,port=53,timeout=2s
+    expect: up=true
+
+  - name: system-info
+    description: typed identity probe, no shell uname
+    func: system.info
+    expect: hostname=

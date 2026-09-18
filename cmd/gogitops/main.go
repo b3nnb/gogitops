@@ -27,6 +27,7 @@ import (
 	"github.com/bennbanks/gogitops/internal/cli"
 	"github.com/bennbanks/gogitops/internal/config"
 	"github.com/bennbanks/gogitops/internal/dashboard"
+	"github.com/bennbanks/gogitops/internal/functionlib"
 	"github.com/bennbanks/gogitops/internal/starship"
 )
 
@@ -167,6 +168,8 @@ func main() {
 			cmdAttrs(os.Args[2:])
 		case "modules":
 			cmdModules(os.Args[2:])
+		case "functions", "funcs":
+			cmdFunctions(os.Args[2:])
 		case "deploy":
 			cmdDeploy(os.Args[2:])
 		case "help", "--help", "-h":
@@ -254,6 +257,13 @@ func printHelp() {
     modules             callable module library — repo modules/ + the
                         agent's embedded sets (resolution: recipe
                         scripts/ → repo modules/ → agent sets)
+    functions           native function library (func: steps) — typed,
+                        in-process, no shell. storage./net./system. are
+                        stdlib (reserved); custom logic lives in modules/
+
+    native step type:  func: storage.disk-free with args: path=/media/x
+                        — typed outputs flow to later steps as
+                        {{func.total_gb}} etc.; user space stays in modules/
 
     built-in step types (no bash in the yaml): package:, schedule:,
     mount:  (mount: <name> + device: //server/share | server:/path |
@@ -338,7 +348,6 @@ func printHelp() {
 }
 
 // ── status: show local or remote agent health ────────────────────────────
-
 
 // ── fleet: show all agents in compact view ───────────────────────────────
 
@@ -1882,6 +1891,35 @@ func repoRootFromFile(file string) string {
 	return resolveRepoDir(".")
 }
 
+// ── Native function library (func: steps) ───────────────────────────────────
+
+// funcNames lists registered native function names (for error hints).
+func funcNames() []string {
+	var out []string
+	for _, f := range functionlib.List() {
+		out = append(out, f.Name)
+	}
+	return out
+}
+
+// cmdFunctions prints the native function library: name, description,
+// params, and the reserved-namespace rule that keeps user space safe.
+func cmdFunctions(args []string) {
+	cli.Banner()
+	fmt.Printf("\n  \033[1m\033[38;5;141mNative function library\033[0m\n")
+	fmt.Printf("  \033[38;5;240mfunc: steps run in-process — typed args in, typed outputs out\033[0m\n\n")
+	for _, f := range functionlib.List() {
+		fmt.Printf("  \033[38;5;46mλ %s\033[0m — \033[38;5;245m%s\033[0m\n", f.Name, f.Description)
+		if len(f.Params) > 0 {
+			for _, p := range f.Params {
+				fmt.Printf("     \033[38;5;38m%s\033[0m \033[38;5;240m(%s) %s\033[0m\n", p.Name, p.Type, p.Description)
+			}
+		}
+	}
+	fmt.Printf("\n  \033[38;5;178mreserved sets:\033[0m %s — stdlib only, no shadowing\n", strings.Join(functionlib.ReservedSets(), ", "))
+	fmt.Printf("  \033[38;5;178muser space:\033[0m repo modules/ (script: steps) — may CALL stdlib, never define in it\n\n")
+}
+
 // ── Recipe runner ─────────────────────────────────────────────────────────
 
 type recipeStep struct {
@@ -1891,6 +1929,8 @@ type recipeStep struct {
 	Script       string   `yaml:"script"`
 	ScriptArgs   string   `yaml:"script_args"`
 	ScriptLang   string   `yaml:"script_lang"`
+	Func         string   `yaml:"func"`
+	FuncArgs     string   `yaml:"args"`
 	Package      string   `yaml:"package"`
 	Sources      []string `yaml:"sources"`
 	Schedule     string   `yaml:"schedule"`
@@ -2140,6 +2180,31 @@ func recipeRun(args []string, all *runAllCtx) {
 			}
 		}
 
+		// Native function step — func: <set>.<name> runs in-process.
+		// No shell involved: typed args in, typed outputs out. Outputs
+		// become {{func.<key>}} vars AND a "key=value" pseudo-stdout line,
+		// so expect:/parse:/set_attr:/attr_prefix: keep working unchanged.
+		if step.Func != "" {
+			fn, ok := functionlib.Get(step.Func)
+			if !ok {
+				fmt.Printf("  \033[38;5;196m✖ function not available: %s (have: %s) — upgrade the agent or fix the name\033[0m\n", step.Func, strings.Join(funcNames(), ", "))
+				// (also printed for dry-runs; a typo'd name should fail fast)
+				if step.OnFailure == "" || step.OnFailure == "abort" {
+					if all != nil {
+						all.recipeFailed++
+						all.failedAt = fmt.Sprintf("%s step %d: %s (function not available: %s)", r.Name, stepNum, displayName, step.Func)
+						return
+					}
+					fmt.Printf("\n  \033[38;5;196m✖ Recipe aborted at step %d: %s\033[0m\n", stepNum, displayName)
+					fmt.Printf("  \033[38;5;240m%d passed, %d skipped, %d failed\033[0m\n\n", passed, skipped, failed+1)
+					os.Exit(1)
+				}
+				failed++
+				continue
+			}
+			_ = fn // execution happens in the retry loop below
+		}
+
 		// Universal step types — the agent translates to local reality.
 		// package: figlet → package-manager install (brew/apt/dnf/apk/…)
 		// schedule: hourly + command: → idempotent crontab install
@@ -2242,7 +2307,11 @@ func recipeRun(args []string, all *runAllCtx) {
 		// Dry run — just print
 		if *dryRun {
 			if showDetail {
-				fmt.Printf("     \033[38;5;240m$ %s\033[0m\n", cmd)
+				if step.Func != "" {
+					fmt.Printf("     \033[38;5;240mλ %s(%s)\033[0m\n", step.Func, substituteVars(step.FuncArgs, vars))
+				} else {
+					fmt.Printf("     \033[38;5;240m$ %s\033[0m\n", cmd)
+				}
 			}
 			passed++
 			continue
@@ -2264,11 +2333,46 @@ func recipeRun(args []string, all *runAllCtx) {
 		var lastExitCode int
 		var stepErr error
 		for attempt := 1; attempt <= maxRetries; attempt++ {
-			eCmd := exec.Command("bash", "-c", cmd)
-			var out []byte
-			out, stepErr = eCmd.CombinedOutput()
-			lastOutput = string(out)
-			lastExitCode = 0
+			if step.Func != "" {
+				// Native path: parse args AFTER var substitution, run
+				// in-process, expose typed outputs.
+				fn, _ := functionlib.Get(step.Func)
+				args, aerr := functionlib.ParseArgs(substituteVars(step.FuncArgs, vars))
+				if aerr == nil {
+					var outputs map[string]any
+					outputs, aerr = fn.Run(functionlib.Context{
+						RepoDir:  vars["repo"],
+						Hostname: vars["hostname"],
+						OS:       vars["os"],
+						Arch:     vars["arch"],
+						Vars:     vars,
+					}, args)
+					if aerr == nil {
+						lastOutput = functionlib.FormatOutputs(outputs)
+						lastExitCode = 0
+						for k, v := range outputs {
+							vars["func."+k] = fmt.Sprintf("%v", v)
+						}
+					}
+				}
+				if aerr != nil {
+					lastOutput = aerr.Error()
+					lastExitCode = 1
+					stepErr = aerr
+				} else {
+					lastExitCode = 0
+					stepErr = nil
+				}
+				// fall through: the shared expectation block below decides
+				// success (expect:/expect_regex:/expect_exit:) and handles
+				// retries — func steps get the identical pipeline.
+			} else {
+				eCmd := exec.Command("bash", "-c", cmd)
+				var out []byte
+				out, stepErr = eCmd.CombinedOutput()
+				lastOutput = string(out)
+				lastExitCode = 0
+			}
 			if stepErr != nil {
 				if exitErr, ok := stepErr.(*exec.ExitError); ok {
 					lastExitCode = exitErr.ExitCode()
@@ -2527,6 +2631,10 @@ func parseRecipe(content string) recipe {
 			currentStep.ScriptArgs = val
 		case "script_lang":
 			currentStep.ScriptLang = val
+		case "func":
+			currentStep.Func = val
+		case "args":
+			currentStep.FuncArgs = val
 		case "package":
 			currentStep.Package = val
 		case "sources":
@@ -2714,6 +2822,25 @@ func resolveScriptPath(scriptName string, repoDir string, recipeFile string) str
 	// If it's already a valid path, use it directly
 	if _, err := os.Stat(scriptName); err == nil {
 		return scriptName
+	}
+
+	// Reserved-namespace guard (Sep 2026): storage./net./system. are
+	// stdlib sets. User space (recipe scripts/, repo modules/) can never
+	// shadow them — a repo file in a reserved set is ignored, so a
+	// stdlib behavior change can't silently alter the meaning of a
+	// user recipe. User code CALLS stdlib; it never replaces it.
+	for _, set := range functionlib.ReservedSets() {
+		if strings.HasPrefix(scriptName, set+"/") {
+			// stdlib namespace: resolve against the agent's embedded
+			// sets only — never recipe-local or repo modules/.
+			if amDir := agentmodules.Dir(); amDir != "" {
+				c := filepath.Join(amDir, scriptName)
+				if _, err := os.Stat(c); err == nil {
+					return c
+				}
+			}
+			return ""
+		}
 	}
 
 	// Derive recipe directory for recipe-local scripts

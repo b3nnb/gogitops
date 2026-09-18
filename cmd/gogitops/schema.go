@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/bennbanks/gogitops/internal/config"
+	"github.com/bennbanks/gogitops/internal/functionlib"
 )
 
 func cmdRecipeSchema(args []string) {
@@ -98,6 +99,12 @@ func buildRecipeSchema(labels, hostnames []string) map[string]any {
 	reqLabels := strList("Node must have ALL of these labels for this step to run.", labels)
 	exclLabels := strList("Step is skipped if the node has ANY of these labels.", labels)
 
+	funcNames := []string{}
+	for _, f := range functionlib.List() {
+		funcNames = append(funcNames, f.Name)
+	}
+	funcEnum := map[string]any{"type": "string", "enum": funcNames, "description": "Native function step: run a stdlib function in-process (typed, no shell). See `gogitops functions`."}
+
 	stepProps := map[string]any{
 		"name":        str("Unique step identifier within the recipe."),
 		"description": str("What this step does (shows in run output + audit log)."),
@@ -133,7 +140,9 @@ func buildRecipeSchema(labels, hostnames []string) map[string]any {
 		"at":              str("Mount step: mount point. Default /mnt/<label> local, /media/<user>/<name> network (Linux); ignored on macOS for network shares)."),
 		"options":         str("Mount step: extra mount options (agent adds _netdev, credentials, uid/gid for network shares)."),
 		"fstab":           map[string]any{"type": "boolean", "description": "Mount step (local devices): persist to fstab (idempotent; sudo only when needed). Network shares use systemd .mount/.automount units."},
-		"credentials":      str("Mount step (network SMB): path to a cifs credentials file. Default ~/.smbcredentials when present; 'none' for guest."),
+		"credentials":     str("Mount step (network SMB): path to a cifs credentials file. Default ~/.smbcredentials when present; 'none' for guest."),
+		"func":            funcEnum,
+		"args":            str("func step inputs: key=value,key2=v2 (or JSON object when values contain commas). {{vars}} substitute here too."),
 	}
 
 	nodeOverrideValue := map[string]any{
