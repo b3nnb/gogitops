@@ -79,8 +79,8 @@ var macSkipPrefixes = []string{
 
 // NICIdentity is a machine's split interface inventory.
 type NICIdentity struct {
-	Macs      []string // built-in / identity-grade MACs
-	Portable  []string // USB adapters + docks + declared-shared: recorded, never matched
+	Macs     []string // built-in / identity-grade MACs
+	Portable []string // USB adapters + docks + declared-shared: recorded, never matched
 }
 
 // DetectNICs enumerates physical interfaces and splits them into identity
@@ -212,12 +212,12 @@ func autoRegisterWith(repoDir, hostname, nebulaIP, lanIP, osLabel string, nic NI
 			}
 			fmt.Fprintf(os.Stderr, "[gogitops] %s is a known machine (%s) — mesh entry refreshed, no duplicate created\n", hostname, match.hostname)
 			return &NodeConfig{
-				Hostname:    match.hostname,
-				NebulaIP:    nonEmpty(nebulaIP, match.facts.nebula),
-				LanIP:       nonEmpty(lanIP, match.facts.lan),
-				MachineID:   machineID,
+				Hostname:     match.hostname,
+				NebulaIP:     nonEmpty(nebulaIP, match.facts.nebula),
+				LanIP:        nonEmpty(lanIP, match.facts.lan),
+				MachineID:    machineID,
 				PortableMacs: nic.Portable,
-				Labels:      match.facts.labels,
+				Labels:       match.facts.labels,
 			}, nil
 		}
 		// Conflicts (machine-ids differ but BUILT-IN MACs overlap) must NOT
@@ -230,11 +230,11 @@ func autoRegisterWith(repoDir, hostname, nebulaIP, lanIP, osLabel string, nic NI
 
 	cfg := &NodeConfig{
 		Hostname:     hostname,
-		NebulaIP:    nebulaIP,
-		LanIP:       lanIP,
-		Labels:      []string{"compute", osLabel},
-		MachineID:   machineID,
-		Macs:        nic.Macs,
+		NebulaIP:     nebulaIP,
+		LanIP:        lanIP,
+		Labels:       []string{"compute", osLabel},
+		MachineID:    machineID,
+		Macs:         nic.Macs,
 		PortableMacs: nic.Portable,
 	}
 
@@ -323,12 +323,15 @@ func saveOwnMeshEntry(repoDir, hostname string, p Peer) {
 	submitMeshFile(repoDir, hostname)
 }
 
-// submitMeshFile commits and pushes the node's own mesh.d/ file — the
-// "submit" in the per-node mesh model. Concurrent submissions are safe by
-// construction: files are disjoint, so a rebase over another node's pushed
-// commit is always clean. Every failure degrades to local-only (the
-// pre-submit behavior) — a node without push credentials simply keeps its
-// entry current locally; never fatal.
+// submitMeshFile commits the node's own mesh.d/ file (plus its nodes/ config
+// on first enrollment) and pushes to the node's OWN branch —
+// node/<hostname> — never main. CI (node-enrollment workflow) sees the
+// node/* branch preface and opens the self-sync PR; a human merges and the
+// change lands on main. Deploy keys stay write-scoped but main becomes the
+// review gate. Concurrent submissions are safe by construction: files are
+// disjoint per node. Every failure degrades to local-only (the pre-submit
+// behavior) — a node without push credentials simply keeps its entry current
+// locally; never fatal.
 func submitMeshFile(repoDir, hostname string) {
 	rel := filepath.ToSlash(filepath.Join("mesh.d", hostname+".yaml"))
 	run := func(args ...string) (string, bool) {
@@ -344,35 +347,37 @@ func submitMeshFile(repoDir, hostname string) {
 		fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: git add: %s\n", out)
 		return
 	}
-	if _, ok := run("diff", "--cached", "--quiet", "--", rel); ok {
+	enrolling := false
+	nodeCfgRel := filepath.ToSlash(filepath.Join("nodes", hostname+".yaml"))
+	if _, err := os.Stat(filepath.Join(repoDir, nodeCfgRel)); err == nil {
+		// enrollment: our node config exists locally but not on origin/main
+		// yet → include it in the same submission
+		if _, ok := run("cat-file", "-e", "origin/main:"+nodeCfgRel); !ok {
+			if _, ok := run("add", "--", nodeCfgRel); ok {
+				enrolling = true
+			}
+		}
+	}
+	if _, ok := run("diff", "--cached", "--quiet"); ok {
 		return // nothing staged — no change to submit
 	}
-	if out, ok := run("commit", "-m", "mesh: "+hostname+" self-refresh (agent)", "--", rel); !ok {
+	msg := "mesh: " + hostname + " self-refresh (agent)"
+	if enrolling {
+		msg = "node: " + hostname + " enrollment (agent)"
+	}
+	if out, ok := run("commit", "-m", msg); !ok {
 		fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: git commit: %s\n", out)
 		return
 	}
-	for attempt := 0; attempt < 2; attempt++ {
-		out, ok := run("push", "origin", "HEAD")
-		if ok {
-			return // submitted
-		}
-		rejected := strings.Contains(out, "non-fast-forward") ||
-			strings.Contains(out, "fetch first") ||
-			strings.Contains(out, "[rejected]")
-		if !rejected {
-			fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: git push: %s\n", out)
-			return
-		}
-		// Another node's submission landed first — rebase ours under it
-		// (disjoint files → clean) and retry once.
-		if out, ok := run("-c", "rebase.autoStash=true", "pull", "--rebase"); !ok {
-			run("rebase", "--abort")
-			run("stash", "pop")
-			fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: rebase failed: %s\n", out)
-			return
-		}
+	// Push to the node's own branch — a submission mailbox owned by exactly
+	// one writer, so force is always correct (content = current main + this
+	// node's commits). CI opens/updates the PR; main stays human-gated.
+	branch := "refs/heads/node/" + hostname
+	if out, ok := run("push", "--force", "origin", "HEAD:"+branch); !ok {
+		fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: git push: %s\n", out)
+		return
 	}
-	fmt.Fprintf(os.Stderr, "[gogitops] mesh submit local-only: push rejected twice\n")
+	fmt.Fprintf(os.Stderr, "[gogitops] mesh submitted to %s — CI opens the self-sync PR\n", branch)
 }
 
 // SyncSelfToMesh refreshes a KNOWN machine's own mesh entry at daemon

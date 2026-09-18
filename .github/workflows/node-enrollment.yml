@@ -1,0 +1,38 @@
+name: node-enrollment
+# Nodes push their own mesh/config submissions to node/<hostname> branches
+# (never main). This workflow sees the node/* preface and opens (or keeps
+# open) the self-sync PR so a human merges — main stays the review gate.
+on:
+  push:
+    branches: ['node/**']
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open or update the node self-sync PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BR: ${{ github.ref_name }}
+        run: |
+          HOST="${BR#node/}"
+          if [ "$(gh pr list --head "$BR" --base main --json number --jq 'length')" -gt 0 ]; then
+            echo "PR for $BR already open — new commits update it automatically"
+            exit 0
+          fi
+          BODY="Automated node submission pushed to $BR by the $HOST agent.
+
+          Contents: this node's own files only (mesh.d/$HOST.yaml) — disjoint from every other node's submission. First-time enrollment also carries nodes/$HOST.yaml.
+
+          Merge style: use Rebase and merge or Merge commit — NOT squash — so the agent's local history deduplicates cleanly on its next pull-rebase."
+          if gh pr create --base main --head "$BR" --title "node: $HOST self-sync" --body "$BODY"; then
+            echo "PR opened for $BR"
+          else
+            echo "no diff vs main (already merged?) — nothing to do"
+          fi

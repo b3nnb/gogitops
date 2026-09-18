@@ -368,15 +368,17 @@ func TestSubmitMeshFilePushes(t *testing.T) {
 	if _, ok := run("log", "-1", "--oneline"); !ok {
 		t.Fatal("submit must leave a commit on the branch")
 	}
-	// the push must have landed on the bare remote
-	cmd := exec.Command("git", "--git-dir", remote, "show-ref", "--verify", "refs/heads/main")
+	// the push must land on the node's OWN branch — never main
+	cmd := exec.Command("git", "--git-dir", remote, "show-ref", "--verify", "refs/heads/node/friday")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		cmd := exec.Command("git", "--git-dir", remote, "show-ref", "--verify", "refs/heads/master")
-		if out2, err2 := cmd.CombinedOutput(); err2 != nil {
-			t.Fatalf("push did not land on remote main/master: %v / %v (%s / %s)", err, err2, out, out2)
+		t.Fatalf("push did not land on node/friday: %v (%s)", err, out)
+	}
+	if out, _ := exec.Command("git", "--git-dir", remote, "show-ref", "--verify", "refs/heads/main").CombinedOutput(); len(out) > 0 || true {
+		if _, err := exec.Command("git", "--git-dir", remote, "show-ref", "--verify", "refs/heads/main").CombinedOutput(); err == nil {
+			t.Fatal("main must NOT be updated by a node submission — PR gate only")
 		}
 	}
-	nameOnly, _ := exec.Command("git", "--git-dir", remote, "ls-tree", "-r", "--name-only", "HEAD").CombinedOutput()
+	nameOnly, _ := exec.Command("git", "--git-dir", remote, "ls-tree", "-r", "--name-only", "node/friday").CombinedOutput()
 	if !strings.Contains(string(nameOnly), "mesh.d/friday.yaml") {
 		t.Errorf("remote HEAD must contain the submitted file, got: %s", nameOnly)
 	}
