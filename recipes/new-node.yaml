@@ -1,7 +1,11 @@
 name: new-node
 description: "Full first-time node setup — updates first, then base packages, user hygiene, SSH fleet keys, nenv, dnclient/Nebula, Docker, Caddy, firewall, CLI tools, cosmetics"
 version: "1.4.0"
-labels: []   # orchestrated explicitly (fleet-enroll.service, first boot) — not tag-scoped
+labels: [new-node]   # first-boot only: fresh nodes carry the new-node tag (see
+              # nodes/*.yaml convention: new-node + needs-setup, flipped off in
+              # git once verified enrolled). run-all skips this recipe on every
+              # enrolled node; explicit `recipe run new-node` on a fresh box
+              # still works — the tag IS the enrollment state.
 
 steps:
   # ── 0. Updates first (Benn, Sep 16: run + install ALL updates before anything else) ──
@@ -28,8 +32,8 @@ steps:
     on_failure: continue
 
   - name: force-password-change
-    description: "Force benn password change on first login"
-    command: "sudo chage -d 0 benn"
+    description: "Force benn password change on first login (first boot only — guarded)"
+    command: "systemctl -q is-enabled fleet-enroll.service 2>/dev/null && sudo chage -d 0 benn || echo 'skip: not first boot (fleet-enroll.service not enabled)'"
     on_failure: continue
 
   # ── 1. SSH: install fleet keys (authorized_keys.d pattern) ──
