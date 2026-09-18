@@ -18,7 +18,7 @@ jobs:
 
       - name: Open or update the node self-sync PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
           BR: ${{ github.ref_name }}
         run: |
           HOST="${BR#node/}"
