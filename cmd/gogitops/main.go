@@ -129,8 +129,8 @@ func main() {
 	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "status":
-			cmdStatus(os.Args[2:])
+		case "status": // alias of info since Sep 17 2026 (status content merged into info)
+			cmdInfo(os.Args[2:])
 		case "fleet":
 			cmdFleet(os.Args[2:])
 		case "info":
@@ -288,7 +288,7 @@ func printHelp() {
 
   %sREMOTE AGENTS%s
 
-    gogitops status   -addr 10.0.0.229:7780
+    gogitops info     -addr 10.0.0.229:7780  (status = alias)
     gogitops config   -addr mini:7780
     gogitops git-pull -addr 10.200.0.4:7780
     gogitops restart  -addr 10.0.0.229:7780 -hard
@@ -339,18 +339,6 @@ func printHelp() {
 
 // ── status: show local or remote agent health ────────────────────────────
 
-func cmdStatus(args []string) {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	addr := fs.String("addr", "127.0.0.1:7780", "agent health API address")
-	fs.Parse(args)
-
-	h, err := cli.FetchHealth(*addr)
-	if err != nil {
-		cli.PrintError(fmt.Sprintf("agent not reachable at %s", *addr))
-		os.Exit(1)
-	}
-	cli.PrintStatus(h, *addr)
-}
 
 // ── fleet: show all agents in compact view ───────────────────────────────
 
@@ -474,8 +462,24 @@ func cmdInfo(args []string) {
 	cli.Banner()
 	fmt.Println()
 
-	// Header
-	fmt.Printf("  \033[1m\033[38;5;141m%s\033[0m %s\n\n", h.Hostname, h.AgentVersion)
+	// Header — fleet health summary absorbed from the retired status cmd (Sep 17 2026)
+	upCount, downCount := 0, 0
+	for _, v := range h.Services {
+		if v == "running" {
+			upCount++
+		} else {
+			downCount++
+		}
+	}
+	healthIcon := "\033[38;5;46m●\033[0m"
+	if downCount > 0 {
+		healthIcon = "\033[38;5;226m◐\033[0m"
+	}
+	if upCount == 0 && downCount > 0 {
+		healthIcon = "\033[38;5;196m○\033[0m"
+	}
+	fmt.Printf("  \033[1m\033[38;5;141m%s\033[0m %s  %s\n", h.Hostname, h.AgentVersion, healthIcon)
+	fmt.Printf("  \033[38;5;240m%d/%d services\033[0m\n\n", upCount, upCount+downCount)
 
 	// System attributes
 	fmt.Printf("  %s╭─ Attributes ─────────────────%s\n", "\033[38;5;240m", "\033[0m")

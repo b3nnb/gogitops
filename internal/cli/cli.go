@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 	"time"
 )
@@ -150,119 +149,6 @@ func Banner() {
 
 // ── Commands ─────────────────────────────────────────────────────────────
 
-// PrintStatus renders a colorful, detailed status view for one agent
-func PrintStatus(h *HealthResponse, addr string) {
-	Banner()
-	fmt.Println()
-
-	// Header line
-	up, down := 0, 0
-	for _, v := range h.Services {
-		if v == "running" {
-			up++
-		} else {
-			down++
-		}
-	}
-	healthIcon := green + "●" + reset
-	if down > 0 {
-		healthIcon = yellow + "◐" + reset
-	}
-	if up == 0 && down > 0 {
-		healthIcon = red + "○" + reset
-	}
-
-	fmt.Printf("  %s%s%s %s%s%s  %s%s%s\n",
-		bold, purple, h.Hostname, reset,
-		bold, h.AgentVersion, reset,
-		dim, formatUptime(h.UptimeSeconds))
-	fmt.Printf("  %s %s%d/%d services%s\n",
-		healthIcon, grey, up, up+down, reset)
-	fmt.Println()
-
-	// System info
-	fmt.Printf("  %s╭─ System ──────────────────────%s\n", greyDark, reset)
-	fmt.Printf("  %s│%s OS       %s%s%s\n", greyDark, reset, white, h.System.OS, reset)
-	fmt.Printf("  %s│%s Arch     %s%s%s\n", greyDark, reset, white, h.System.Arch, reset)
-	fmt.Printf("  %s│%s IP       %s%s%s\n", greyDark, reset, teal, h.System.IP, reset)
-	fmt.Printf("  %s│%s Host ID  %s%s%s\n", greyDark, reset, dim, h.System.HostID, reset)
-	if h.NebulaRunning {
-		fmt.Printf("  %s│%s Nebula   %s● running%s\n", greyDark, reset, green, reset)
-	} else {
-		fmt.Printf("  %s│%s Nebula   %s○ down%s\n", greyDark, reset, red, reset)
-	}
-	fmt.Printf("  %s╰──────────────────────────────%s\n", greyDark, reset)
-	fmt.Println()
-
-	// Labels / tags
-	if len(h.Labels) > 0 {
-		fmt.Printf("  %s╭─ Tags ──────────────────────%s\n", greyDark, reset)
-		tags := []string{}
-		stacks := []string{}
-		for _, l := range h.Labels {
-			if strings.HasPrefix(l, "stack:") {
-				stacks = append(stacks, l[6:])
-			} else {
-				tags = append(tags, l)
-			}
-		}
-		if len(tags) > 0 {
-			fmt.Printf("  %s│%s Tags     %s%s%s\n", greyDark, reset, teal, strings.Join(tags, " "), reset)
-		}
-		if len(stacks) > 0 {
-			fmt.Printf("  %s│%s Stacks   %s%s%s\n", greyDark, reset, yellowDim, strings.Join(stacks, " "), reset)
-		}
-		fmt.Printf("  %s╰──────────────────────────────%s\n", greyDark, reset)
-		fmt.Println()
-	}
-
-	// Services
-	fmt.Printf("  %s╭─ Services ───────────────────%s\n", greyDark, reset)
-	names := make([]string, 0, len(h.Services))
-	for k := range h.Services {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		status := h.Services[name]
-		col := colorForStatus(status)
-		icon := iconForStatus(status)
-		fmt.Printf("  %s│%s %s%s%s  %s%s%s\n",
-			greyDark, reset,
-			col, icon, reset,
-			grey, padRight(name, 22), reset)
-		if status != "running" {
-			fmt.Printf("  %s   %s%s%s\n", greyDark, redDim, status, reset)
-		}
-	}
-	fmt.Printf("  %s╰──────────────────────────────%s\n", greyDark, reset)
-	fmt.Println()
-
-	// Peers — only show if at least one is reachable (standalone nodes have no peers)
-	if len(h.PeersReachable) > 0 {
-		fmt.Printf("  %s╭─ Peers ──────────────────────%s\n", greyDark, reset)
-		for _, p := range h.PeersReachable {
-			fmt.Printf("  %s│%s %s●%s  %s%s%s\n", greyDark, reset, green, reset, grey, p, reset)
-		}
-		for _, p := range h.PeersUnreach {
-			fmt.Printf("  %s│%s %s○%s  %s%s%s\n", greyDark, reset, red, reset, greyDark, p, reset)
-		}
-		fmt.Printf("  %s╰──────────────────────────────%s\n", greyDark, reset)
-		fmt.Println()
-	}
-
-	// Disk warnings
-	if len(h.DiskWarns) > 0 {
-		fmt.Printf("  %s╭─ Disk Warnings ──────────────%s\n", greyDark, reset)
-		for _, w := range h.DiskWarns {
-			fmt.Printf("  %s│%s %s⚠%s  %s%s%s\n", greyDark, reset, yellow, reset, yellowDim, w, reset)
-		}
-		fmt.Printf("  %s╰──────────────────────────────%s\n", greyDark, reset)
-		fmt.Println()
-	}
-}
-
-// PrintCompact renders a one-line summary (for fleet view)
 func PrintCompact(h *HealthResponse) {
 	up, down := 0, 0
 	for _, v := range h.Services {
