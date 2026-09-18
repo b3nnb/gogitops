@@ -1,6 +1,6 @@
 name: setup-nenv
 description: "Configure nenv CLI to connect to the fleet NetEnv server with a live bearer token"
-version: "1.0.0"
+version: "1.1.0"
 labels: []
 auto_apply: true
 
@@ -33,23 +33,19 @@ steps:
   # ── Check for token ──
   # Token comes from NENV_TOKEN env var (set by gogitops agent from live beacon config).
   # This way the token is NEVER baked into the ISO — always pulled live at recipe runtime.
+  # Missing token = hard fail (abort): convergence must retry, not record a false-ok.
   - name: check-token
-    description: "Verify a token is available from environment"
-    command: 'test -n "$NENV_TOKEN" && echo "ok" || echo "missing"'
+    description: "Verify a token is available from environment (abort if missing)"
+    command: 'test -n "$NENV_TOKEN" && echo "ok" || { echo "missing: NENV_TOKEN not set in agent environment"; exit 1; }'
     parse: regex
     pattern: "(.+)"
+    on_failure: abort
 
   - name: write-nenv-config
     description: "Write nenv config.toml with server URL and live token"
     command: 'printf "server = \"%s\"\ntoken = \"%s\"\nnamespace = \"global\"\n" "{{2}}" "$NENV_TOKEN" > {{1}}/.config/nenv/config.toml && chmod 600 {{1}}/.config/nenv/config.toml'
     when: "test '{{3}}' = 'ok'"
     on_failure: abort
-
-  - name: warn-no-token
-    description: "Warn that no token was found"
-    command: 'echo "WARNING: NENV_TOKEN env var not set. Set it via gogitops agent config or: export NENV_TOKEN=<your-token>"'
-    when: "test '{{3}}' = 'missing'"
-    on_failure: continue
 
   # ── Verify nenv works ──
   - name: verify-nenv
