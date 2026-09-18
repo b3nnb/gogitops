@@ -1,6 +1,6 @@
 name: nas-middleearth-mount
 description: "Mount NAS MiddleEarth share (//10.2.0.103/MiddleEarth) at /media/benn/MiddleEarth via systemd .mount + .automount units — boot-safe, lazy (first access mounts). macOS: /Volumes/MiddleEarth via mount_smbfs."
-version: "1.0.0"
+version: "1.1.0"
 labels: [laptop]
 auto_apply: true
 
@@ -12,3 +12,7 @@ steps:
     credentials: nenv:global/NAS_USERNAME,nenv:global/NAS_PASSWORD
     options: vers=3.0,soft,actimeo=30
     expect_regex: 'state=(mounted|already-mounted|units-active|mounted-fallback|units-armed)'
+
+  - name: login-mount-trigger
+    description: "User unit: touch the mountpoint at every login so the lazy automount is already mounted when the desktop session starts (no root, idempotent)"
+    command: 'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; mkdir -p "$HOME/.config/systemd/user"; printf "%s\n" "[Unit]" "Description=Trigger MiddleEarth automount at login (gogitops)" "[Service]" "Type=oneshot" "ExecStart=/bin/sh -c \"for i in 1 2 3 4 5 6 7 8 9 10 11 12; do ls /media/benn/MiddleEarth >/dev/null 2>&1 && exit 0; sleep 5; done; true\"" "[Install]" "WantedBy=default.target" > "$HOME/.config/systemd/user/gogitops-mount-trigger-middleearth.service" && systemctl --user daemon-reload && systemctl --user enable gogitops-mount-trigger-middleearth.service >/dev/null 2>&1 && systemctl --user start gogitops-mount-trigger-middleearth.service && echo trigger-armed'
