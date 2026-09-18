@@ -1,6 +1,7 @@
 name: obsidian-vault
 description: "Ensure Obsidian is installed on admin nodes; pre-configure the remote vault connection on remote-admin nodes (non-Friday devices only — Friday hosts the vault natively)"
-version: "1.0.0"
+version: "1.1.0"
+auto_apply: true
 labels: [admin]
 
 # Label contract (nodes/<hostname>.yaml):
