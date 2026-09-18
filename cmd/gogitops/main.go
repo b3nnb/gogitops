@@ -1982,42 +1982,42 @@ func cmdTags(args []string) {
 // ── Recipe runner ─────────────────────────────────────────────────────────
 
 type recipeStep struct {
-	Name         string   `yaml:"name"`
-	Description  string   `yaml:"description"`
-	Command      string   `yaml:"command"`
-	Script       string   `yaml:"script"`
-	ScriptArgs   string   `yaml:"script_args"`
-	ScriptLang   string   `yaml:"script_lang"`
-	Func         string   `yaml:"func"`
-	FuncArgs     string   `yaml:"args"`
-	Package      string   `yaml:"package"`
-	Sources      []string `yaml:"sources"`
-	Schedule     string   `yaml:"schedule"`
-	OS           string   `yaml:"os"`
-	Arch         string   `yaml:"arch"`
-	LabelsReq    []string `yaml:"labels_required"`
-	LabelsExcl   []string `yaml:"labels_exclude"`
-	Expect       string   `yaml:"expect"`
-	ExpectRegex  string   `yaml:"expect_regex"`
-	ExpectExit   *int     `yaml:"expect_exit"`
-	Parse        string   `yaml:"parse"`
-	Pattern      string   `yaml:"pattern"`
-	OnlyIf       string   `yaml:"only_if"`
-	When         string   `yaml:"when"`
-	OnFailure    string   `yaml:"on_failure"`
-	Retries      int      `yaml:"retries"`
-	RetryDelay   string   `yaml:"retry_delay"`
-	Assert       string   `yaml:"assert"`
-	SetAttr      string   `yaml:"set_attr"`
-	AttrPrefix   string   `yaml:"attr_prefix"`
-	WhenAttr     string   `yaml:"when_attr"`
-	OnlyIfAttr   string   `yaml:"only_if_attr"`
-	Mount        string   `yaml:"mount"`
-	MountDevice  string   `yaml:"device"`
-	MountAt      string   `yaml:"at"`
-	MountOptions string   `yaml:"options"`
-	MountFstab   bool     `yaml:"fstab"`
-	MountCreds   string   `yaml:"credentials"`
+	Name         string    `yaml:"name"`
+	Description  string    `yaml:"description"`
+	Command      string    `yaml:"command"`
+	Script       string    `yaml:"script"`
+	ScriptArgs   string    `yaml:"script_args"`
+	ScriptLang   string    `yaml:"script_lang"`
+	Func         string    `yaml:"func"`
+	FuncArgs     string    `yaml:"args"`
+	Package      string    `yaml:"package"`
+	Sources      []string  `yaml:"sources"`
+	Schedule     string    `yaml:"schedule"`
+	OS           string    `yaml:"os"`
+	Arch         string    `yaml:"arch"`
+	LabelsReq    []string  `yaml:"labels_required"`
+	LabelsExcl   []string  `yaml:"labels_exclude"`
+	Expect       string    `yaml:"expect"`
+	ExpectRegex  string    `yaml:"expect_regex"`
+	ExpectExit   *int      `yaml:"expect_exit"`
+	Parse        string    `yaml:"parse"`
+	Pattern      string    `yaml:"pattern"`
+	OnlyIf       string    `yaml:"only_if"`
+	When         string    `yaml:"when"`
+	OnFailure    string    `yaml:"on_failure"`
+	Retries      int       `yaml:"retries"`
+	RetryDelay   string    `yaml:"retry_delay"`
+	Assert       string    `yaml:"assert"`
+	SetAttr      string    `yaml:"set_attr"`
+	AttrPrefix   string    `yaml:"attr_prefix"`
+	WhenAttr     string    `yaml:"when_attr"`
+	OnlyIfAttr   string    `yaml:"only_if_attr"`
+	Mount        string    `yaml:"mount"`
+	MountDevice  string    `yaml:"device"`
+	MountAt      string    `yaml:"at"`
+	MountOptions string    `yaml:"options"`
+	MountFstab   bool      `yaml:"fstab"`
+	MountCreds   string    `yaml:"credentials"`
 	Tags         *stepTags `yaml:"tags"`
 }
 
@@ -3999,15 +3999,28 @@ var fleetTestState struct {
 	results []testResult
 }
 
+// testResultJSON is the exported mirror of testResult — the json encoder
+// skips unexported fields, which silently serialized every result as {}
+// (so the dashboard could never see WHICH tests failed).
+type testResultJSON struct {
+	Module string `json:"module"`
+	Name   string `json:"name"`
+	Status string `json:"status"` // pass, fail, skip
+}
+
 func fleetTestsHandler(w http.ResponseWriter, r *http.Request) {
 	fleetTestState.mu.Lock()
 	defer fleetTestState.mu.Unlock()
+	results := make([]testResultJSON, len(fleetTestState.results))
+	for i, tr := range fleetTestState.results {
+		results[i] = testResultJSON{Module: tr.module, Name: tr.name, Status: tr.status}
+	}
 	resp := map[string]any{
 		"when":    fleetTestState.when,
 		"pass":    fleetTestState.pass,
 		"fail":    fleetTestState.fail,
 		"skip":    fleetTestState.skip,
-		"results": fleetTestState.results,
+		"results": results,
 		"attrs":   readDeviceAttrs(),
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -4571,6 +4584,7 @@ func runDashboard(args []string) {
 	defer store.Close()
 
 	dashURL := fmt.Sprintf("http://%s:%d", *dashHost, *port)
+	dashboard.Version = version // real build version for the topbar pill
 	h := dashboard.NewHandler(store, nodes, dashURL, *binDir)
 
 	http.Handle("/", h)
