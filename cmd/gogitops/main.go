@@ -3968,7 +3968,11 @@ func persistTestAttrs(attrs map[string]string, setKeys map[string]bool, all []te
 			skip++
 		}
 	}
-	store := map[string]string{}
+	// MERGE with the live store — a fresh map here meant every suite/module
+	// run REPLACED the file and wiped attrs written by other runners (system
+	// collector keys like load.1, docker_*, hostname vanished until the next
+	// cycle rewrote them). The doc comment always said "merges".
+	store := readDeviceAttrs()
 	for k, v := range attrs {
 		if !setKeys[k] {
 			continue // hydrated (merely read) attrs never persist
