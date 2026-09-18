@@ -5,6 +5,7 @@ lan_ip: 10.0.0.251
 labels:
   - compute
   - mac
+  - nas
   - gpu
   - llm-inference
   - image-gen

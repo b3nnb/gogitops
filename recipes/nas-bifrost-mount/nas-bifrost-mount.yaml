@@ -1,7 +1,7 @@
 name: nas-bifrost-mount
 description: "Mount NAS Bifrost share — Linux: systemd .mount + .automount at /media/benn/Bifrost (boot-safe lazy, login-triggered); macOS: /Volumes/Bifrost via mount_smbfs (Keychain auth) with a login LaunchAgent."
 version: "1.2.0"
-labels: [laptop, mac]
+labels: [nas]
 auto_apply: true
 
 steps:
