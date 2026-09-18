@@ -1,6 +1,6 @@
 name: obsidian-vault
 description: "Ensure Obsidian is installed on admin nodes; pre-configure the remote vault connection on remote-admin nodes (non-Friday devices only — Friday hosts the vault natively)"
-version: "1.3.0"
+version: "1.4.0"
 auto_apply: true
 labels: [admin]
 
@@ -45,9 +45,9 @@ steps:
     retry_delay: 5s
 
   - name: install-obsidian-brew
-    description: "Install Obsidian via Homebrew cask (macOS nodes)"
-    command: "brew install --cask obsidian"
-    when: "! (command -v obsidian >/dev/null 2>&1 || ls /Applications 2>/dev/null | grep -qi obsidian) && command -v brew >/dev/null 2>&1"
+    description: "Install Obsidian via Homebrew cask (macOS nodes) — explicit brew path: launchd agents have no /opt/homebrew/bin in PATH"
+    command: "BREW=$(command -v brew 2>/dev/null); [ -x \"$BREW\" ] || BREW=/opt/homebrew/bin/brew; [ -x \"$BREW\" ] || BREW=/usr/local/bin/brew; \"$BREW\" install --cask obsidian"
+    when: "! (command -v obsidian >/dev/null 2>&1 || ls /Applications 2>/dev/null | grep -qi obsidian) && (command -v brew >/dev/null 2>&1 || test -x /opt/homebrew/bin/brew || test -x /usr/local/bin/brew)"
     on_failure: continue
     retries: 2
     retry_delay: 5s
