@@ -1,0 +1,36 @@
+name: binary-cleanup
+description: "Converge every gogitops binary to the ONE canonical user-mode path (~/.local/bin/gogitops): migrate daemons running from deviant paths (unit repoint + restart), de-symlink, remove shadow copies (root-owned /usr/local/bin needs sudo/pkexec), then verify PATH resolves to exactly one binary whose version matches the daemon. Never deletes the binary a running daemon uses before the daemon is migrated off it."
+version: "1.0.0"
+labels: []   # any user-mode agent node
+
+steps:
+  - name: detect-layout
+    description: "Enumerate gogitops binaries + identify the running daemon's binary (user unit, system unit, or live process)"
+    command: 'BINS=$(ls /usr/local/bin/gogitops $HOME/bin/gogitops $HOME/.local/bin/gogitops 2>/dev/null); echo "binaries-found:"; echo "$BINS" | sed "s|^|  |"; D=""; for U in gogitops gogitops-daemon; do E=$(systemctl --user show $U -p ExecStart 2>/dev/null); [ -n "$E" ] && D=$(echo "$E" | grep -oP "path=\\K[^ ;]+"); [ -n "$D" ] && break; done; if [ -z "$D" ]; then E=$(systemctl show gogitops-daemon -p ExecStart 2>/dev/null); [ -n "$E" ] && D=$(echo "$E" | grep -oP "path=\\K[^ ;]+"); fi; if [ -z "$D" ]; then D=$(pgrep -af "gogitops daemon" 2>/dev/null | head -1 | grep -oP "^\\S+(/gogitops\\S*)" || pgrep -af "gogitops daemon" 2>/dev/null | head -1 | awk "{print \\$1}"); fi; echo "daemon-binary=$D"; echo "$D" > /tmp/gogitops-cleanup-daemon'
+
+  - name: migrate-daemon-binary
+    description: "If the daemon runs from anywhere but ~/.local/bin/gogitops: copy it there (real file, never a symlink), repoint unit ExecStart, restart — the old path stays untouched until step 4"
+    command: 'D=$(cat /tmp/gogitops-cleanup-daemon); C=$HOME/.local/bin/gogitops; if [ -z "$D" ]; then echo WARN-no-daemon-detected; exit 0; fi; if [ "$D" = "$C" ]; then echo daemon-already-canonical; exit 0; fi; mkdir -p $HOME/.local/bin; [ -L "$C" ] && rm "$C"; cp "$D" "$C" && chmod +x "$C" && echo "copied $D -> $C"; if command -v systemctl >/dev/null 2>&1 && [ -d $HOME/.config/systemd/user ]; then for U in gogitops gogitops-daemon; do F=$HOME/.config/systemd/user/$U.service; [ -f "$F" ] && sed -i "s|$D|$C|g" "$F"; done; systemctl --user daemon-reload; for U in gogitops gogitops-daemon; do systemctl --user is-active $U >/dev/null 2>&1 && { systemctl --user restart $U && echo "restarted-user-$U"; break; }; done; else echo "note: no user systemd (macOS hand-started daemon) — next manual start should use $C"; fi'
+
+  - name: wait-for-daemon
+    description: "Wait for the (possibly just-restarted) agent to answer on localhost"
+    command: 'ok=0; for i in 1 2 3 4 5 6; do curl -s --max-time 4 http://127.0.0.1:7780/v1/health | grep -q hostname && { ok=1; break; }; sleep 5; done; [ $ok = 1 ] && echo daemon-up || { echo WARN-daemon-not-answering; exit 1; }'
+
+  - name: remove-user-shadows
+    description: "Delete user-owned non-canonical copies (~/bin/gogitops) — only after confirming nothing runs from them"
+    command: 'for P in $HOME/bin/gogitops; do if [ -e "$P" ] || [ -L "$P" ]; then if pgrep -f "^$P( |$)" >/dev/null 2>&1; then echo "WARN $P still running a daemon — not removed"; else rm -f "$P" && echo "removed $P"; fi; else echo "no-shadow $P"; fi; done'
+
+  - name: remove-root-shadow
+    description: "Remove the root-owned fossil at /usr/local/bin/gogitops — sudo -n when passwordless, else pkexec (password dialog pops on the node's screen)"
+    command: 'if [ -e /usr/local/bin/gogitops ]; then if sudo -n true 2>/dev/null; then sudo -n rm /usr/local/bin/gogitops && echo removed-root-shadow-via-sudo; elif command -v pkexec >/dev/null 2>&1; then pkexec rm /usr/local/bin/gogitops && echo removed-root-shadow-via-pkexec || echo "WARN pkexec declined — root fossil remains, remove manually: sudo rm /usr/local/bin/gogitops"; else echo "WARN no sudo/pkexec — remove manually: sudo rm /usr/local/bin/gogitops"; fi; else echo no-root-shadow; fi'
+    on_failure: continue
+
+  - name: verify-converged
+    description: "PATH must resolve to ~/.local/bin/gogitops, exactly one binary must exist across known paths, and CLI version must match the daemon"
+    command: 'W=$(command -v gogitops); N=$(ls /usr/local/bin/gogitops $HOME/bin/gogitops $HOME/.local/bin/gogitops 2>/dev/null | wc -l); V=$($HOME/.local/bin/gogitops version 2>/dev/null | grep -oE "v[0-9]+\\.[0-9]+\\.[0-9]+" | tail -1); H=$(curl -s --max-time 4 http://127.0.0.1:7780/v1/health | grep -oE "\"agent_version\":\"v[0-9.]+\"" | grep -oE "v[0-9.]+"); echo "path=$W count=$N cli=$V daemon=$H"; [ "$W" = "$HOME/.local/bin/gogitops" ] && echo path-ok || echo WARN-path-resolves-elsewhere; [ "$N" = "1" ] && echo exactly-one-binary || echo WARN-$N-binaries-remain; [ -n "$V" ] && [ "$V" = "$H" ] && echo version-match || echo WARN-version-mismatch; rm -f /tmp/gogitops-cleanup-daemon'
+
+  - name: darwin-note
+    description: "macOS: daemon is hand-started — this recipe copies/migrates the binary, but the RUNNING daemon keeps the old path until the next manual start (launchd/cron spawns hang by design)"
+    command: 'echo "note: darwin daemon is hand-started; canonical binary staged at ~/.local/bin/gogitops — start it with that path next time"'
+    os: darwin
+    on_failure: continue
