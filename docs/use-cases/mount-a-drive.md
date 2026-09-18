@@ -42,6 +42,43 @@ steps:
 | `uuid=<uuid>` | stable across reboots & re-plug (preferred) |
 | `label=<label>` | filesystem label |
 | `/dev/sdb1` | raw path (breaks if enumeration changes) |
+| `//server/share` | SMB/CIFS network share (NAS etc.) |
+| `server:/path` | NFS export |
+
+## Network shares (v0.7.2+)
+
+One step mounts a NAS share the way systemd does it natively — a `.mount`
+unit backed by a lazy `.automount` unit, boot-safe (a down server never
+blocks boot) and idempotent (already-mounted = pass; unchanged units are
+left alone; foreign units are never clobbered):
+
+```yaml
+steps:
+  - name: bifrost
+    mount: Bifrost                 # volume name (path component + unit name)
+    device: //10.2.0.103/Bifrost   # SMB share (//user@server/share also works)
+    at: /media/benn/Bifrost        # optional — default /media/<user>/<name>
+    credentials: ~/.smbcredentials # optional — default when the file exists
+    options: vers=3.0,soft,actimeo=30
+```
+
+- **Linux** — the agent writes `media-benn-Bifrost.mount` +
+  `media-benn-<name>`-style `.automount` units to `/etc/systemd/system`,
+  installs `cifs-utils` when missing, daemon-reloads, enables the automount,
+  and verifies with a real `ls` (which forces the lazy mount).
+- **macOS** — `mount_smbfs` at `/Volumes/<name>`; the recipe's `at:` path is
+  ignored (volumes live where Finder expects). Auth comes from the user's
+  Keychain — store the server password there for agent-run mounts.
+- **Root** — unit writes need privilege: `sudo -n` (NOPASSWD/cached) →
+  `pkexec` (desktop password dialog, 120s) → clean fail with a hint. The
+  step never hangs on a password prompt.
+- **NFS** — same flow with `device: nas:/export/path`, `Type=nfs`.
+- States emitted: `state=mounted | already-mounted | units-armed |
+  units-active | mounted-fallback | fail reason=…` (match with
+  `expect_regex`).
+
+Real recipes: `recipes/nas-bifrost-mount/`, `recipes/nas-middleearth-mount/`.
+End-to-end self-test (real share, then cleanup): `recipes/test-netmount/`.
 
 ## Testing without mkfs
 

@@ -1,0 +1,36 @@
+name: test-netmount
+description: "TEST ONLY: end-to-end verification of the network mount: step — writes units, mounts, unmounts, removes units. Not scoped (test run by hand)."
+version: "1.0.0"
+test_module: true
+labels: []
+
+steps:
+  - name: mount-test-share
+    mount: GogitopsTest
+    device: //10.2.0.103/Bifrost
+    at: /media/benn/GogitopsTest
+    credentials: ~/.smbcredentials
+    options: vers=3.0,soft,actimeo=30
+    expect_regex: 'state=(mounted|already-mounted|units-active|mounted-fallback|units-armed)'
+
+  - name: verify-mounted
+    command: "test -d /media/benn/GogitopsTest && findmnt -rn -o SOURCE /media/benn/GogitopsTest | grep -q 10.2.0.103 && echo verify-ok"
+
+  - name: rerun-idempotent
+    description: "Second run of the same step must pass (already-mounted / units-current)"
+    mount: GogitopsTest
+    device: //10.2.0.103/Bifrost
+    at: /media/benn/GogitopsTest
+    credentials: ~/.smbcredentials
+    options: vers=3.0,soft,actimeo=30
+    expect_regex: 'state=(mounted|already-mounted|units-active|mounted-fallback|units-armed)'
+
+  - name: cleanup-unmount
+    description: "TEST cleanup: unmount + remove units + mountpoint (leaves the machine clean)"
+    command: "sudo -n systemctl stop media-benn-GogitopsTest.mount media-benn-GogitopsTest.automount 2>/dev/null; sudo -n umount /media/benn/GogitopsTest 2>/dev/null; sudo -n systemctl disable media-benn-GogitopsTest.automount 2>/dev/null; sudo -n rm -f /etc/systemd/system/media-benn-GogitopsTest.mount /etc/systemd/system/media-benn-GogitopsTest.automount; sudo -n systemctl daemon-reload; sudo -n rmdir /media/benn/GogitopsTest; echo cleaned"
+    os: linux
+
+  - name: cleanup-darwin
+    description: "TEST cleanup on macOS: unmount the test volume"
+    command: "umount /Volumes/GogitopsTest 2>/dev/null || sudo -n umount /Volumes/GogitopsTest 2>/dev/null; mount | grep -q ' on /Volumes/GogitopsTest (' || echo cleaned"
+    os: darwin

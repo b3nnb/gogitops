@@ -78,7 +78,7 @@
             "type": "string"
           },
           "at": {
-            "description": "Mount step: mount point.",
+            "description": "Mount step: mount point. Default /mnt/\u003clabel\u003e local, /media/\u003cuser\u003e/\u003cname\u003e network (Linux); ignored on macOS for network shares).",
             "type": "string"
           },
           "attr_prefix": {
@@ -89,12 +89,16 @@
             "description": "Shell command to run. Plain bash — the agent translates per-OS where possible; prefer built-in step types over long bash.",
             "type": "string"
           },
+          "credentials": {
+            "description": "Mount step (network SMB): path to a cifs credentials file. Default ~/.smbcredentials when present; 'none' for guest.",
+            "type": "string"
+          },
           "description": {
             "description": "What this step does (shows in run output + audit log).",
             "type": "string"
           },
           "device": {
-            "description": "Mount step: which device — uuid=…, label=…, or path.",
+            "description": "Mount step: what to mount — //server/share (SMB), server:/path (NFS), uuid=…, label=…, or /dev/path (local).",
             "type": "string"
           },
           "expect": {
@@ -110,7 +114,7 @@
             "type": "string"
           },
           "fstab": {
-            "description": "Mount step: persist to fstab (idempotent; sudo only when needed).",
+            "description": "Mount step (local devices): persist to fstab (idempotent; sudo only when needed). Network shares use systemd .mount/.automount units.",
             "type": "boolean"
           },
           "labels_exclude": {
@@ -162,7 +166,7 @@
             "type": "array"
           },
           "mount": {
-            "description": "Built-in mount step: label or path of the device/share to mount.",
+            "description": "Built-in mount step: volume name (network shares — default path component + macOS /Volumes name), or local device label.",
             "type": "string"
           },
           "name": {
@@ -186,7 +190,7 @@
             "type": "string"
           },
           "options": {
-            "description": "Mount step: mount options.",
+            "description": "Mount step: extra mount options (agent adds _netdev, credentials, uid/gid for network shares).",
             "type": "string"
           },
           "os": {

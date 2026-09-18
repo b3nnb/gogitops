@@ -128,11 +128,12 @@ func buildRecipeSchema(labels, hostnames []string) map[string]any {
 		"only_if_attr":    str("Skip if this attribute condition is true."),
 		"labels_required": reqLabels,
 		"labels_exclude":  exclLabels,
-		"mount":           str("Built-in mount step: label or path of the device/share to mount."),
-		"device":          str("Mount step: which device — uuid=…, label=…, or path."),
-		"at":              str("Mount step: mount point."),
-		"options":         str("Mount step: mount options."),
-		"fstab":           map[string]any{"type": "boolean", "description": "Mount step: persist to fstab (idempotent; sudo only when needed)."},
+		"mount":           str("Built-in mount step: volume name (network shares — default path component + macOS /Volumes name), or local device label."),
+		"device":          str("Mount step: what to mount — //server/share (SMB), server:/path (NFS), uuid=…, label=…, or /dev/path (local)."),
+		"at":              str("Mount step: mount point. Default /mnt/<label> local, /media/<user>/<name> network (Linux); ignored on macOS for network shares)."),
+		"options":         str("Mount step: extra mount options (agent adds _netdev, credentials, uid/gid for network shares)."),
+		"fstab":           map[string]any{"type": "boolean", "description": "Mount step (local devices): persist to fstab (idempotent; sudo only when needed). Network shares use systemd .mount/.automount units."},
+		"credentials":      str("Mount step (network SMB): path to a cifs credentials file. Default ~/.smbcredentials when present; 'none' for guest."),
 	}
 
 	nodeOverrideValue := map[string]any{

@@ -256,8 +256,10 @@ func printHelp() {
                         scripts/ → repo modules/ → agent sets)
 
     built-in step types (no bash in the yaml): package:, schedule:,
-    mount:  (mount: <label> + device: uuid=|label=|path + at: +
-            options: + fstab:) — idempotent, sudo only when needed
+    mount:  (mount: <name> + device: //server/share | server:/path |
+            uuid= | label= | path + at: + options: + credentials: +
+            fstab:) — network shares get systemd .mount/.automount units
+            (macOS: /Volumes/<name>); idempotent, sudo only when needed
 
     flags: -repo, --verbose, --json
 `, p, r)
@@ -1912,6 +1914,7 @@ type recipeStep struct {
 	MountAt      string   `yaml:"at"`
 	MountOptions string   `yaml:"options"`
 	MountFstab   bool     `yaml:"fstab"`
+	MountCreds   string   `yaml:"credentials"`
 }
 
 type recipe struct {
@@ -2570,6 +2573,8 @@ func parseRecipe(content string) recipe {
 			currentStep.MountOptions = val
 		case "fstab":
 			currentStep.MountFstab = val == "true" || val == "yes"
+		case "credentials":
+			currentStep.MountCreds = val
 		}
 	}
 
@@ -2799,6 +2804,11 @@ func shellQuote(s string) string {
 // appends only when the mountpoint has no line yet (never clobbers). sudo
 // is used only when not root. darwin gets a clear failure (use os: linux).
 func translateMount(step recipeStep) string {
+	// Network shares (//server/share SMB, server:/path NFS) get their own
+	// translator: systemd units on Linux, /Volumes on macOS.
+	if smb, nfs := isNetworkDevice(step.MountDevice); smb || nfs {
+		return translateNetworkMount(step)
+	}
 	if runtime.GOOS == "darwin" {
 		return `echo "mount: darwin mounts via diskutil — gate this step with os: linux or use an admin script"; exit 1`
 	}

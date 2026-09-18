@@ -1,0 +1,13 @@
+name: nas-bifrost-mount
+description: "Mount NAS Bifrost share (//10.2.0.103/Bifrost) at /media/benn/Bifrost via systemd .mount + .automount units — boot-safe, lazy (first access mounts). macOS: /Volumes/Bifrost via mount_smbfs."
+version: "1.0.0"
+labels: [laptop]
+
+steps:
+  - name: mount-bifrost
+    mount: Bifrost
+    device: //10.2.0.103/Bifrost
+    at: /media/benn/Bifrost
+    credentials: ~/.smbcredentials
+    options: vers=3.0,soft,actimeo=30
+    expect_regex: 'state=(mounted|already-mounted|units-active|mounted-fallback|units-armed)'
