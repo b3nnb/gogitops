@@ -73,6 +73,24 @@ steps:
     assert: "device attr store restored"
     on_failure: continue
 
+  - name: params-fixture-build
+    description: "Parametrized recipe fixture (params: block declaring a required marker param)"
+    command: 'F5=/tmp/gogitops-selftest/recipes/params-fixture/params-fixture.yaml; mkdir -p $(dirname $F5); echo "name: params-fixture" > $F5; echo "description: param probe" >> $F5; echo "version: \"1.0.0\"" >> $F5; echo "labels: []" >> $F5; echo "params:" >> $F5; echo "  - name: marker" >> $F5; echo "    description: substitution probe" >> $F5; echo "    required: true" >> $F5; echo "steps:" >> $F5; echo "  - name: echo" >> $F5; echo "    command: \"echo probe-{{marker}}\"" >> $F5; echo fixture-written'
+    assert: "param fixture recipe written"
+    expect: "fixture-written"
+
+  - name: params-var-substitution
+    description: "--var key=value pairs feed {{key}} substitution in recipe steps"
+    command: "{{self}} recipe run params-fixture --repo /tmp/gogitops-selftest --var marker=xyz --verbose 2>&1 | tr '\n' ' '"
+    expect: "probe-xyz"
+    assert: "params: --var values substitute into steps"
+
+  - name: params-required-validation
+    description: "Required params refuse to run without --var (usage + param table)"
+    command: "{{self}} recipe run params-fixture --repo /tmp/gogitops-selftest 2>&1 | tr '\n' ' '; true"
+    expect: "missing required parameter"
+    assert: "required params gate execution with a usage hint"
+
   - name: attrs-catalog-scan
     description: "Universal attribute catalog lists repo-defined attrs + engine synthetics"
     command: "{{self}} attrs scan --repo {{repo}} --json"

@@ -59,3 +59,20 @@ pattern on Ubuntu, Fedora, Alpine, and macOS with a byte-identical recipe.
   module: [write-a-script-step](write-a-script-step.md).
 - You need to verify the installed version → add an `expect_regex` step or a
   follow-up `command: "tool --version"` with `set_attr`.
+
+## Many packages or version pins → the apt-packages recipe
+
+`package:` handles one best-effort install. For multi-package or
+version-pinned installs on apt nodes, use the parametrized recipe:
+
+    gogitops recipe run apt-packages --var packages="htop nginx tree"
+    gogitops recipe run apt-packages --var packages="nginx=1.18.0-6ubuntu14.4 jq=1.7.*"
+
+Tokens: `name` (install if missing), `name=version` (exact dpkg version,
+downgrades allowed), `name=prefix.*` (glob). Already-satisfied tokens are
+skipped and the apt index refreshes only when something needs installing;
+the result lands in the `apt_install_result` attribute.
+
+Parametrized recipes (`params:` in the YAML) validate required params at
+run time — invoking without `--var` prints the parameter table and exits,
+and `recipe run-all` skips them (manual-invocation by design).

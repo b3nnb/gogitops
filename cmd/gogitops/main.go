@@ -2030,19 +2030,24 @@ type stepTags struct {
 	Remove []string `yaml:"remove"`
 }
 
+// recipeParam is a declared recipe parameter (params: block). The runner
+// validates required ones against --var pairs before executing anything,
+// and run-all skips parametrized recipes (they're manual-invocation).
+type recipeParam struct {
+	Name        string
+	Description string
+	Required    bool
+}
+
 type recipe struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Version     string   `yaml:"version"`
-	Labels      []string `yaml:"labels"`
-	TestModule  bool     `yaml:"test_module"`
-	AutoApply   bool     `yaml:"auto_apply"`
-	Params      []struct {
-		Name        string `yaml:"name"`
-		Description string `yaml:"description"`
-		Required    bool   `yaml:"required"`
-	} `yaml:"params"`
-	Steps []recipeStep `yaml:"steps"`
+	Name        string        `yaml:"name"`
+	Description string        `yaml:"description"`
+	Version     string        `yaml:"version"`
+	Labels      []string      `yaml:"labels"`
+	TestModule  bool          `yaml:"test_module"`
+	AutoApply   bool          `yaml:"auto_apply"`
+	Params      []recipeParam `yaml:"params"`
+	Steps       []recipeStep  `yaml:"steps"`
 }
 
 func recipeRun(args []string, all *runAllCtx) {
@@ -2057,8 +2062,18 @@ func recipeRun(args []string, all *runAllCtx) {
 	// Separate flags from positional args
 	var positional []string
 	var flagArgs []string
+	var varPairs []string // --var key=value pairs (recipe params)
 	valueFlags := map[string]bool{"--repo": true, "-repo": true, "--hostname": true, "-hostname": true}
 	for i := 0; i < len(args); i++ {
+		if args[i] == "--var" || args[i] == "-var" {
+			// recipe params: --var key=value (repeatable). Collected before
+			// flag parsing (fs has no such flag); validated below.
+			if i+1 < len(args) {
+				varPairs = append(varPairs, args[i+1])
+				i++
+			}
+			continue
+		}
 		if valueFlags[args[i]] && i+1 < len(args) {
 			flagArgs = append(flagArgs, args[i], args[i+1])
 			i++
@@ -2129,6 +2144,38 @@ func recipeRun(args []string, all *runAllCtx) {
 		os.Exit(1)
 	}
 
+	// --var key=value pairs → run params
+	provided := map[string]string{}
+	for _, p := range varPairs {
+		k, v, ok := strings.Cut(p, "=")
+		if !ok {
+			cli.PrintError(fmt.Sprintf("--var expects key=value, got %q", p))
+			os.Exit(1)
+		}
+		provided[k] = v
+	}
+	var missingParams []string
+	for _, p := range r.Params {
+		if p.Required {
+			if _, ok := provided[p.Name]; !ok {
+				missingParams = append(missingParams, p.Name)
+			}
+		}
+	}
+	if len(missingParams) > 0 {
+		cli.PrintError(fmt.Sprintf("%s: missing required parameter(s): %s", r.Name, strings.Join(missingParams, ", ")))
+		fmt.Printf("\n  %sparameters:%s\n", "\033[1m\033[38;5;141m", "\033[0m")
+		for _, p := range r.Params {
+			req := ""
+			if p.Required {
+				req = " (required)"
+			}
+			fmt.Printf("  %s%s%s%s \u2014 %s\n", "\033[38;5;38m", p.Name, req, "\033[0m", p.Description)
+		}
+		fmt.Printf("\n  usage: gogitops recipe run %s --var key=value\n\n", r.Name)
+		os.Exit(1)
+	}
+
 	// Build variable map for substitution
 	vars := map[string]string{
 		"repo": resolved,
@@ -2146,6 +2193,10 @@ func recipeRun(args []string, all *runAllCtx) {
 	// agent, never a PATH-shadowing stale install (Friday/Mini footgun)
 	if selfPath, err := os.Executable(); err == nil {
 		vars["self"] = selfPath
+		// --var pairs join the vars map for {{key}} substitution
+		for k, v := range provided {
+			vars[k] = v
+		}
 	}
 
 	// Attribute map — persists across steps within a recipe run.
@@ -2649,6 +2700,8 @@ var (
 func parseRecipe(content string) recipe {
 	r := recipe{}
 	var inSteps bool
+	var inParams bool
+	var currentParam *recipeParam
 	var inTags bool // inside a step's `tags:` block (nested add:/remove:)
 	var currentStep *recipeStep
 
@@ -2661,6 +2714,7 @@ func parseRecipe(content string) recipe {
 		// Top-level keys (no indent)
 		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "	") {
 			inSteps = false
+			inParams = false
 			if strings.HasPrefix(trimmed, "name:") {
 				r.Name = strings.TrimSpace(strings.TrimPrefix(trimmed, "name:"))
 				r.Name = unquoteYAML(r.Name)
@@ -2678,8 +2732,36 @@ func parseRecipe(content string) recipe {
 			} else if strings.HasPrefix(trimmed, "auto_apply:") {
 				v := strings.TrimSpace(strings.TrimPrefix(trimmed, "auto_apply:"))
 				r.AutoApply = v == "true" || v == "yes"
+			} else if strings.HasPrefix(trimmed, "params:") {
+				inParams = true
 			} else if strings.HasPrefix(trimmed, "steps:") {
 				inSteps = true
+			}
+			continue
+		}
+
+		// Params section (indented lines under params:)
+		if inParams {
+			if strings.HasPrefix(trimmed, "- name:") {
+				if currentParam != nil {
+					r.Params = append(r.Params, *currentParam)
+				}
+				currentParam = &recipeParam{}
+				currentParam.Name = unquoteYAML(strings.TrimSpace(strings.SplitN(trimmed, ":", 2)[1]))
+				continue
+			}
+			if currentParam != nil {
+				parts := strings.SplitN(trimmed, ":", 2)
+				if len(parts) == 2 {
+					key := strings.TrimSpace(parts[0])
+					val := unquoteYAML(strings.TrimSpace(parts[1]))
+					switch key {
+					case "description":
+						currentParam.Description = val
+					case "required":
+						currentParam.Required = val == "true" || val == "yes"
+					}
+				}
 			}
 			continue
 		}
@@ -2838,6 +2920,9 @@ func parseRecipe(content string) recipe {
 		}
 	}
 
+	if currentParam != nil {
+		r.Params = append(r.Params, *currentParam)
+	}
 	if currentStep != nil {
 		r.Steps = append(r.Steps, *currentStep)
 	}
@@ -3285,6 +3370,21 @@ func recipeRunAll(args []string) {
 
 	ctx := &runAllCtx{verbose: *verbose || *vAlias}
 	for _, f := range files {
+		// Parametrized recipes (required params) are manual-invocation —
+		// run-all can't supply --var, so skip them loudly.
+		if data, err := os.ReadFile(f); err == nil {
+			pr := parseRecipe(string(data))
+			var req []string
+			for _, p := range pr.Params {
+				if p.Required {
+					req = append(req, p.Name)
+				}
+			}
+			if len(req) > 0 {
+				fmt.Printf("  \033[38;5;240m\u2298 %s skipped (needs --var: %s)\033[0m\n", pr.Name, strings.Join(req, ", "))
+				continue
+			}
+		}
 		rargs := []string{f, "--repo", resolved, "--hostname", hostname}
 		if *dryRun {
 			rargs = append(rargs, "--dry-run")
@@ -4397,6 +4497,7 @@ func cmdDeploy(args []string) {
 	dash := fs.String("dashboard", "", "beacon URL (default: $GOGITOPS_DASHBOARD_URL or http://10.2.0.102:7781)")
 	repo := fs.String("repo", "", "git config repo URL baked into the installer config (e.g. git@github.com:b3nnb/gogitops.git)")
 	format := fs.String("format", "all", "cmd | install | config | systemd | launchd | all")
+	user := fs.String("user", "", "service User for system units — never run the agent as root; also sets HOME so the agent finds ~/.config/gogitops")
 	fs.Parse(args)
 
 	dashURL := *dash
@@ -4478,7 +4579,13 @@ func cmdDeploy(args []string) {
 	}
 
 	if (*format == "all" || *format == "systemd") && *targetOS == "linux" {
-		systemd := fmt.Sprintf("[Unit]\nDescription=GoGitOps Agent\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/gogitops daemon \\\n  -hostname %s \\\n  -bind %s \\\n  -port %s \\\n  -interval 60 \\\n  -dashboard %s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target", *host, *bind, *port, dashURL)
+		svcEnv := "Type=simple\n"
+		if *user != "" {
+			svcEnv += fmt.Sprintf("User=%s\nEnvironment=HOME=/home/%s\n", *user, *user)
+		}
+		svcEnv += "EnvironmentFile=-/etc/gogitops/agent.env\n"
+		systemd := fmt.Sprintf("[Unit]\nDescription=GoGitOps Agent\nAfter=network.target\n\n[Service]\n%sExecStart=/usr/local/bin/gogitops daemon \\\n  -hostname %s \\\n  -bind %s \\\n  -port %s \\\n  -interval 60 \\\n  -dashboard %s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target",
+			svcEnv, *host, *bind, *port, dashURL)
 		fmt.Printf("  %s╭─ Systemd Unit %s  (system service)\n", "\033[38;5;240m", "\033[0m")
 		for _, l := range strings.Split(systemd, "\n") {
 			fmt.Printf("  %s│%s %s%s%s\n", "\033[38;5;240m", "\033[0m", "\033[38;5;255m", l, "\033[0m")

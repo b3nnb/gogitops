@@ -1,0 +1,26 @@
+name: apt-packages
+description: "Install or upgrade apt packages — one or many, with optional version pins (pkg=1.2.3 exact, pkg=1.2.* glob). Idempotent: tokens already at the desired version are skipped, the apt index refreshes only when something needs installing. Parametrized — run-all skips it; invoke with --var packages='...'"
+version: "1.0.0"
+labels: []  # any node; manual-invocation utility (required param makes run-all skip it)
+
+# Parameters arrive via --var key=value (repeatable):
+#   gogitops recipe run apt-packages --var packages="htop nginx=1.18.0-6ubuntu14.4"
+params:
+  - name: packages
+    description: "Space-separated apt tokens; pin with pkg=version (exact dpkg version) or pkg=prefix.* (glob)"
+    required: true
+
+steps:
+  - name: install-packages
+    description: "Idempotent install — skip tokens already at the desired version"
+    os: linux
+    script: install-apt.sh
+    script_args: "{{packages}}"
+    set_attr: apt_install_result
+    on_failure: abort
+
+  - name: darwin-noop
+    description: "apt is linux-only — record a no-op on darwin"
+    os: darwin
+    command: "echo 'apt is linux-only — nothing to do on darwin'"
+    set_attr: apt_install_result

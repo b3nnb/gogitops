@@ -56,7 +56,9 @@ description: "<human description>"
 version: "1.0.0"                 # recipe version (bump on breaking changes)
 labels: []                       # which nodes can run this (empty = all)
 
-# Optional parameters (for parametrized recipes like stack-migrate)
+# Optional parameters (validated at run time; supply via
+#   gogitops recipe run <name> --var key=value  — repeatable)
+# Required params make the recipe manual-invocation: run-all skips it.
 params:
   - name: container
     description: "Container to restart"
@@ -258,13 +260,45 @@ Suite summary keys (written by `test run-all` / agent cycles / single-module
 runs): `tests.pass`, `tests.fail`, `tests.skip`, `tests.total`,
 `tests.failing` (comma-joined names), `tests.last_run`, and `tests.scope`
 (`suite` or `module:<name>` — single-module runs describe THAT module only).
-Collected module attrs (from `set_attr`/`attr_prefix` in test modules) persist
-too: `docker_version`, `load.1`, `disk_root.1`, `kernel_version`, ...
+Attrs set anywhere persist to the store — from test modules AND from recipe
+runs (`set_attr`/`attr_prefix` merge into the store at run end, v0.7.21+):
+`docker_version`, `load.1`, `disk_root.1`, `kernel_version`, ...
+`assert.<step>.status` verdicts record themselves the same way.
 
 Reference demo: `recipes/test-report/test-report.yaml` — reports suite
 results, gates an ALL CLEAR step on `attr.tests.fail == 0`, and a FAILING
 step on `!= 0`. Note: only attrs **set during a run** persist back to the
 store — hydration is read-only, so merely-read attrs never leak in.
+Dry-runs write nothing.
+
+### Creating your own attributes
+
+Full how-to: [docs/use-cases/collect-attributes.md](use-cases/collect-attributes.md).
+The short version — three mechanisms, all per-node:
+
+```yaml
+  - name: detect
+    command: "flatpak list --app | grep -q Packet && echo installed || echo not-installed"
+    set_attr: packet_state        # 1. stdout (trimmed) → attr.packet_state
+
+  - name: parse
+    command: "cat /proc/loadavg"
+    parse: regex
+    pattern: "^([\d.]+)\s+([\d.]+)"
+    attr_prefix: load             # 2. capture groups → attr.load.1, attr.load.2
+
+  - name: verify
+    command: "test \"{{attr.packet_state}}\" != \"not-installed\""
+    assert: "Packet present"      # 3. free attr: assert.<step>.status = pass|fail
+```
+
+Then read them anywhere — `{{attr.packet_state}}` in commands,
+`when_attr`/`only_if_attr` for gating. Values persist across runs and are
+readable by any other recipe or test on the node (hydrate-at-start).
+Validate refs with `gogitops recipe validate` (typo → did-you-mean warning);
+view the store in the dashboard drill-down ATTRIBUTES panel,
+`GET /v1/attrs`, or `gogitops info`; scan the repo-wide vocabulary with
+`gogitops attrs scan`.
 
 ### Universal attribute catalog (`gogitops attrs scan`)
 
