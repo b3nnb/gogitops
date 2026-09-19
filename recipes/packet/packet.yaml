@@ -1,0 +1,92 @@
+name: packet
+description: "Install Packet (io.github.nozwock.Packet) from Flathub on Linux admin nodes. System flatpak where passwordless sudo exists (Friday); user-level flatpak elsewhere (Framework laptop — silent, no root needed). Darwin nodes no-op: Flathub is Linux-only."
+version: "1.0.0"
+auto_apply: true
+labels: [admin]
+
+# Label contract (nodes/<hostname>.yaml):
+#   admin — Benn's admin machines (Friday, Mini, Framework). Steps are os: linux
+#           gated, so Mini (darwin) skips everything by design.
+
+steps:
+  # ── Detect ─────────────────────────────────────────────────────────────
+  - name: detect-packet-before
+    description: "Record whether Packet is already installed (system or user flatpak)"
+    os: linux
+    command: "flatpak list --app 2>/dev/null | grep -q io.github.nozwock.Packet && echo installed || echo not-installed"
+    set_attr: packet_before
+    on_failure: continue
+
+  # ── Ensure flatpak itself exists (Ubuntu desktops don't ship it) ────────
+  - name: ensure-flatpak-sudo
+    description: "Install flatpak via apt where passwordless sudo exists"
+    os: linux
+    command: "sudo -n apt-get install -y flatpak"
+    when: "sudo -n true 2>/dev/null && ! command -v flatpak >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1"
+    on_failure: continue
+    retries: 2
+    retry_delay: 5s
+
+  - name: ensure-flatpak-pkexec
+    description: "Install flatpak via pkexec (password dialog pops on the node's screen) when there is no passwordless sudo"
+    os: linux
+    command: "pkexec apt-get install -y flatpak"
+    when: "! sudo -n true 2>/dev/null && ! command -v flatpak >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1 && command -v pkexec >/dev/null 2>&1"
+    on_failure: continue
+
+  # ── System channel (passwordless sudo — Friday's pattern) ──────────────
+  - name: ensure-flathub-system
+    description: "Add the flathub remote (system) if missing"
+    os: linux
+    command: "sudo -n flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+    when: "sudo -n true 2>/dev/null && command -v flatpak >/dev/null 2>&1 && ! flatpak remotes 2>/dev/null | grep -q flathub"
+    on_failure: continue
+
+  - name: install-packet-system
+    description: "Install Packet system-wide via flatpak (passwordless sudo channel)"
+    os: linux
+    command: "sudo -n flatpak install -y --noninteractive flathub io.github.nozwock.Packet"
+    when: "sudo -n true 2>/dev/null && command -v flatpak >/dev/null 2>&1 && ! flatpak list --app 2>/dev/null | grep -q io.github.nozwock.Packet"
+    on_failure: continue
+    retries: 2
+    retry_delay: 5s
+
+  # ── User channel (no passwordless sudo — the laptop) ───────────────────
+  # Chosen over pkexec for the app itself: user-level flatpak needs no root,
+  # no dialogs, and is the standard channel for desktop apps.
+  - name: ensure-flathub-user
+    description: "Add the flathub remote (user) if missing"
+    os: linux
+    command: "flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+    when: "! sudo -n true 2>/dev/null && command -v flatpak >/dev/null 2>&1 && ! flatpak --user remotes 2>/dev/null | grep -q flathub"
+    on_failure: continue
+
+  - name: install-packet-user
+    description: "Install Packet per-user via flatpak — no root needed (laptop channel)"
+    os: linux
+    command: "flatpak --user install -y --noninteractive flathub io.github.nozwock.Packet"
+    when: "! sudo -n true 2>/dev/null && command -v flatpak >/dev/null 2>&1 && ! flatpak list --app 2>/dev/null | grep -q io.github.nozwock.Packet"
+    on_failure: continue
+    retries: 2
+    retry_delay: 10s
+
+  # ── Verify + report ────────────────────────────────────────────────────
+  - name: detect-packet-after
+    description: "Confirm install state + which installation (system or user)"
+    os: linux
+    command: "(flatpak list --app --columns=application,installation 2>/dev/null | grep io.github.nozwock.Packet | awk '{print $2}') || echo not-installed"
+    set_attr: packet_channel
+    on_failure: continue
+
+  - name: verify-packet
+    description: "Assert Packet ended up installed"
+    os: linux
+    command: "test \"{{attr.packet_channel}}\" != \"not-installed\""
+    assert: "Packet installed (installation: {{attr.packet_channel}})"
+    on_failure: abort
+
+  - name: report-darwin
+    description: "No-op report on non-Linux nodes — Flathub apps don't apply"
+    os: darwin
+    command: "echo 'linux-only recipe — nothing to do on darwin'"
+    set_attr: packet_channel

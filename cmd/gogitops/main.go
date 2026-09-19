@@ -2525,11 +2525,11 @@ func recipeRun(args []string, all *runAllCtx) {
 			if assertPassed {
 				attrs[attrKey+".status"] = "pass"
 				if showDetail {
-					fmt.Printf("     \033[38;5;46m✓ assert: %s\033[0m\n", step.Assert)
+					fmt.Printf("     \033[38;5;46m✓ assert: %s\033[0m\n", substituteVars(step.Assert, vars))
 				}
 			} else {
 				attrs[attrKey+".status"] = "fail"
-				fmt.Printf("     \033[38;5;196m✖ assert: %s\033[0m\n", step.Assert)
+				fmt.Printf("     \033[38;5;196m✖ assert: %s\033[0m\n", substituteVars(step.Assert, vars))
 			}
 		}
 
