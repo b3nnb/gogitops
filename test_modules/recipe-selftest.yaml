@@ -49,8 +49,8 @@ steps:
     assert: "modules/ library serves recipes without recipe-local scripts (cross-recipe sharing)"
 
   - name: hydration-probe-setup
-    description: "Backup device attr store + install a probe attr (restored after)"
-    command: 'mkdir -p ~/.cache/gogitops && cp ~/.cache/gogitops/attrs.json ~/.cache/gogitops/attrs.json.selftest-bak 2>/dev/null; printf "{\042hydration_probe\042:\042probe-set\042}" > ~/.cache/gogitops/attrs.json; echo probe-installed'
+    description: "Backup device attr store + install a probe attr (restored after). Self-heals a stale backup from a crashed previous run BEFORE snapshotting — the old code snapshotted probe-state over the real store after any mid-module crash, permanently eating real attrs"
+    command: 'mkdir -p ~/.cache/gogitops; B=~/.cache/gogitops/attrs.json; S=$B.selftest-bak; if [ -f "$S" ]; then mv "$S" "$B"; echo recovered-stale-backup; fi; if [ -f "$B" ]; then cp "$B" "$S"; else printf "{}" > "$S"; fi; printf "{\042hydration_probe\042:\042probe-set\042}" > "$B"; echo probe-installed'
     assert: "probe attr installed in device store"
     expect: "probe-installed"
 
@@ -65,11 +65,13 @@ steps:
     command: "{{self}} recipe run hydration-fixture --repo /tmp/gogitops-selftest --verbose 2>&1 | tr '\\n' ' '"
     expect_regex: "(?s)gate=OK.*probe-probe-set"
     assert: "recipes hydrate device attrs ({{attr.x}} substitution + when_attr conditions)"
+    on_failure: continue  # a failed fixture must never skip the restore below
 
   - name: hydration-probe-restore
-    description: "Restore the real device attr store"
-    command: "mv ~/.cache/gogitops/attrs.json.selftest-bak ~/.cache/gogitops/attrs.json 2>/dev/null || rm ~/.cache/gogitops/attrs.json"
+    description: "Restore the real device attr store — never deletes it; the old '|| rm' fallback destroyed real data whenever the backup was missing"
+    command: 'B=~/.cache/gogitops/attrs.json; S=$B.selftest-bak; if [ -f "$S" ]; then mv "$S" "$B" && echo restored; else echo "WARN no backup — store left untouched"; fi'
     assert: "device attr store restored"
+    on_failure: continue
 
   - name: attrs-catalog-scan
     description: "Universal attribute catalog lists repo-defined attrs + engine synthetics"
