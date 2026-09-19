@@ -1,6 +1,6 @@
 name: packet
 description: "Install Packet (io.github.nozwock.Packet) from Flathub on Linux admin nodes. System flatpak where passwordless sudo exists (Friday); user-level flatpak elsewhere (Framework laptop — silent, no root needed). Darwin nodes no-op: Flathub is Linux-only."
-version: "1.1.0"   # 1.1.0: attrs now persist to the device store (engine v0.7.21) — re-run to record packet_* on every node
+version: "1.1.1"   # 1.1.1: re-run under engine v0.7.21 — the 1.1.0 run raced the binary self-update (recipe ran on v0.7.20, 2s before the update) so attrs never persisted
 auto_apply: true
 labels: [admin]
 
