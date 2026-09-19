@@ -1,0 +1,65 @@
+name: syncthing-mesh
+description: "Syncthing everywhere (no-sudo install paths) + native mesh interconnection — devices self-publish IDs to netenv (attr fallback), folders declared in mesh.yaml, applied additively"
+version: "1.0.0"
+auto_apply: true
+
+steps:
+  # ── Detect ────────────────────────────────────────────────────────────
+  - name: detect-syncthing
+    description: "Is Syncthing installed in any form?"
+    command: "(command -v syncthing >/dev/null 2>&1 && echo PATH) || (test -x $HOME/.local/bin/syncthing && echo USERLAND) || (test -x /opt/homebrew/bin/syncthing && echo BREW) || (test -x $HOME/bin/syncthing && echo HOMEBIN) || echo not-installed"
+    set_attr: syncthing_before
+
+  # ── Install: userland everywhere, never require root ──────────────────
+  - name: install-syncthing-userland-linux
+    description: "No-sudo Linux install: latest release tarball → ~/.local/bin (same pattern as the Obsidian deb-extract)"
+    command: "URL=$(curl -s --max-time 15 https://api.github.com/repos/syncthing/syncthing/releases/latest | grep -oE 'https://[^\"]*linux-amd64\\.tar\\.gz' | head -1); [ -n \\\"$URL\\\" ] && curl -sL --max-time 300 \\\"$URL\\\" -o /tmp/syncthing.tar.gz && mkdir -p $HOME/.local/bin && tar -xzf /tmp/syncthing.tar.gz -C /tmp && cp /tmp/syncthing-linux-amd64-*/syncthing $HOME/.local/bin/syncthing && rm -rf /tmp/syncthing.tar.gz /tmp/syncthing-linux-amd64-* && $HOME/.local/bin/syncthing --version | head -1"
+    when: "! (command -v syncthing >/dev/null 2>&1 || test -x $HOME/.local/bin/syncthing) && uname -s | grep -qi linux"
+    on_failure: continue
+    retries: 2
+    retry_delay: 10s
+
+  - name: install-syncthing-brew-mac
+    description: "macOS install via brew (explicit path — launchd agents lack /opt/homebrew/bin in PATH)"
+    command: "BREW=$(command -v brew 2>/dev/null); [ -x \\\"$BREW\\\" ] || BREW=/opt/homebrew/bin/brew; [ -x \\\"$BREW\\\" ] || BREW=/usr/local/bin/brew; \\\"$BREW\\\" install syncthing"
+    when: "! (command -v syncthing >/dev/null 2>&1 || test -x /opt/homebrew/bin/syncthing || test -x $HOME/bin/syncthing) && uname -s | grep -qi darwin && (command -v brew >/dev/null 2>&1 || test -x /opt/homebrew/bin/brew || test -x /usr/local/bin/brew)"
+    on_failure: continue
+    retries: 2
+    retry_delay: 10s
+
+  # ── Service: user-level only (no root anywhere) ────────────────────────
+  - name: ensure-service-linux
+    description: "Create systemd user unit (if missing) and enable+start — syncthing user service needs no sudo"
+    command: "mkdir -p $HOME/.config/systemd/user && if [ ! -f $HOME/.config/systemd/user/syncthing.service ]; then printf '%s\\n' '[Unit]' 'Description=Syncthing' 'After=network.target' '[Service]' 'ExecStart=%h/.local/bin/syncthing serve --no-browser --no-restart' 'Restart=on-failure' '[Install]' 'WantedBy=default.target' > $HOME/.config/systemd/user/syncthing.service; fi && systemctl --user enable --now syncthing.service 2>&1 | tail -1"
+    when: "uname -s | grep -qi linux && ! pgrep -f 'syncthing serve' >/dev/null 2>&1"
+    on_failure: continue
+
+  - name: ensure-service-mac
+    description: "Start via existing launchd plist if present, else brew services"
+    command: "if [ -f $HOME/Library/LaunchAgents/com.syncthing.syncthing.plist ]; then launchctl load $HOME/Library/LaunchAgents/com.syncthing.syncthing.plist 2>&1 | tail -1; else BREW=$(command -v brew 2>/dev/null); [ -x \\\"$BREW\\\" ] || BREW=/opt/homebrew/bin/brew; \\\"$BREW\\\" services start syncthing; fi"
+    when: "uname -s | grep -qi darwin && ! pgrep -f 'syncthing serve' >/dev/null 2>&1"
+    on_failure: continue
+
+  - name: wait-for-api
+    description: "Wait for the local Syncthing REST API (first start generates config+cert)"
+    command: "n=0; until curl -s --max-time 2 -o /dev/null http://127.0.0.1:8384/ 2>/dev/null; do n=$((n+1)); [ $n -ge 20 ] && echo TIMEOUT && exit 1; sleep 2; done; echo API-UP"
+    on_failure: continue
+    retries: 2
+    retry_delay: 5s
+
+  # ── Toolchain: Go modules compile on-node ──────────────────────────────
+  - name: ensure-go-mac
+    description: "Install Go via brew (no sudo) — gogitops Go modules (like the mesh apply) compile+cache on first use"
+    command: "BREW=$(command -v brew 2>/dev/null); [ -x \"$BREW\" ] || BREW=/opt/homebrew/bin/brew; [ -x \"$BREW\" ] || BREW=/usr/local/bin/brew; \"$BREW\" install go"
+    when: "uname -s | grep -qi darwin && ! command -v go >/dev/null 2>&1 && ! test -x /opt/homebrew/bin/go && ! test -x /usr/local/bin/go"
+    on_failure: continue
+    retries: 2
+    retry_delay: 30s
+
+  # ── The native mesh apply ──────────────────────────────────────────────
+  - name: apply-mesh
+    description: "Publish this node's device ID (netenv when infra, attr always) and reconcile the declared mesh additively"
+    script: syncthing/mesh.go
+    script_args: "{{repo}}/recipes/syncthing-mesh/mesh.yaml {{hostname}}"
+    set_attr: syncthing_mesh
+    on_failure: continue

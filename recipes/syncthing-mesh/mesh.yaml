@@ -1,0 +1,28 @@
+# syncthing mesh — fleet interconnection topology (versioned in git)
+#
+# Device IDs: netenv (`nenv get syncthing <name>`) wins when published;
+# the seed ids below are fallbacks. Each node publishes its own ID to
+# netenv on mesh apply (attribute fallback when nenv is absent).
+#
+# NOTE: the vault folder's real syncthing id has a LEADING SPACE
+# (" obsidian-vault" — historical typo, kept because the phone+mini
+# pairings ride on it). Mesh apply is additive-only.
+
+devices:
+  friday:
+    hostname: i-wanna-be-a-mac
+    id: ETS7AVP-NKU2VSG-RI6XFYY-L6LEBMI-U5PY7XT-2YYKS2J-C5VDUPU-ULH5ZAQ
+  framework:
+    hostname: framework
+    id: EMWGXAT-ROD3D5D-HP7RB4N-MBXQ35G-5BOSDRK-PGGGG2C-7LIRBS6-NIKPJQV
+  mini:
+    hostname: mini
+    id: 46MVHCX-KKYO2XF-FHMXQ4M-4Y47QDQ-LZAUZAD-5WVIUJH-44DY2TY-V462JQ6
+  pixel:
+    id: 7B4HFFQ-L5ME4MC-OMYQXRN-VH7FK2W-S2Z5CCI-WWURN2G-OXOZBBP-X3SHHQ4
+
+folders:
+  - id: " obsidian-vault"
+    label: Obsidian Vault
+    path: ~/Documents/Obsidian Vault
+    devices: [friday, framework, mini, pixel]
