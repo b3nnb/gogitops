@@ -350,20 +350,31 @@ func restGet(base, key, path string) ([]byte, error) {
 }
 
 func restPut(base, key, path, body string) error {
-	req, _ := http.NewRequest("PUT", base+path, strings.NewReader(body))
-	req.Header.Set("X-API-Key", key)
-	req.Header.Set("Content-Type", "application/json")
-	cl := &http.Client{Timeout: 10 * time.Second}
-	resp, err := cl.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		req, _ := http.NewRequest("PUT", base+path, strings.NewReader(body))
+		req.Header.Set("X-API-Key", key)
+		req.Header.Set("Content-Type", "application/json")
+		cl := &http.Client{Timeout: 15 * time.Second}
+		resp, err := cl.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(600 * time.Millisecond)
+			continue
+		}
 		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode < 300 {
+			return nil
+		}
+		if resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("HTTP %d (config in flux?)", resp.StatusCode)
+			time.Sleep(600 * time.Millisecond)
+			continue
+		}
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b)[:min(200, len(b))])
 	}
-	return nil
+	return lastErr
 }
 
 // ── netenv + misc ─────────────────────────────────────────────────────────
