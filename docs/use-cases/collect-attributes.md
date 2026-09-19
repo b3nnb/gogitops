@@ -3,8 +3,10 @@
 **Goal:** capture facts about a node — versions, disk usage, service state —
 store them, and use them in later steps, conditions, or the dashboard.
 
-Attributes are the fleet's shared vocabulary. Anything a step captures with
-`set_attr` becomes readable everywhere as `{{attr.<name>}}`.
+Attributes are the node's shared vocabulary. Anything a step captures with
+`set_attr` becomes readable everywhere **on that node** as `{{attr.<name>}}` —
+and it outlives the run: values persist to the per-node attribute store
+(gogitops v0.7.21+), so later recipes and tests hydrate them automatically.
 
 ## Capture stdout as one attribute
 
@@ -30,6 +32,21 @@ steps:
     parse: regex
     pattern: "(\S+)\s+(\S+)\s+(\S+)"
     attr_prefix: disk_root   # → attr.disk_root.1, .2, .3
+```
+
+## Free attributes from asserts
+
+Every step with an `assert:` records its verdict with no extra syntax —
+`assert.<step-name>.status = pass|fail` lands in the store and is readable
+by any later step or run:
+
+```yaml
+  - name: verify-nginx
+    command: "systemctl is-active nginx"
+    assert: "nginx is running"
+    # → attr.assert.verify-nginx.status — gate on it:
+  - name: report
+    command: "echo nginx verdict: {{attr.assert.verify-nginx.status}}"
 ```
 
 ## Use them in later steps
@@ -64,6 +81,16 @@ Conditionals on attributes ([syntax](conditional-steps.md)):
     only_if_attr: "attr.system_attrs_json contains docker_running"
 ```
 
+## Naming rules
+
+- `set_attr: <name>` takes anything matching `[A-Za-z0-9_.-]+`. The in-run
+  reference adds the `attr.` prefix; the store keeps the plain name —
+  `packet_state` on disk, `{{attr.packet_state}}` in YAML.
+- Values are strings — trimmed stdout, possibly multi-line. Compare with
+  `==` / `!=` exactly, or `contains` for substrings.
+- Pick a style (underscore vs dot) and stay consistent; `recipe validate`
+  warnings will catch typos with a did-you-mean.
+
 ## The attribute store
 
 Every recipe/test run **hydrates the device attribute store first**
@@ -78,9 +105,36 @@ So a recipe can gate on fleet-test state:
     when_attr: "attr.tests.fail == 0"
 ```
 
-Only attrs **set during a run** persist back — hydration is read-only, so
-merely-read attrs never leak in. The store is also served at
-`GET /v1/attrs` on every agent.
+Runs also **write back**: every attr explicitly set during a run (`set_attr`,
+`attr_prefix` captures, assert verdicts) merges into the store when the run
+ends — on every exit path, including aborted runs. That's the cross-run
+story: a recipe can gate on state a *different* recipe recorded last week.
+
+```yaml
+# recipes/monitor-nginx/monitor-nginx.yaml — records state daily
+  - name: probe
+    command: "systemctl is-active nginx"
+    set_attr: nginx_state
+
+# recipes/after-upgrade/after-upgrade.yaml — different recipe, later run
+  - name: confirm
+    command: "nginx -t"
+    when_attr: "attr.nginx_state == active"
+```
+
+Only attrs **set during a run** persist — hydration is read-only, so
+merely-read attrs never leak in. Dry-runs write nothing.
+
+**Per-node by design:** the store is decentralized — values stay on the node
+that produced them. Cross-node state is what tags and the fleet table are
+for; attributes are local facts.
+
+## Viewing what a node recorded
+
+- **Dashboard** — drill down into the node → **ATTRIBUTES** panel: list view,
+  plus a copyable YAML view formatted for recipe reference.
+- **API** — `GET /v1/attrs` on any agent (`curl localhost:7780/v1/attrs`).
+- **CLI** — `gogitops info` (deep dive incl. attributes).
 
 ## Discover what exists
 
