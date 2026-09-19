@@ -1,6 +1,6 @@
 name: obsidian-vault
 description: "Ensure Obsidian is installed on admin nodes; pre-configure the remote vault connection on remote-admin nodes (non-Friday devices only — Friday hosts the vault natively)"
-version: "1.5.1"
+version: "1.5.2"
 auto_apply: true
 labels: [admin]
 
@@ -103,7 +103,12 @@ steps:
     script: register_vault.py
     script_lang: python
     labels_required: [admin]
-    on_failure: continue
+    # ABORT (not continue): a skipped/deferred/failed registration must NOT count
+    # as converged or the daemon never retries it — that's exactly how framework
+    # sat "converged" with no obsidian.json for hours (defer+continue = silent
+    # deadlock). Non-zero exits (2=dir missing, 3=Obsidian running) now fail the
+    # recipe so auto-apply retries until the write actually lands.
+    on_failure: abort
 
   - name: detect-obsidian-after
     description: "Confirm Obsidian is present in some install form"
