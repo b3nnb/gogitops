@@ -682,6 +682,21 @@ function renderDetail(name, d, logs, tests, attrs) {
     html += '<div class="svc-row"><span>' + icon + '</span><span class="svc-name">' + esc(k2) + '</span><span class="svc-status ' + cls2 + '">' + esc(v) + '</span></div>';
   }
 
+  // Peers — under Services in the same column (same svc-row look);
+  // unreachable first (failures first). Hidden entirely when the node
+  // has no peers (standalone).
+  if (peersDown > 0 || peersUp > 0) {
+    html += '<h3>PEERS</h3>';
+    if (d.peers_unreachable && d.peers_unreachable.length > 0) {
+      for (var u = 0; u < d.peers_unreachable.length; u++) {
+        html += '<div class="svc-row"><span>❌</span><span class="svc-name">' + esc(d.peers_unreachable[u]) + '</span><span class="svc-status down">unreachable</span></div>';
+      }
+    }
+    for (var r2 = 0; r2 < (d.peers_reachable || []).length; r2++) {
+      html += '<div class="svc-row"><span>✅</span><span class="svc-name">' + esc(d.peers_reachable[r2]) + '</span><span class="svc-status running">reachable</span></div>';
+    }
+  }
+
   html += '</div><div class="col">';
   // Attributes — the node's live device attr store; list view, plus a YAML
   // view to copy for attr.x / when_attr recipe reference
@@ -701,19 +716,6 @@ function renderDetail(name, d, logs, tests, attrs) {
       }
     }
   }  html += '</div></div>';
-
-  // Peers — unreachable first (failures first)
-  if (peersDown > 0 || peersUp > 0) {
-    html += '<h3>PEERS</h3>';
-    if (d.peers_unreachable && d.peers_unreachable.length > 0) {
-      for (var u = 0; u < d.peers_unreachable.length; u++) {
-        html += '<div class="svc-row"><span>❌</span><span class="svc-name">' + esc(d.peers_unreachable[u]) + '</span><span class="svc-status down">unreachable</span></div>';
-      }
-    }
-    for (var r2 = 0; r2 < (d.peers_reachable || []).length; r2++) {
-      html += '<div class="svc-row"><span>✅</span><span class="svc-name">' + esc(d.peers_reachable[r2]) + '</span><span class="svc-status running">reachable</span></div>';
-    }
-  }
 
   // Selftests — failures always visible; passing/skipped behind a toggle.
   if (tests) {
