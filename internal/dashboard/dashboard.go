@@ -77,6 +77,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   /* Table */
   table {
     width: 100%;
+    table-layout: fixed;
     border-collapse: collapse;
     background: var(--card);
     border-radius: 8px;
@@ -93,6 +94,17 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
     background: rgba(255,255,255,0.02);
     border-bottom: 1px solid var(--border);
   }
+  /* fixed-layout column plan: Node 11 · IP 22 · Online 6 · Health 9 ·
+     Services 9 · Selftests 11 · Checkin 10 · Version 10 · Uptime 12 = 100% */
+  thead th:nth-child(1) { width: 11%; }
+  thead th:nth-child(2) { width: 22%; }
+  thead th:nth-child(3) { width: 6%; }
+  thead th:nth-child(4) { width: 9%; }
+  thead th:nth-child(5) { width: 9%; }
+  thead th:nth-child(6) { width: 11%; }
+  thead th:nth-child(7) { width: 10%; }
+  thead th:nth-child(8) { width: 10%; }
+  thead th:nth-child(9) { width: 12%; }
   tbody td {
     padding: 14px 18px;
     font-size: 14px;
@@ -101,8 +113,8 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   }
   tbody tr:last-child td { border-bottom: none; }
   tbody tr:hover { background: rgba(79,142,247,0.06); cursor: pointer; }
-  .node-name { font-weight: 600; }
-  .ip { color: var(--text-dim); font-family: "SF Mono", "Fira Code", monospace; font-size: 13px; }
+  .node-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ip { color: var(--text-dim); font-family: "SF Mono", "Fira Code", monospace; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* Status badges */
   .badge {
     display: inline-flex;
@@ -177,6 +189,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
     th:nth-child(9), td:nth-child(9) { display: none; }  /* tests, checkin, version, uptime — detail view has them */
   }
   .metric-card {
+    min-width: 0;
     background: rgba(255,255,255,0.02);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -192,6 +205,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   .metric-card .value {
     font-size: 15px;
     font-weight: 500;
+    word-break: break-word;
   }
   .metric-card .value.mono {
     font-family: "SF Mono", "Fira Code", monospace;
@@ -206,7 +220,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
     font-size: 13px;
   }
   .svc-row:last-child { border-bottom: none; }
-  .svc-name { font-weight: 500; flex: 1; }
+  .svc-name { font-weight: 500; flex: 1; min-width: 0; }
   .svc-status { font-family: "SF Mono", monospace; font-size: 12px; }
   .svc-status.running { color: var(--green); }
   .svc-status.down { color: var(--red); }
@@ -224,6 +238,11 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   .st-toggle:hover { border-color: var(--accent); }
   .st-summary .svc-name { color: var(--text-dim); }
   .st-list.st-hidden { display: none; }
+  /* Services + Attributes share one row: services left, attrs right */
+  .dd .two-col { display: flex; gap: 24px; margin-top: 16px; }
+  .dd .two-col .col { flex: 1; min-width: 0; }
+  .dd .two-col .col > h3:first-child,
+  .dd .two-col .col > .dd-head:first-child { margin-top: 0; }
   /* Attributes section */
   .dd-head { display: flex; align-items: baseline; justify-content: space-between; margin: 16px 0 6px 0; }
   .dd-head h3 { margin: 0; }
@@ -231,8 +250,14 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   .attr-row { display: flex; gap: 10px; padding: 4px 0; font-size: 12.5px; border-bottom: 1px solid rgba(255,255,255,0.03); }
   .attr-row:last-child { border-bottom: none; }
   .attr-key { flex: 0 0 190px; font-family: "SF Mono", "Fira Code", monospace; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .attr-val { flex: 1; font-family: "SF Mono", "Fira Code", monospace; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  @media (max-width: 640px) { .attr-key { flex-basis: 130px; } }
+  .attr-val { flex: 1; min-width: 0; font-family: "SF Mono", "Fira Code", monospace; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* mobile: half-width attr column — stack key over value so values stay
+     readable instead of clipping to nothing at 150px */
+  @media (max-width: 640px) {
+    .attr-row { flex-direction: column; gap: 1px; padding: 5px 0; }
+    .attr-key { flex-basis: auto; }
+    .attr-val { white-space: normal; word-break: break-all; }
+  }
   .loading { color: var(--text-dim); font-style: italic; }
   /* Disk usage bars */
   .disk-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13px; }
@@ -247,7 +272,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   .log-line:last-child { border-bottom: none; }
   .log-line .log-ts { flex: 0 0 42px; color: var(--text-dim); }
   .log-line .log-cat { flex: 0 0 62px; color: var(--accent); }
-  .log-line .log-msg { flex: 1; color: var(--text); word-break: break-word; }
+  .log-line .log-msg { flex: 1; min-width: 0; color: var(--text); word-break: break-word; }
   .dd .dd-fail { color: var(--red); font-size: 13px; padding: 8px 0; }
 
   /* Deploy panel */
@@ -488,8 +513,8 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
     <tbody>
     {{range .Rows}}
       <tr onclick="toggleDetail('{{.NodeName}}')" class="node-row">
-        <td class="node-name">{{.NodeName}}</td>
-        <td class="ip">{{.DisplayIP}}</td>
+        <td class="node-name" title="{{.NodeName}}">{{.NodeName}}</td>
+        <td class="ip" title="{{.DisplayIP}}">{{.DisplayIP}}</td>
         <td><span class="badge {{if .Online}}online{{else}}offline{{end}}" title="{{if .Online}}online{{else}}offline{{end}}">{{.OnlineEmoji}}</span></td>
         <td><span class="badge {{.HealthStatus}}">{{.HealthStatus}}</span></td>
         <td class="services">{{.Services}}</td>
@@ -644,7 +669,8 @@ function renderDetail(name, d, logs, tests, attrs) {
     html += '<div class="dd-fail">⚠ ' + esc(d.disk_warns.join(' · ')) + '</div>';
   }
 
-  // Services — failures first
+  // Services + Attributes share a row — services left, attrs right
+  html += '<div class="two-col"><div class="col">';
   html += '<h3>SERVICES</h3>';
   var names = Object.keys(d.services).sort(function(a, b) {
     return (d.services[a] === 'running') - (d.services[b] === 'running');
@@ -655,6 +681,26 @@ function renderDetail(name, d, logs, tests, attrs) {
     var cls2 = v === 'running' ? 'running' : 'down';
     html += '<div class="svc-row"><span>' + icon + '</span><span class="svc-name">' + esc(k2) + '</span><span class="svc-status ' + cls2 + '">' + esc(v) + '</span></div>';
   }
+
+  html += '</div><div class="col">';
+  // Attributes — the node's live device attr store; list view, plus a YAML
+  // view to copy for attr.x / when_attr recipe reference
+  if (attrs && Object.keys(attrs).length > 0) {
+    var akeys = Object.keys(attrs).sort();
+    html += '<div class="dd-head"><h3>ATTRIBUTES <span class="attr-count">' + akeys.length + ' keys</span></h3>' +
+            '<button class="st-toggle" onclick="toggleAttrs(\'' + esc(name) + '\')">' + (attrsOpen[name] ? 'hide yaml' : 'view yaml') + '</button></div>';
+    if (attrsOpen[name]) {
+      html += '<div class="code-block"><div class="code-label">device attr store &mdash; yaml (copy for recipe reference)</div>' +
+              '<button class="copy-btn" onclick="copyCode(\'attrsYaml\', this)">copy</button>' +
+              '<pre id="attrsYaml">' + esc(yamlOf(attrs)) + '</pre></div>';
+    } else {
+      for (var a = 0; a < akeys.length; a++) {
+        var av = String(attrs[akeys[a]]);
+        html += '<div class="attr-row"><span class="attr-key" title="' + esc(akeys[a]) + '">' + esc(akeys[a]) + '</span>' +
+                '<span class="attr-val" title="' + esc(av).replace(/\n/g, ' &middot; ') + '">' + esc(av) + '</span></div>';
+      }
+    }
+  }  html += '</div></div>';
 
   // Peers — unreachable first (failures first)
   if (peersDown > 0 || peersUp > 0) {
@@ -717,24 +763,7 @@ function renderDetail(name, d, logs, tests, attrs) {
       }
     }
   }
-  // Attributes — the node's live device attr store; list view, plus a YAML
-  // view to copy for attr.x / when_attr recipe reference
-  if (attrs && Object.keys(attrs).length > 0) {
-    var akeys = Object.keys(attrs).sort();
-    html += '<div class="dd-head"><h3>ATTRIBUTES <span class="attr-count">' + akeys.length + ' keys</span></h3>' +
-            '<button class="st-toggle" onclick="toggleAttrs(\'' + esc(name) + '\')">' + (attrsOpen[name] ? 'hide yaml' : 'view yaml') + '</button></div>';
-    if (attrsOpen[name]) {
-      html += '<div class="code-block"><div class="code-label">device attr store &mdash; yaml (copy for recipe reference)</div>' +
-              '<button class="copy-btn" onclick="copyCode(\'attrsYaml\', this)">copy</button>' +
-              '<pre id="attrsYaml">' + esc(yamlOf(attrs)) + '</pre></div>';
-    } else {
-      for (var a = 0; a < akeys.length; a++) {
-        var av = String(attrs[akeys[a]]);
-        html += '<div class="attr-row"><span class="attr-key" title="' + esc(akeys[a]) + '">' + esc(akeys[a]) + '</span>' +
-                '<span class="attr-val" title="' + esc(av).replace(/\n/g, ' &middot; ') + '">' + esc(av) + '</span></div>';
-      }
-    }
-  }
+
   html += renderLogs(logs);
   box.innerHTML = html;
 }
