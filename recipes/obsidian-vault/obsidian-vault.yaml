@@ -1,6 +1,6 @@
 name: obsidian-vault
 description: "Ensure Obsidian is installed on admin nodes; pre-configure the remote vault connection on remote-admin nodes (non-Friday devices only — Friday hosts the vault natively)"
-version: "1.4.0"
+version: "1.5.0"
 auto_apply: true
 labels: [admin]
 
@@ -77,9 +77,9 @@ steps:
     on_failure: abort
 
   - name: drop-vault-pointer
-    description: "Write the vault path pointer so agents and tools find the vault"
-    command: "mkdir -p $HOME/.config/gogitops && printf '%s/Documents/Obsidian Vault\\n' \"$HOME\" > $HOME/.config/gogitops/obsidian-vault.path"
-    labels_required: [remote-admin]
+  - name: drop-vault-pointer
+    description: "Write the vault path pointer so agents and tools find the vault (all admin nodes)"
+    labels_required: [admin]
     on_failure: continue
 
   - name: ensure-syncthing
@@ -98,6 +98,13 @@ steps:
     on_failure: continue
 
   # ── Verify + report ───────────────────────────────────────────────────
+  - name: register-vault
+    description: "Register the vault in this node's Obsidian config (idempotent; auto-detects flatpak/mac/native) — pre-configures first launch on remote nodes, self-heals Friday's registration"
+    script: register_vault.py
+    script_lang: python
+    labels_required: [admin]
+    on_failure: continue
+
   - name: detect-obsidian-after
     description: "Confirm Obsidian is present in some install form"
     command: "(command -v obsidian >/dev/null 2>&1 && echo PATH) || (flatpak list 2>/dev/null | grep -q md.obsidian.Obsidian && echo FLATPAK) || (snap list 2>/dev/null | grep -q '^obsidian' && echo SNAP) || (ls /Applications ~/Applications 2>/dev/null | grep -qi obsidian && echo APPS) || echo not-installed"
