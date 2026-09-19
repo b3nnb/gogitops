@@ -1,6 +1,6 @@
 name: obsidian-vault
 description: "Ensure Obsidian is installed on admin nodes; pre-configure the remote vault connection on remote-admin nodes (non-Friday devices only — Friday hosts the vault natively)"
-version: "1.5.0"
+version: "1.5.1"
 auto_apply: true
 labels: [admin]
 
@@ -77,8 +77,8 @@ steps:
     on_failure: abort
 
   - name: drop-vault-pointer
-  - name: drop-vault-pointer
     description: "Write the vault path pointer so agents and tools find the vault (all admin nodes)"
+    command: "mkdir -p $HOME/.config/gogitops && printf '%s/Documents/Obsidian Vault\n' $HOME > $HOME/.config/gogitops/obsidian-vault.path"
     labels_required: [admin]
     on_failure: continue
 
