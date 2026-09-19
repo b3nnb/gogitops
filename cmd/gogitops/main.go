@@ -2154,6 +2154,10 @@ func recipeRun(args []string, all *runAllCtx) {
 	// when_attr: "attr.tests.fail == 0", {{attr.docker_version}}, ...
 	attrs := map[string]string{}
 	hydrateDeviceAttrs(attrs, vars)
+	setKeys := map[string]bool{} // attrs explicitly SET this run (hydrated reads never persist)
+	if !*dryRun {
+		defer persistRecipeAttrs(attrs, setKeys)
+	}
 
 	// Banner
 	// run-all: compact one-liner per recipe; single: full banner
@@ -2522,6 +2526,7 @@ func recipeRun(args []string, all *runAllCtx) {
 				}
 			}
 			attrKey := "attr.assert." + displayName
+			setKeys[attrKey+".status"] = true
 			if assertPassed {
 				attrs[attrKey+".status"] = "pass"
 				if showDetail {
@@ -2537,6 +2542,7 @@ func recipeRun(args []string, all *runAllCtx) {
 		if step.SetAttr != "" {
 			attrVal := strings.TrimSpace(lastOutput)
 			attrs["attr."+step.SetAttr] = attrVal
+			setKeys["attr."+step.SetAttr] = true
 			// Also make available as a variable for subsequent steps
 			vars["attr."+step.SetAttr] = attrVal
 			if showDetail {
@@ -2555,6 +2561,7 @@ func recipeRun(args []string, all *runAllCtx) {
 						val := strings.TrimSpace(m)
 						attrs[key] = val
 						vars[key] = val
+						setKeys[key] = true
 						if showDetail {
 							fmt.Printf("     \033[38;5;178m⊙ %s = %s\033[0m\n", key, truncateStr(val, 60))
 						}
@@ -2602,6 +2609,9 @@ func recipeRun(args []string, all *runAllCtx) {
 				}
 				fmt.Printf("\n  \033[38;5;196m✖ Recipe aborted at step %d: %s\033[0m\n", stepNum, displayName)
 				fmt.Printf("  \033[38;5;240m%d passed, %d skipped, %d failed\033[0m\n\n", passed, skipped, failed)
+				if !*dryRun {
+					persistRecipeAttrs(attrs, setKeys) // os.Exit skips the defer
+				}
 				os.Exit(1)
 			}
 		}
@@ -3986,6 +3996,28 @@ func persistTestAttrs(attrs map[string]string, setKeys map[string]bool, all []te
 	store["tests.failing"] = strings.Join(failing, ",")
 	store["tests.scope"] = scope
 	store["tests.last_run"] = time.Now().Format(time.RFC3339)
+	writeDeviceAttrs(store)
+}
+
+// persistRecipeAttrs merges a recipe run's set_attr values into the device
+// store so when_attr conditions, {{attr.x}} hydration, and the dashboard
+// ATTRIBUTES panel can see recipe state ACROSS runs (hydrateDeviceAttrs's
+// doc always promised this; only test modules actually persisted). Merge,
+// never replace — same semantics as persistTestAttrs. Only explicitly set
+// keys persist; hydrated (merely read) attrs never do.
+func persistRecipeAttrs(attrs map[string]string, setKeys map[string]bool) {
+	if len(setKeys) == 0 {
+		return
+	}
+	store := readDeviceAttrs()
+	for k, set := range setKeys {
+		if !set {
+			continue
+		}
+		if v, ok := attrs[k]; ok {
+			store[strings.TrimPrefix(k, "attr.")] = v
+		}
+	}
 	writeDeviceAttrs(store)
 }
 
