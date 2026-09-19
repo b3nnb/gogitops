@@ -4,9 +4,11 @@
 # the seed ids below are fallbacks. Each node publishes its own ID to
 # netenv on mesh apply (attribute fallback when nenv is absent).
 #
-# NOTE: the vault folder's real syncthing id has a LEADING SPACE
-# (" obsidian-vault" — historical typo, kept because the phone+mini
-# pairings ride on it). Mesh apply is additive-only.
+# NOTE: folder ids must match EXACTLY across the fleet — syncthing does
+# NOT trim-match cluster-config folder ids (v2.1.5 rejects them with
+# "Unexpected folder ID in ClusterConfig"). The vault id is the clean
+# "obsidian-vault" (2026-09-19: a leading-space variant briefly broke
+# the mini+pixel pairings; fixed by renaming on Friday + this file).
 
 devices:
   friday:
@@ -22,7 +24,7 @@ devices:
     id: 7B4HFFQ-L5ME4MC-OMYQXRN-VH7FK2W-S2Z5CCI-WWURN2G-OXOZBBP-X3SHHQ4
 
 folders:
-  - id: " obsidian-vault"
+  - id: "obsidian-vault"
     label: Obsidian Vault
     path: ~/Documents/Obsidian Vault
     devices: [friday, framework, mini, pixel]
