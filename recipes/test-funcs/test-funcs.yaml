@@ -5,7 +5,7 @@ description: >
   stdlib func: step — typed outputs, {{func.*}} var passing, port-check
   up/down semantics, and the reserved-namespace rules. Run via:
   gogitops test run test-funcs (or recipe run test-funcs).
-version: 1.0.0
+version: 1.1.0
 test_module: true
 
 steps:
@@ -37,3 +37,28 @@ steps:
     description: typed identity probe, no shell uname
     func: system.info
     expect: hostname=
+
+  - name: which-bash
+    description: system.which PATH lookup — bash exists on every agent node
+    func: system.which
+    args: name=bash
+    expect: found=true
+
+  - name: which-missing
+    description: not-found is a result (found=false), never an error
+    func: system.which
+    args: name=definitely-not-a-gogitops-command-xyz
+    expect: found=false
+
+  - name: http-check-self
+    description: the agent's own health API answers — same endpoint the beacon polls
+    func: net.http-check
+    args: url=http://127.0.0.1:7780/v1/health, contains=hostname
+    expect: up=true
+
+  - name: github-asset-syncthing
+    description: live GitHub release asset lookup (same repo the syncthing-mesh recipe uses) — soft-fails on rate limit
+    func: net.github-asset
+    args: repo=syncthing/syncthing, match=linux-amd64
+    expect: url=https://
+    on_failure: continue

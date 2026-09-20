@@ -1,6 +1,10 @@
 name: obsidian-vault
 description: "Ensure Obsidian is installed on admin nodes; pre-configure the remote vault connection on remote-admin nodes (non-Friday devices only — Friday hosts the vault natively)"
-version: "1.5.2"
+version: "1.6.0"
+# v1.6.0: brew cask + deb URL resolution moved to typed stdlib funcs
+#         (system.which, net.github-asset) — the inline BREW=$(...) shell was
+#         escaping-corrupted (exit 127 on every mac); the deb scrape is now
+#         a JSON-parsed walk of the 10 newest releases.
 auto_apply: true
 labels: [admin]
 
@@ -44,9 +48,16 @@ steps:
     retries: 2
     retry_delay: 5s
 
+  # ── Resolve brew once (typed, no shell quoting to corrupt) ─────────────
+  - name: resolve-brew
+    description: "Find brew: PATH lookup first, then /opt/homebrew/bin + /usr/local/bin fallbacks"
+    func: system.which
+    args: {"name": "brew", "candidates": "/opt/homebrew/bin/brew,/usr/local/bin/brew"}
+    on_failure: continue
+
   - name: install-obsidian-brew
-    description: "Install Obsidian via Homebrew cask (macOS nodes) — explicit brew path: launchd agents have no /opt/homebrew/bin in PATH"
-    command: "BREW=$(command -v brew 2>/dev/null); [ -x \"$BREW\" ] || BREW=/opt/homebrew/bin/brew; [ -x \"$BREW\" ] || BREW=/usr/local/bin/brew; \"$BREW\" install --cask obsidian"
+    description: "Install Obsidian via Homebrew cask (macOS nodes) — brew resolved once via system.which (launchd agents have no /opt/homebrew/bin in PATH)"
+    command: '"{{func.path}}" install --cask obsidian'
     when: "! (command -v obsidian >/dev/null 2>&1 || ls /Applications 2>/dev/null | grep -qi obsidian) && (command -v brew >/dev/null 2>&1 || test -x /opt/homebrew/bin/brew || test -x /usr/local/bin/brew)"
     on_failure: continue
     retries: 2
@@ -60,9 +71,19 @@ steps:
     retries: 2
     retry_delay: 10s
 
+  # ── Deb URL from the GitHub API, JSON-parsed (walk releases: the newest
+  #    tag often ships only the .apk — desktop assets lag days behind) ──
+  # Same when: as the install step — the API is only hit when needed.
+  - name: resolve-obsidian-deb
+    description: "Newest release that actually ships an amd64.deb asset"
+    func: net.github-asset
+    args: repo=obsidianmd/obsidian-releases, match=amd64.deb, walk=10
+    when: "! (command -v obsidian >/dev/null 2>&1 || flatpak list 2>/dev/null | grep -q md.obsidian.Obsidian || snap list 2>/dev/null | grep -q '^obsidian' || ls /Applications ~/Applications 2>/dev/null | grep -qi obsidian) && ! test -x $HOME/Applications/obsidian/opt/Obsidian/obsidian && command -v dpkg-deb >/dev/null 2>&1 && uname -s | grep -qi linux"
+    on_failure: continue
+
   - name: install-obsidian-deb-extract
     description: "Last-resort no-sudo install: download the newest release that ships a desktop .deb, extract to ~/Applications userland (dpkg-deb -x), symlink into PATH"
-    command: "URL=$(curl -s --max-time 15 'https://api.github.com/repos/obsidianmd/obsidian-releases/releases?per_page=10' | grep -oE 'https://[^"]*amd64\.deb' | head -1); [ -n \"$URL\" ] && curl -sL --max-time 300 \"$URL\" -o /tmp/obsidian.deb && mkdir -p $HOME/Applications/obsidian && dpkg-deb -x /tmp/obsidian.deb $HOME/Applications/obsidian && ln -sf $HOME/Applications/obsidian/opt/Obsidian/obsidian $HOME/.local/bin/obsidian && rm -f /tmp/obsidian.deb"
+    command: 'test "{{func.found}}" = "true" && curl -sL --max-time 300 "{{func.url}}" -o /tmp/obsidian.deb && mkdir -p $HOME/Applications/obsidian && dpkg-deb -x /tmp/obsidian.deb $HOME/Applications/obsidian && ln -sf $HOME/Applications/obsidian/opt/Obsidian/obsidian $HOME/.local/bin/obsidian && rm -f /tmp/obsidian.deb'
     when: "! (command -v obsidian >/dev/null 2>&1 || flatpak list 2>/dev/null | grep -q md.obsidian.Obsidian || snap list 2>/dev/null | grep -q '^obsidian' || ls /Applications ~/Applications 2>/dev/null | grep -qi obsidian) && ! test -x $HOME/Applications/obsidian/opt/Obsidian/obsidian && command -v dpkg-deb >/dev/null 2>&1 && uname -s | grep -qi linux"
     on_failure: continue
     retries: 2

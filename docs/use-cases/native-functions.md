@@ -33,7 +33,12 @@ steps:
 |---|---|
 | `storage.disk-free` | total/used/free GB + used pct, math in the outputs (`path=`) |
 | `net.port-check` | TCP connect check: `up`, `latency_ms`, `error` (`host=`, `port=`, `timeout=`) |
+| `net.http-check` | HTTP GET check: `up`, `status`, `latency_ms`, `matched` (`url=`, `contains=`, `require=`) — replaces curl\|grep wait-loops |
+| `net.github-asset` | Release asset URL from the GitHub API, JSON-parsed (`repo=`, `match=`, `walk=`) — replaces grep-of-JSON scrapes |
 | `system.info` | hostname/os/arch, typed — branching without `uname` |
+| `system.which` | Command lookup: PATH first, then explicit candidates (`name=`, `candidates=`) — replaces `command -v` + fallback dances |
+
+Args containing commas (like `candidates=a,b`) must use the JSON args form: `args: {"name": "brew", "candidates": "/opt/homebrew/bin/brew,/usr/local/bin/brew"}`.
 
 ## Stdlib vs user space — the separation rules
 
