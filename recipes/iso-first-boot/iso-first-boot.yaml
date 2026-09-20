@@ -1,0 +1,18 @@
+name: iso-first-boot
+description: "ISO/autoinstall devices ONLY — first-boot password rotation + fleet-enroll.service cleanup. Targets the iso-install tag (added by our automated install YAML/ISO at provisioning). The runtime fleet-enroll.service check double-guards every step, so a mislabeled or hand-provisioned node can never have its password rotated. Hand-set-up nodes (manual user + wifi, like wednesday) never carry the tag and never see this recipe."
+version: "1.0.0"
+labels: [iso-install]   # ONLY devices installed with our automated install yaml + ISO.
+                         # Provisioning adds this tag to nodes/<hostname>.yaml; flip it
+                         # off (with new-node/needs-setup) once first boot is verified.
+                         # run-all picks this recipe up ONLY on iso-install nodes.
+
+steps:
+  - name: force-password-change
+    description: "Force benn password change on first login (ISO first boot only)"
+    command: "systemctl -q is-enabled fleet-enroll.service 2>/dev/null && sudo chage -d 0 benn || echo 'skip: not first boot (fleet-enroll.service not enabled)'"
+    on_failure: continue
+
+  - name: disable-fleet-enroll-service
+    description: "One-shot ISO bootstrap service — disable after first boot so the guard stays honest"
+    command: "sudo systemctl disable fleet-enroll.service"
+    on_failure: continue

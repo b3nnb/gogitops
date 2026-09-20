@@ -1,6 +1,6 @@
 name: new-node
-description: "Full first-time node setup — updates first, then base packages, user hygiene, SSH fleet keys, nenv, dnclient/Nebula, Docker, Caddy, firewall, CLI tools, cosmetics"
-version: "1.4.0"
+description: "Full first-time node setup — updates first, then base packages, user hygiene, SSH fleet keys, nenv, dnclient/Nebula, Docker, Caddy, firewall, CLI tools, cosmetics. v1.5: ISO-first-boot steps (password rotation + fleet-enroll.service disable) moved to recipes/iso-first-boot (labels: [iso-install]) — new-node is install-path-agnostic"
+version: "1.5.0"
 labels: [new-node]   # first-boot only: fresh nodes carry the new-node tag (see
               # nodes/*.yaml convention: new-node + needs-setup, flipped off in
               # git once verified enrolled). run-all skips this recipe on every
@@ -29,11 +29,6 @@ steps:
   - name: base-packages
     description: "Base CLI packages formerly baked into the ISO"
     command: "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y wget gnupg jq nmap"
-    on_failure: continue
-
-  - name: force-password-change
-    description: "Force benn password change on first login (first boot only — guarded)"
-    command: "systemctl -q is-enabled fleet-enroll.service 2>/dev/null && sudo chage -d 0 benn || echo 'skip: not first boot (fleet-enroll.service not enabled)'"
     on_failure: continue
 
   # ── 1. SSH: install fleet keys (authorized_keys.d pattern) ──
@@ -177,8 +172,3 @@ steps:
   - name: fleet-ready
     description: "Mark node as fleet-ready"
     command: "echo 'Fleet enrollment complete — node is ready. Remove new-node/needs-setup tags in nodes/<hostname>.yaml once verified.'"
-
-  - name: disable-enroll-service
-    description: "Disable the first-boot enrollment service"
-    command: "sudo systemctl disable fleet-enroll.service"
-    on_failure: continue
