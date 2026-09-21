@@ -1,6 +1,6 @@
 name: dashboard-pull-setup
-description: "Make this node's agent pull-able by the fleet dashboard/beacon (Friday :7781): bind all interfaces, register the beacon URL, fix hand-rolled units that hardcode -bind 127.0.0.1, open ufw to the dashboard node, restart, verify. macOS note: daemon is hand-started — flags apply at next start."
-version: "1.0.0"
+description: "Make this node's agent pull-able by the fleet dashboard/beacon (Friday :7781): bind all interfaces, register the beacon URL, fix hand-rolled units that hardcode -bind 127.0.0.1, open ufw to the dashboard node, restart, verify. macOS note: daemon is hand-started — flags apply at next start. v1.1.0: beacon verification → typed net.http-check"
+version: "1.1.0"
 labels: []
 
 steps:
@@ -39,7 +39,10 @@ steps:
 
   - name: verify-beacon-sees-node
     description: "Beacon status API lists this node (registration lands within a tick of restart)"
-    command: 'sleep 5; curl -s --max-time 5 http://10.2.0.102:7781/api/status | grep -q "{{hostname}}" && echo beacon-lists-{{hostname}} || { echo WARN-beacon-missing-node; exit 1; }'
+    func: net.http-check
+    args: url=http://10.2.0.102:7781/api/status, contains={{hostname}}, timeout=5s, require=true
+    retries: 2
+    retry_delay: 5s
     on_failure: continue
 
   - name: darwin-note
