@@ -93,3 +93,31 @@ func TestParseRecipeAutoApply(t *testing.T) {
 		t.Error("auto_apply default must be false")
 	}
 }
+
+
+// ── labelsMatch: case-insensitive (Benn, Sep 20) ─────────────────────────────
+func TestLabelsMatchCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		name     string
+		node     []string
+		req      []string
+		excl     []string
+		expected bool
+	}{
+		{"exact", []string{"nas"}, []string{"nas"}, nil, true},
+		{"recipe-upper-node-lower", []string{"nas"}, []string{"NAS"}, nil, true},
+		{"node-upper-recipe-lower", []string{"New-Node"}, []string{"new-node"}, nil, true},
+		{"mixed-both", []string{"WiFi"}, []string{"wifi"}, nil, true},
+		{"exclude-case", []string{"Admin"}, nil, []string{"admin"}, false},
+		{"exclude-safe", []string{"linux"}, nil, []string{"admin"}, true},
+		{"still-strict-on-value", []string{"nas"}, []string{"nas-storage"}, nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := labelsMatch(c.node, c.req, c.excl)
+			if got != c.expected {
+				t.Errorf("labelsMatch(%v, %v, %v) = %v, want %v", c.node, c.req, c.excl, got, c.expected)
+			}
+		})
+	}
+}

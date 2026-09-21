@@ -2933,17 +2933,20 @@ func parseRecipe(content string) recipe {
 // labelsMatch reports whether nodeLabels satisfies required (all present)
 // and exclude (none present). Empty required+exclude = always matches.
 func labelsMatch(nodeLabels, required, exclude []string) bool {
+	// Case-insensitive (Benn, Sep 20): node yamls, agent.env overrides and
+	// hand-typed -hostname runs have mixed conventions in the wild —
+	// "NAS" in a recipe vs "nas" on a node must still match.
 	have := map[string]bool{}
 	for _, l := range nodeLabels {
-		have[l] = true
+		have[strings.ToLower(l)] = true
 	}
 	for _, l := range required {
-		if !have[l] {
+		if !have[strings.ToLower(l)] {
 			return false
 		}
 	}
 	for _, l := range exclude {
-		if have[l] {
+		if have[strings.ToLower(l)] {
 			return false
 		}
 	}
