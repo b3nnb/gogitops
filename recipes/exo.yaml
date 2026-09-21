@@ -1,0 +1,58 @@
+name: exo
+description: "Install + run exo (exo-explore/exo) as a USER systemd service with Restart=always — the fleet-canonical deployment shape. Installs the official binary to ~/.exo/bin, wires the user unit, enables on boot."
+version: "1.0.0"
+auto_apply: false
+labels: [exo]
+
+# Fleet context (Sep 2026): Friday runs exo as a USER unit (~/.config/systemd/
+# user/exo.service) — the system-level twin caused duplicate instances and was
+# disabled. This recipe reproduces exactly that user-unit shape on any Linux
+# node with systemd. Known behavior carried over deliberately:
+#   - Restart=always: exo leaks one CUDA worker per failed model-download
+#     retry (observed on Friday, OOM'd Jellyfin NVENC once). If a node with a
+#     GPU shows OOM pressure, restart the user unit before suspecting the
+#     driver — `systemctl --user restart exo`.
+#   - The unit runs only after the user logs in / lingers enabled; this
+#     recipe enables linger so the unit survives headless reboots.
+#   - exo needs no config file for LAN discovery (mDNS); models are pulled on
+#     first use to ~/.exo/models. Point nodes at the NAS model repository
+#     instead by pre-staging ~/.exo/models before first run.
+
+steps:
+  # ── 1. Install the exo binary (official install script, user-local) ──
+  - name: install-exo
+    description: "Install exo via the official installer to ~/.exo/bin (idempotent)"
+    command: "test -x ~/.exo/bin/exo && ~/.exo/bin/exo --version || curl -fsSL https://exo.ai/install.sh | bash"
+    on_failure: abort
+
+  - name: verify-exo
+    description: "Confirm the binary runs"
+    command: "~/.exo/bin/exo --version"
+    on_failure: abort
+
+  # ── 2. User linger so the user unit survives headless boots ──
+  - name: enable-linger
+    description: "Enable linger for the current user so user services run without a login session"
+    command: "sudo loginctl enable-linger $USER"
+    on_failure: continue
+
+  # ── 3. User systemd unit ──
+  - name: write-exo-unit
+    description: "Write ~/.config/systemd/user/exo.service with Restart=always"
+    command: "mkdir -p ~/.config/systemd/user && printf '%s\\n' '[Unit]' 'Description=exo — distributed LLM runtime' 'After=network-online.target' '' '[Service]' 'ExecStart=%h/.exo/bin/exo' 'Restart=always' 'RestartSec=5' 'Environment=HOME=%h' '' '[Install]' 'WantedBy=default.target' > ~/.config/systemd/user/exo.service"
+    on_failure: abort
+
+  - name: enable-exo
+    description: "Enable + start the exo user unit"
+    command: "systemctl --user daemon-reload && systemctl --user enable --now exo"
+    on_failure: abort
+
+  # ── 4. Verify ──
+  - name: check-exo-active
+    description: "Confirm the unit is active"
+    command: "systemctl --user is-active exo"
+    on_failure: abort
+
+  - name: done
+    description: "exo deployed as a user service — see http://<node>:5244 and dashboard status at /nodes"
+    command: "echo 'exo running as user unit. Health: systemctl --user status exo. If GPU OOM appears after model-download retries, restart the unit (known exo leak) and check exo logs: journalctl --user -u exo -n 50'"
