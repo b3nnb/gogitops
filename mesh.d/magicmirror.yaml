@@ -1,0 +1,7 @@
+peers:
+    - hostname: magicmirror
+      lan_ip: 10.2.0.10
+      macs:
+        - dc:a6:32:06:26:da
+      labels:
+        - magic-mirror

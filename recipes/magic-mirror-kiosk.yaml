@@ -1,0 +1,46 @@
+name: magic-mirror-kiosk
+description: "Pi kiosk client for the NAS MagicMirror server — Chromium fullscreen at http://10.2.0.103:8090, converts the first-boot local MM2 install into a thin client. Scope: nodes labeled magic-mirror (the mirror Pi)."
+version: "1.0.0"
+auto_apply: true
+labels: [magic-mirror]
+
+# Created Sep 21 2026 (Benn: "pre-emptively make the magic mirror recipe and a scope tag").
+# Runs on the mirror Pi (hostname magicmirror, mesh.d peer pre-staged with the
+# magic-mirror label). The Pi's flashed image boots a desktop session with
+# autologin; this recipe (a) removes any LOCAL MagicMirror2/PM2 autostart the
+# first-boot installer created, (b) drops a session autostart entry launching
+# Chromium in kiosk mode at the NAS server container, (c) disables screen
+# blanking on X11 sessions (best-effort).
+# Pi client notes (magic-mirror skill): no input devices — everything must be
+# time/content-driven; server at 10.2.0.103:8090 serves one UI to all clients.
+
+steps:
+  - name: install-chromium
+    description: "Chromium present or installed (name differs across RPi OS releases)"
+    command: 'if command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1; then echo "already-present"; exit 0; fi; sudo apt-get update -qq >/dev/null 2>&1; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq chromium >/dev/null 2>&1 || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq chromium-browser >/dev/null 2>&1; if command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1; then echo "installed"; else echo "missing: no chromium package available"; exit 1; fi'
+    expect_regex: "(already-present|installed)"
+    on_failure: abort
+
+  - name: disable-local-magicmirror
+    description: "Kill the first-boot local MM2/PM2 autostart (thin client now — server lives on the NAS)"
+    command: 'systemctl --user disable --now pm2-benn 2>/dev/null; systemctl --user stop pm2-benn 2>/dev/null; rm -f "$HOME/.config/autostart/magicmirror.desktop" "$HOME/.config/lxsession/LXDE-pi/autostart_magicmirror" 2>/dev/null; pm2 delete MagicMirror >/dev/null 2>&1; pm2 delete all >/dev/null 2>&1; echo "local-mm-disabled"'
+    expect: "local-mm-disabled"
+    on_failure: continue
+
+  - name: kiosk-autostart
+    description: "Session autostart entry: Chromium kiosk fullscreen at the NAS MagicMirror"
+    command: 'BIN=$(command -v chromium || command -v chromium-browser); test -n "$BIN" || { echo "missing: no chromium binary"; exit 1; }; mkdir -p "$HOME/.config/autostart"; printf "[Desktop Entry]\nType=Application\nName=Magic Mirror Kiosk\nExec=%s --kiosk --noerrdialogs --disable-infobars --no-sandbox http://10.2.0.103:8090\nTerminal=false\n" "$BIN" > "$HOME/.config/autostart/mm-kiosk.desktop"; echo "autostart-written"'
+    expect: "autostart-written"
+    on_failure: abort
+
+  - name: no-screen-blanking
+    description: "Keep the display always on (X11 sessions; best-effort under Wayland)"
+    command: 'mkdir -p "$HOME/.config/autostart"; printf "[Desktop Entry]\nType=Application\nName=MM No Blank\nExec=xset s off; xset -dpms; xset s noblank\nTerminal=false\n" > "$HOME/.config/autostart/mm-noblank.desktop" 2>/dev/null; echo "noblank-written"'
+    expect: "noblank-written"
+    on_failure: continue
+
+  - name: verify-kiosk
+    description: "Autostart entries in place"
+    command: 'test -f "$HOME/.config/autostart/mm-kiosk.desktop" && echo "kiosk-ready"'
+    expect: "kiosk-ready"
+    on_failure: abort
