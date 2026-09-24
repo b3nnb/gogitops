@@ -2,6 +2,7 @@ hostname: mini
 nebula_ip: ''
 lan_ip: 10.0.0.251
 labels:
+- internal-dns
 - compute
 - mac
 - nas

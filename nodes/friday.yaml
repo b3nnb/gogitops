@@ -3,6 +3,7 @@ machine_id: 0977c274f3c54f2c87bd59e763c2ca26
 nebula_ip: ''
 lan_ip: 10.2.0.102
 labels:
+- internal-dns
 - primary-compute
 - docker-host
 - hermes-host

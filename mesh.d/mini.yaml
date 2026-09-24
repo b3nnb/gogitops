@@ -8,6 +8,7 @@ peers:
         - 42:18:eb:4a:1c:ae
         - d0:11:e5:1a:77:5f
       labels:
+        - internal-dns
         - compute
         - gpu
         - llm-inference

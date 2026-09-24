@@ -8,6 +8,7 @@ peers:
         - 2c:0d:a7:d9:87:a3
         - c8:7f:54:02:0a:fd
       labels:
+        - internal-dns
         - primary-compute
         - docker-host
         - hermes-host

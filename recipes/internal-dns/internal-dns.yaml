@@ -1,0 +1,32 @@
+name: internal-dns
+description: >
+  Adopt the internal DNS server: point this node's resolver at lan-proxy
+  AdGuard (10.2.0.105 + 1.1.1.1) so internal *.bennbot.io names resolve
+  port-less through the mapper. Cross-platform (macOS networksetup /
+  Linux nmcli). Idempotent — re-runs are no-ops when already adopted.
+  Blocks gracefully with manual instructions when passwordless sudo is
+  unavailable.
+
+version: "1.0.0"
+auto_apply: true
+labels: [internal-dns]
+
+# Label contract (nodes/<hostname>.yaml + mesh.d):
+#   internal-dns — Benn's personal devices on the per-device DNS rollout
+#                  (Sep 23 '26 decision: router flip deferred). Friday,
+#                  Mini, Framework. NAS is excluded by design (it hosts
+#                  the DNS infra; QTS manages its own resolvers).
+
+steps:
+  - name: adopt-dns
+    description: Point this node's resolver at 10.2.0.105 (idempotent)
+    script: adopt_dns.sh
+    set_attr: dns_adopt_result
+
+  - name: verify-internal-names
+    description: Confirm paperclip.bennbot.io resolves + serves via the mapper
+    script: verify.sh
+    set_attr: dns_verify_result
+
+  - name: report
+    command: "echo 'ADOPT: {{attr.dns_adopt_result}} | VERIFY: {{attr.dns_verify_result}}'"
