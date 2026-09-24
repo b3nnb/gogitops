@@ -2,38 +2,33 @@
 # Idempotent internal-DNS adoption: point this node at lan-proxy AdGuard
 # (10.2.0.105) so internal *.bennbot.io names resolve port-less.
 # Cross-platform: macOS (networksetup) + Linux (NetworkManager nmcli).
-# No-op when paperclip.bennbot.io already resolves via the mapper.
 #
 # macOS NOTE (Sep 24 '26, Mini lesson): networksetup per-service DNS does
 # not decide which resolver macOS uses — the PRIMARY service (default
 # route interface) wins. A dock ethernet service can hold the setting
 # while Wi-Fi still answers queries. We therefore resolve the primary
-# interface (route get default) and set DNS on the service that owns it,
-# plus any other active service for good measure.
+# interface (route get default) and set DNS on the service that owns it.
+#
+# PROBE NOTE (Sep 24 '26, Framework lesson): idempotency must check the
+# CONFIGURED resolver, not whether names resolve — the old frozen AdGuard
+# (10.2.0.103) also answers internal names, so a name probe would
+# wrongly report "already adopted" and never migrate .103 -> .105.
 
 DNS1=10.2.0.105
 DNS2=1.1.1.1
 
-# ── idempotency probe (works on both OSes) ──
-res() {
-  if command -v getent >/dev/null 2>&1; then
-    getent hosts paperclip.bennbot.io 2>/dev/null | head -1 | awk '{print $1}'
-  elif command -v dscacheutil >/dev/null 2>&1; then
-    dscacheutil -q host -a name paperclip.bennbot.io 2>/dev/null | awk '/ip_address/{print $3; exit}'
-  else
-    echo ""
-  fi
-}
+# ── idempotency probe: what resolver is CONFIGURED? ──
+if [ "$(uname)" = "Darwin" ]; then
+  CUR=$(scutil --dns 2>/dev/null | awk '/nameserver\[0\]/{print $3; exit}')
+else
+  CUR=$(nmcli -g ipv4.dns con show --active 2>/dev/null | grep -oE '10\.2\.0\.[0-9]+|10\.0\.0\.[0-9]+' | head -1)
+fi
 
-R=$(res)
-case "$R" in
-  10.2.0.105)
-    echo "already-adopted: paperclip.bennbot.io -> 10.2.0.105"
-    exit 0
-    ;;
-  "") : ;;  # unresolved — need to set DNS
-  *)  echo "warn: paperclip.bennbot.io resolves via $R (upstream) — adopting internal DNS" ;;
-esac
+if [ "$CUR" = "$DNS1" ]; then
+  echo "already-adopted: active resolver is $DNS1"
+  exit 0
+fi
+[ -n "$CUR" ] && echo "migrating: active resolver is $CUR -> $DNS1 $DNS2"
 
 # ── macOS ──
 if [ "$(uname)" = "Darwin" ]; then
@@ -41,9 +36,6 @@ if [ "$(uname)" = "Darwin" ]; then
   PRIMARY_IF=$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')
   SVC=""
   if [ -n "$PRIMARY_IF" ]; then
-    SVC=$(networksetup -listallhardwareports 2>/dev/null \
-      | awk -v ifn="$PRIMARY_IF" '$0 ~ "Device: "ifn {getline prev; prev ~ /Hardware Port:/ && getline prev2; }')
-    # simpler parse: walk pairs
     SVC=$(networksetup -listallhardwareports 2>/dev/null | awk '
       /^Hardware Port:/ { port = substr($0, 16) }
       /^Device: '$PRIMARY_IF'$/ { print port; exit }')
@@ -70,12 +62,17 @@ fi
 command -v nmcli >/dev/null 2>&1 || { echo "BLOCKED: nmcli not found on this Linux node"; exit 1; }
 CONN=$(nmcli -t -f NAME,TYPE con show --active 2>/dev/null | grep -E ':802-11-wireless|:ethernet' | head -1 | cut -d: -f1)
 [ -z "$CONN" ] && { echo "BLOCKED: no active NetworkManager connection found"; exit 1; }
-if sudo -n true 2>/dev/null; then
+
+# Try direct nmcli first — polkit authorizes active local sessions without sudo
+if nmcli con mod "$CONN" ipv4.dns "$DNS1 $DNS2" ipv4.ignore-auto-dns yes 2>/dev/null; then
+  nmcli con up "$CONN" >/dev/null 2>&1
+  echo "dns-set (polkit): '$CONN' -> $DNS1 $DNS2"
+elif sudo -n true 2>/dev/null; then
   sudo -n nmcli con mod "$CONN" ipv4.dns "$DNS1 $DNS2" ipv4.ignore-auto-dns yes
   sudo -n nmcli con up "$CONN" >/dev/null 2>&1
   echo "dns-set: '$CONN' -> $DNS1 $DNS2"
 else
   echo "NEEDS-SUDO: run manually ->"
-  echo "  sudo nmcli con mod \"$CONN\" ipv4.dns '$DNS1 $DNS2' ipv4.ignore-auto-dns yes && sudo nmcli con up \"$CONN\""
+  echo "  nmcli con mod \"$CONN\" ipv4.dns '$DNS1 $DNS2' ipv4.ignore-auto-dns yes && nmcli con up \"$CONN\""
   exit 1
 fi
