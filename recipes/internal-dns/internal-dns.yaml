@@ -7,7 +7,7 @@ description: >
   Blocks gracefully with manual instructions when passwordless sudo is
   unavailable.
 
-version: "1.0.0"
+version: "1.1.0"
 auto_apply: true
 labels: [internal-dns]
 

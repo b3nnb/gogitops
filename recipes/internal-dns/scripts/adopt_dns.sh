@@ -3,6 +3,13 @@
 # (10.2.0.105) so internal *.bennbot.io names resolve port-less.
 # Cross-platform: macOS (networksetup) + Linux (NetworkManager nmcli).
 # No-op when paperclip.bennbot.io already resolves via the mapper.
+#
+# macOS NOTE (Sep 24 '26, Mini lesson): networksetup per-service DNS does
+# not decide which resolver macOS uses — the PRIMARY service (default
+# route interface) wins. A dock ethernet service can hold the setting
+# while Wi-Fi still answers queries. We therefore resolve the primary
+# interface (route get default) and set DNS on the service that owns it,
+# plus any other active service for good measure.
 
 DNS1=10.2.0.105
 DNS2=1.1.1.1
@@ -30,13 +37,27 @@ esac
 
 # ── macOS ──
 if [ "$(uname)" = "Darwin" ]; then
-  SVC=$(networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | while read -r s; do
-    [ "$(networksetup -getinfo "$s" 2>/dev/null | grep -c 'IP address')" -gt 0 ] && echo "$s" && break
-  done)
+  # Find the hardware port owning the default-route interface (primary service)
+  PRIMARY_IF=$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')
+  SVC=""
+  if [ -n "$PRIMARY_IF" ]; then
+    SVC=$(networksetup -listallhardwareports 2>/dev/null \
+      | awk -v ifn="$PRIMARY_IF" '$0 ~ "Device: "ifn {getline prev; prev ~ /Hardware Port:/ && getline prev2; }')
+    # simpler parse: walk pairs
+    SVC=$(networksetup -listallhardwareports 2>/dev/null | awk '
+      /^Hardware Port:/ { port = substr($0, 16) }
+      /^Device: '$PRIMARY_IF'$/ { print port; exit }')
+  fi
+  # Fallback: first service with an IP
+  if [ -z "$SVC" ]; then
+    SVC=$(networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | while read -r s; do
+      [ "$(networksetup -getinfo "$s" 2>/dev/null | grep -c 'IP address')" -gt 0 ] && echo "$s" && break
+    done)
+  fi
   [ -z "$SVC" ] && { echo "BLOCKED: no active macOS network service found"; exit 1; }
   if sudo -n true 2>/dev/null; then
     sudo -n networksetup -setdnsservers "$SVC" "$DNS1" "$DNS2"
-    echo "dns-set: '$SVC' -> $DNS1 $DNS2"
+    echo "dns-set (primary '$SVC'): $DNS1 $DNS2"
   else
     echo "NEEDS-SUDO: run manually ->"
     echo "  sudo networksetup -setdnsservers \"$SVC\" $DNS1 $DNS2"
