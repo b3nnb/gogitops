@@ -91,22 +91,59 @@ func (a *Agent) maybeSelfUpdate() {
 }
 
 // swapAndRestart atomically replaces the running binary and exec-restarts.
+// When the binary's location is not writable (e.g. a deb install under
+// /usr/local/bin driven by a user-level unit), falls back to a
+// user-writable ~/.local/bin/gogitops and exec-restarts from there instead —
+// the process lineage continues on the new path, so future self-updates
+// swap normally. (Sep 25 '26: this is what stranded wednesday on v0.7.22 —
+// permission denied writing /usr/local/bin/.gogitops-update-* every cycle.)
 func (a *Agent) swapAndRestart(bin []byte, toVer, reason string) {
 	if len(bin) < 500*1024 {
 		a.logger.Errorf("update", "downloaded %s too small (%d bytes) — refusing", toVer, len(bin))
 		return
 	}
 
-	// Swap atomically: write temp alongside, rename over the running binary.
-	// (rename-over-running-exe is legal on Linux and macOS; direct write is not)
 	exe, err := os.Executable()
 	if err != nil {
 		return
 	}
+
+	// Swap atomically: write temp alongside, rename over the running binary.
+	// (rename-over-running-exe is legal on Linux and macOS; direct write is not)
 	tmp := filepath.Join(filepath.Dir(exe), ".gogitops-update-"+toVer)
-	if err := os.WriteFile(tmp, bin, 0755); err != nil {
-		a.logger.Errorf("update", "cannot write update (binary location not writable?): %v", err)
+	if err := a.writeAndSwap(tmp, exe, bin, toVer); err != nil {
+		// Location not writable — fall back to the user bin dir and
+		// exec-restart from the new path.
+		home, herr := os.UserHomeDir()
+		if herr != nil {
+			a.logger.Errorf("update", "%s not writable and no home dir: %v", exe, herr)
+			return
+		}
+		altDir := filepath.Join(home, ".local", "bin")
+		if err := os.MkdirAll(altDir, 0755); err != nil {
+			a.logger.Errorf("update", "cannot create fallback dir %s: %v", altDir, err)
+			return
+		}
+		altExe := filepath.Join(altDir, "gogitops")
+		if err := a.writeAndSwap(filepath.Join(altDir, ".gogitops-update-"+toVer), altExe, bin, toVer); err != nil {
+			a.logger.Errorf("update", "fallback swap to %s failed: %v", altExe, err)
+			return
+		}
+		a.logger.Actionf("update", "self-updated %s -> %s (%s) — %s not writable, running from %s from now on", Version, toVer, reason, exe, altExe)
+		a.execRestart(altExe)
 		return
+	}
+
+	a.logger.Actionf("update", "self-updated %s -> %s (%s) — restarting in place", Version, toVer, reason)
+	a.execRestart(exe)
+}
+
+// writeAndSwap writes bin to tmp, signs it when needed (macOS), and renames
+// it over target. Rename-over-a-running-exe is legal; writing the running
+// exe directly is not (ETXTBSY), hence the temp-then-rename dance.
+func (a *Agent) writeAndSwap(tmp, target string, bin []byte, toVer string) error {
+	if err := os.WriteFile(tmp, bin, 0755); err != nil {
+		return err
 	}
 
 	// Apple Silicon SIGKILLs unsigned binaries at exec — ad-hoc sign on macOS
@@ -114,19 +151,23 @@ func (a *Agent) swapAndRestart(bin []byte, toVer, reason string) {
 		sign := exec.Command("codesign", "--force", "--sign", "-", tmp)
 		if out, err := sign.CombinedOutput(); err != nil {
 			os.Remove(tmp)
-			a.logger.Errorf("update", "codesign failed: %s", strings.TrimSpace(string(out)))
-			return
+			return fmt.Errorf("codesign: %s", strings.TrimSpace(string(out)))
 		}
 	}
 
-	if err := os.Rename(tmp, exe); err != nil {
+	if err := os.Rename(tmp, target); err != nil {
 		os.Remove(tmp)
-		a.logger.Errorf("update", "swap failed: %v", err)
-		return
+		return err
 	}
+	return nil
+}
 
-	a.logger.Actionf("update", "self-updated %s -> %s (%s) — restarting in place", Version, toVer, reason)
-
+// execRestart replaces this process with exe via syscall.Exec, keeping the
+// same PID/lineage — no reliance on the service manager (or spawn context)
+// to relaunch us. (cron/launchd-spawned restarts hang pre-main on macOS —
+// exec sidesteps that entirely.) Falls back to exit 0 (systemd
+// Restart=always / cron keepalive) if exec fails.
+func (a *Agent) execRestart(exe string) {
 	// Restart in place: syscall.Exec replaces this process with the new
 	// binary, keeping the same PID/lineage — no reliance on the service
 	// manager (or spawn context) to relaunch us. (cron/launchd-spawned
