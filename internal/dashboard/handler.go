@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bennbanks/gogitops/internal/health"
 )
 
 // NodeConfig describes a known node to check.
@@ -40,26 +42,28 @@ type liveResult struct {
 	TestsSkip     int
 	TestsFailing  []string
 	UptimeSeconds float64 // agent process uptime seconds, from /v1/health
+	Hardware      *health.HardwareSpecs
 }
 
 // apiNodeStatus is the JSON shape returned by /api/status.
 type apiNodeStatus struct {
-	NodeName      string   `json:"node_name"`
-	DisplayIP     string   `json:"ip"`
-	Online        bool     `json:"online"`
-	Healthy       bool     `json:"healthy"`
-	HealthStatus  string   `json:"health_status"` // "healthy" | "degraded" | "down"
-	ServicesUp    int      `json:"services_up"`
-	ServicesTotal int      `json:"services_total"`
-	Version       string   `json:"version"`
-	ResponseMs    int      `json:"response_time_ms"`
-	Error         string   `json:"error,omitempty"`
-	CheckedAt     string   `json:"checked_at"`
-	Uptime24h     float64  `json:"uptime_24h_pct"`
-	TestsPass     int      `json:"tests_pass"`
-	TestsFail     int      `json:"tests_fail"`
-	TestsSkip     int      `json:"tests_skip"`
-	TestsFailing  []string `json:"tests_failing,omitempty"`
+	NodeName      string                `json:"node_name"`
+	DisplayIP     string                `json:"ip"`
+	Online        bool                  `json:"online"`
+	Healthy       bool                  `json:"healthy"`
+	HealthStatus  string                `json:"health_status"` // "healthy" | "degraded" | "down"
+	ServicesUp    int                   `json:"services_up"`
+	ServicesTotal int                   `json:"services_total"`
+	Version       string                `json:"version"`
+	ResponseMs    int                   `json:"response_time_ms"`
+	Error         string                `json:"error,omitempty"`
+	CheckedAt     string                `json:"checked_at"`
+	Uptime24h     float64               `json:"uptime_24h_pct"`
+	TestsPass     int                   `json:"tests_pass"`
+	TestsFail     int                   `json:"tests_fail"`
+	TestsSkip     int                   `json:"tests_skip"`
+	TestsFailing  []string              `json:"tests_failing,omitempty"`
+	Hardware      *health.HardwareSpecs `json:"hardware,omitempty"`
 }
 
 // Handler serves the dashboard HTML and the API endpoints.
@@ -182,6 +186,7 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 			TestsFail:     res.TestsFail,
 			TestsSkip:     res.TestsSkip,
 			TestsFailing:  res.TestsFailing,
+			Hardware:      res.Hardware,
 		}
 		if res.Error != "" {
 			s.Error = res.Error
@@ -219,6 +224,8 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Tests        string // "44 ✓" | "2 failing" | "—"
 		TestsClass   string // "tests-ok" | "tests-bad" | ""
 		TestsFailing string // tooltip: failing test names
+		Specs        string // compact hardware line ("" = old agent)
+		SpecsFull    string // tooltip variant with full details
 	}
 
 	rows := make([]row, 0, len(results))
@@ -257,6 +264,12 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 		uptime, _ := h.store.Get24hSummary(r.Context(), res.NodeName)
 		rw.Uptime = formatUptimeCombo(res.UptimeSeconds, uptime)
+
+		// Hardware specs line — only when the agent reports an inventory
+		if res.Hardware != nil {
+			rw.Specs = health.CompactSpecs(res.Hardware)
+			rw.SpecsFull = health.FullSpecs(res.Hardware)
+		}
 
 		switch {
 		case res.TestsPass <= 0 && res.TestsFail == 0:
@@ -412,22 +425,24 @@ func (h *Handler) checkNode(ctx context.Context, cfg NodeConfig) liveResult {
 		res.TestsPass = -1
 	}
 
-	// Decode the health response — we only need services and version.
-	var health struct {
-		AgentVersion  string            `json:"agent_version"`
-		Services      map[string]string `json:"services"`
-		UptimeSeconds float64           `json:"uptime_seconds"`
+	// Decode the health response — we only need services, version and hardware.
+	var hresp struct {
+		AgentVersion  string                `json:"agent_version"`
+		Services      map[string]string     `json:"services"`
+		UptimeSeconds float64               `json:"uptime_seconds"`
+		Hardware      *health.HardwareSpecs `json:"hardware"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&hresp); err != nil {
 		res.Error = "decode error"
 		return res
 	}
 
 	res.Healthy = true
-	res.Version = health.AgentVersion
-	res.UptimeSeconds = health.UptimeSeconds
+	res.Version = hresp.AgentVersion
+	res.UptimeSeconds = hresp.UptimeSeconds
+	res.Hardware = hresp.Hardware
 	up, total := 0, 0
-	for _, v := range health.Services {
+	for _, v := range hresp.Services {
 		total++
 		if strings.EqualFold(v, "running") {
 			up++

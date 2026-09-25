@@ -47,11 +47,14 @@ type Agent struct {
 	lastGitPull      time.Time
 	lastGitResult    string
 	cycleCount       int64
+	// hw is the static hardware inventory, collected once in the
+	// background at startup (nil until the first probe round finishes).
+	hw *mesh.HardwareSpecs
 }
 
 // New creates an agent from config
 func New(node *config.NodeConfig, m *config.MeshConfig, webhook string) *Agent {
-	return &Agent{
+	a := &Agent{
 		node:             node,
 		mesh:             m,
 		pinger:           mesh.NewPinger(m),
@@ -62,6 +65,37 @@ func New(node *config.NodeConfig, m *config.MeshConfig, webhook string) *Agent {
 		lastServiceState: map[string]string{},
 		lastPeerState:    map[string]bool{},
 	}
+	// Hardware inventory: collect once, off the critical path — some probes
+	// (dmidecode, lspci, system_profiler) take a moment and health serving
+	// must not block on them.
+	go a.collectHardware()
+	return a
+}
+
+// collectHardware gathers the node's hardware specs once and caches them.
+func (a *Agent) collectHardware() {
+	hw := toMeshHardware(health.CollectHardwareSpecs())
+	a.mu.Lock()
+	a.hw = &hw
+	a.mu.Unlock()
+}
+
+// toMeshHardware maps the collected health inventory to the wire type.
+func toMeshHardware(h health.HardwareSpecs) mesh.HardwareSpecs {
+	m := mesh.HardwareSpecs{
+		CPU:         h.CPU,
+		CPUCores:    h.CPUCores,
+		RAMGB:       h.RAMGB,
+		RAMType:     h.RAMType,
+		Motherboard: h.Motherboard,
+	}
+	for _, g := range h.GPUs {
+		m.GPUs = append(m.GPUs, mesh.GPUInfo{Model: g.Model, VRAMMB: g.VRAMMB, Driver: g.Driver})
+	}
+	for _, d := range h.Disks {
+		m.Disks = append(m.Disks, mesh.DiskInfo{Model: d.Model, SizeGB: d.SizeGB, Rotational: d.Rotational})
+	}
+	return m
 }
 
 // SetRepoDir sets the git config repo path (for git pull operations)
@@ -92,6 +126,7 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	a.mu.RLock()
 	reachable := a.lastReachable
 	unreachable := a.lastUnreachable
+	hw := a.hw
 	a.mu.RUnlock()
 
 	sys := health.CollectSysInfo()
@@ -116,6 +151,7 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 			IP:     sys.IP,
 			HostID: sys.HostID,
 		},
+		Hardware: hw, // nil → omitted (old agents / still probing)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
