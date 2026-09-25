@@ -1,9 +1,13 @@
 peers:
     - hostname: framework
-      nebula_ip: ""
+      nebula_ip: "10.200.0.6"
       lan_ip: 10.0.0.229
       port: 7780
+      machine_id: 7dcbe091437645ea8c1bb356fe62e74f
       labels:
         - internal-dns
         - compute
         - laptop
+        - nas
+        - admin
+        - remote-admin
