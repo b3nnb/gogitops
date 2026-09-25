@@ -568,6 +568,7 @@ function esc(s) {
 // 3.40GHz" → "Core i7-13700K". Mirrors health.ShortCPU on the Go side.
 function shortCpu(model) {
   var s = String(model || '').trim();
+  s = s.replace(/^\d+(st|nd|rd|th) Gen /, '');
   ['(R)','(TM)','(C)','(r)','(tm)'].forEach(function(n) { s = s.split(n).join(''); });
   if (s.indexOf('Intel ') === 0) s = s.slice(6);
   if (s.indexOf('AMD ') === 0) s = s.slice(4);
