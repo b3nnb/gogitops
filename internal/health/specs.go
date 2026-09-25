@@ -74,17 +74,18 @@ func collectLinux() HardwareSpecs {
 	return hw
 }
 
-// linuxRAMType asks dmidecode for the populated memory type. Root-only on
-// most distros — agents running as root (system units) get DDR4/DDR5;
-// user-level agents silently omit it.
+// linuxRAMType asks dmidecode for the populated memory type. Root-only tool —
+// root-run agents get DDR4/DDR5 directly; user-run agents fall back to a
+// passwordless `sudo -n dmidecode` probe (never prompts, silent when the
+// sudoers policy would require a password) and omit the type otherwise.
 func linuxRAMType() string {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "dmidecode", "-t", "memory").Output()
-	if err != nil {
-		return ""
+	if out, err := runTimed(3*time.Second, "dmidecode", "-t", "memory"); err == nil {
+		return parseDMIType(out)
 	}
-	return parseDMIType(string(out))
+	if out, err := runTimed(3*time.Second, "sudo", "-n", "dmidecode", "-t", "memory"); err == nil {
+		return parseDMIType(out)
+	}
+	return ""
 }
 
 // linuxGPUs prefers nvidia-smi (authoritative model + VRAM + driver) and
