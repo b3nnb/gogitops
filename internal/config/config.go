@@ -16,6 +16,10 @@ import (
 // NodeConfig is the per-device configuration (nodes/<hostname>.yaml)
 type NodeConfig struct {
 	Hostname     string      `yaml:"hostname"`
+	// Nickname is a human-facing display name (dashboards, alerts). Never
+	// used for matching or recipe routing — hostname stays the technical
+	// key and MACs/machine-id stay the identity. (Sep 25 '26)
+	Nickname     string      `yaml:"nickname,omitempty"`
 	NebulaIP     string      `yaml:"nebula_ip"`
 	LanIP        string      `yaml:"lan_ip"`
 	MachineID    string      `yaml:"machine_id,omitempty"`

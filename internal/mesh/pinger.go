@@ -14,7 +14,12 @@ import (
 // PeerHealth is the health payload each agent serves
 type PeerHealth struct {
 	Hostname       string            `json:"hostname"`
+	// Nickname is the human-facing display name from the node yaml, if
+	// set. Empty when unset — clients fall back to hostname. (Sep 25 '26)
+	Nickname       string            `json:"nickname,omitempty"`
 	AgentVersion   string            `json:"agent_version"`
+	// MachineID is the stable identity anchor (matches config identity).
+	MachineID      string            `json:"machine_id,omitempty"`
 	UptimeSeconds  int64             `json:"uptime_seconds"`
 	NebulaRunning  bool              `json:"nebula_running"`
 	NebulaIP       string            `json:"nebula_ip,omitempty"`

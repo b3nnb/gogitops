@@ -1,4 +1,5 @@
 hostname: nas
+nickname: "QNAP"
 nebula_ip: 100.2.0.4
 lan_ip: 10.2.0.103
 

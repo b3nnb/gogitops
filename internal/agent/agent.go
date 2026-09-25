@@ -98,6 +98,8 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 
 	h := mesh.PeerHealth{
 		Hostname:       a.node.Hostname,
+		Nickname:       a.node.Nickname,
+		MachineID:      a.node.MachineID,
 		AgentVersion:   Version,
 		UptimeSeconds:  int64(time.Since(a.started).Seconds()),
 		NebulaRunning:  a.nebulaRunning(),

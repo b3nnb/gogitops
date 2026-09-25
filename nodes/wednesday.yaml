@@ -1,4 +1,5 @@
 hostname: wednesday
+nickname: "Wednesday"
 lan_ip: 10.0.0.213
 
 # Tags (docs/tags.md — plain words; new-node/needs-setup mark it for
