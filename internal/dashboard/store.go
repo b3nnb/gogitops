@@ -8,7 +8,11 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	// Pure-Go SQLite driver (modernc.org/sqlite) — no cgo. This permanently
+	// removes the CGO_ENABLED=1 build requirement that crash-looped the
+	// dashboard ("failed to open status database: set WAL mode") when built
+	// via CGO_ENABLED=0 release artifacts.
+	_ "modernc.org/sqlite"
 )
 
 // NodeCheck represents a single health check record for a node.
@@ -31,7 +35,9 @@ type Store struct {
 // NewStore opens (or creates) a SQLite database at dbPath and ensures
 // the schema is ready. It also runs a cleanup of rows older than 24h.
 func NewStore(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	// modernc.org/sqlite: pragmas ride the DSN as _pragma params.
+	dsn := "file:" + dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -101,7 +107,7 @@ func (s *Store) Close() error {
 func (s *Store) cleanup(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx,
 		"DELETE FROM node_status WHERE checked_at < ?",
-		time.Now().Add(-24*time.Hour),
+		time.Now().Add(-24*time.Hour).UTC().Format(time.RFC3339),
 	)
 	return err
 }
@@ -111,7 +117,8 @@ func (s *Store) RecordCheck(ctx context.Context, nodeName, displayIP string, hea
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO node_status (node_name, display_ip, healthy, services_up, services_total, version, checked_at, response_time_ms)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		nodeName, displayIP, healthy, servicesUp, servicesTotal, version, time.Now().UTC(), responseMs,
+		nodeName, displayIP, healthy, servicesUp, servicesTotal, version,
+		time.Now().UTC().Format(time.RFC3339), responseMs,
 	)
 	if err != nil {
 		return fmt.Errorf("insert check: %w", err)
@@ -161,7 +168,7 @@ func (s *Store) Get24hSummary(ctx context.Context, nodeName string) (float64, er
 		`SELECT COUNT(*), SUM(CASE WHEN healthy = 1 THEN 1 ELSE 0 END)
 		 FROM node_status
 		 WHERE node_name = ? AND checked_at >= ?`,
-		nodeName, time.Now().Add(-24*time.Hour).UTC(),
+		nodeName, time.Now().Add(-24*time.Hour).UTC().Format(time.RFC3339),
 	).Scan(&total, &healthy)
 
 	if err != nil {
@@ -180,7 +187,7 @@ func (s *Store) Get24hSummary(ctx context.Context, nodeName string) (float64, er
 // RegisterNode upserts a node into the registered_nodes table.
 // If the node already exists, it updates last_seen and address.
 func (s *Store) RegisterNode(ctx context.Context, nodeName, address, displayIP string) error {
-	now := time.Now().UTC()
+	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO registered_nodes (node_name, address, display_ip, registered_at, last_seen)
 		 VALUES (?, ?, ?, ?, ?)

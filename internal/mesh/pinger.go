@@ -13,11 +13,11 @@ import (
 
 // PeerHealth is the health payload each agent serves
 type PeerHealth struct {
-	Hostname       string            `json:"hostname"`
+	Hostname string `json:"hostname"`
 	// Nickname is the human-facing display name from the node yaml, if
 	// set. Empty when unset — clients fall back to hostname. (Sep 25 '26)
-	Nickname       string            `json:"nickname,omitempty"`
-	AgentVersion   string            `json:"agent_version"`
+	Nickname     string `json:"nickname,omitempty"`
+	AgentVersion string `json:"agent_version"`
 	// MachineID is the stable identity anchor (matches config identity).
 	MachineID      string            `json:"machine_id,omitempty"`
 	UptimeSeconds  int64             `json:"uptime_seconds"`
@@ -32,6 +32,35 @@ type PeerHealth struct {
 	LastGitPull    string            `json:"last_git_pull,omitempty"`
 	ConfigHash     string            `json:"config_hash,omitempty"`
 	System         SystemInfo        `json:"system"`
+	// Hardware is the static hardware inventory collected once at agent
+	// startup. Pointer so old agents (no inventory) omit the field entirely.
+	Hardware *HardwareSpecs `json:"hardware,omitempty"`
+}
+
+// HardwareSpecs is the wire mirror of health.HardwareSpecs (collected on
+// the agent, decoded by peers/dashboard). All fields best-effort.
+type HardwareSpecs struct {
+	CPU         string     `json:"cpu,omitempty"`
+	CPUCores    int        `json:"cpu_cores,omitempty"`
+	RAMGB       int        `json:"ram_gb,omitempty"`
+	RAMType     string     `json:"ram_type,omitempty"`
+	GPUs        []GPUInfo  `json:"gpus,omitempty"`
+	Disks       []DiskInfo `json:"disks,omitempty"`
+	Motherboard string     `json:"motherboard,omitempty"`
+}
+
+// GPUInfo is one GPU (model always; VRAM + driver from nvidia-smi).
+type GPUInfo struct {
+	Model  string `json:"model,omitempty"`
+	VRAMMB int    `json:"vram_mb,omitempty"`
+	Driver string `json:"driver,omitempty"`
+}
+
+// DiskInfo is one physical disk.
+type DiskInfo struct {
+	Model      string `json:"model,omitempty"`
+	SizeGB     int    `json:"size_gb,omitempty"`
+	Rotational bool   `json:"rotational,omitempty"`
 }
 
 // DiskMount is per-mount disk usage on the wire

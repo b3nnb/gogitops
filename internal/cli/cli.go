@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/bennbanks/gogitops/internal/health"
 )
 
 // ANSI color codes
@@ -37,17 +39,18 @@ const (
 
 // HealthResponse mirrors the agent's /v1/health JSON structure
 type HealthResponse struct {
-	Hostname       string            `json:"hostname"`
-	AgentVersion   string            `json:"agent_version"`
-	UptimeSeconds  int64             `json:"uptime_seconds"`
-	NebulaRunning  bool              `json:"nebula_running"`
-	NebulaIP       string            `json:"nebula_ip"`
-	Labels         []string          `json:"labels"`
-	Services       map[string]string `json:"services"`
-	DiskWarns      []string          `json:"disk_warns"`
-	PeersReachable []string          `json:"peers_reachable"`
-	PeersUnreach   []string          `json:"peers_unreachable"`
-	System         SystemInfo        `json:"system"`
+	Hostname       string                `json:"hostname"`
+	AgentVersion   string                `json:"agent_version"`
+	UptimeSeconds  int64                 `json:"uptime_seconds"`
+	NebulaRunning  bool                  `json:"nebula_running"`
+	NebulaIP       string                `json:"nebula_ip"`
+	Labels         []string              `json:"labels"`
+	Services       map[string]string     `json:"services"`
+	DiskWarns      []string              `json:"disk_warns"`
+	PeersReachable []string              `json:"peers_reachable"`
+	PeersUnreach   []string              `json:"peers_unreachable"`
+	System         SystemInfo            `json:"system"`
+	Hardware       *health.HardwareSpecs `json:"hardware,omitempty"`
 }
 
 type SystemInfo struct {

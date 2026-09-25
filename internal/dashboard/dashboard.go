@@ -114,6 +114,22 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
   tbody tr:last-child td { border-bottom: none; }
   tbody tr:hover { background: rgba(79,142,247,0.06); cursor: pointer; }
   .node-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Hardware spec strip — dim mono line under each node row */
+  .spec-row td {
+    padding: 0 18px 10px 18px !important;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .spec-row:hover { background: rgba(79,142,247,0.06); }
+  .node-row:has(+ .spec-row) td { border-bottom: none; }  /* group name + specs */
+  .spec-line {
+    font-size: 12px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: "SF Mono", "Fira Code", monospace;
+  }
   .ip { color: var(--text-dim); font-family: "SF Mono", "Fira Code", monospace; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* Status badges */
   .badge {
@@ -523,6 +539,11 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`<!DOCTYPE htm
         <td class="version">{{.Version}}</td>
         <td class="uptime" title="agent uptime &middot; 24h availability">{{.Uptime}}</td>
       </tr>
+      {{if .Specs}}
+      <tr class="spec-row" onclick="toggleDetail('{{.NodeName}}')">
+        <td colspan="9" class="spec-line" title="{{.SpecsFull}}">{{.Specs}}</td>
+      </tr>
+      {{end}}
       <tr class="detail-row" id="detail-{{.NodeName}}">
         <td colspan="9"><div class="dd" id="dd-{{.NodeName}}"></div></td>
       </tr>
@@ -541,6 +562,22 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, function(ch) {
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
   });
+}
+
+// shortCpu trims vendor/register noise: "Intel(R) Core(TM) i7-13700K CPU @
+// 3.40GHz" → "Core i7-13700K". Mirrors health.ShortCPU on the Go side.
+function shortCpu(model) {
+  var s = String(model || '').trim();
+  s = s.replace(/^\d+(st|nd|rd|th) Gen /, '');
+  ['(R)','(TM)','(C)','(r)','(tm)'].forEach(function(n) { s = s.split(n).join(''); });
+  if (s.indexOf('Intel ') === 0) s = s.slice(6);
+  if (s.indexOf('AMD ') === 0) s = s.slice(4);
+  var cuts = [' CPU', ' Processor', ' with Radeon', ' with Iris', ' @'];
+  for (var i = 0; i < cuts.length; i++) {
+    var at = s.indexOf(cuts[i]);
+    if (at >= 0) s = s.slice(0, at);
+  }
+  return s.replace(/ \d+[- ][Cc]ores?$/, '').replace(/\s+/g, ' ');
 }
 
 var openNode = null;
@@ -653,6 +690,43 @@ function renderDetail(name, d, logs, tests, attrs) {
   html += metricCard('Outbound IP', sys.ip || '—');
   html += metricCard('Labels', (d.labels || []).join(', ') || '—');
   html += '</div>';
+
+  // Hardware inventory (only when the agent reports one — silent otherwise)
+  var hw = d.hardware;
+  if (hw) {
+    var cpuVal = (hw.cpu ? shortCpu(hw.cpu) : '—') + (hw.cpu_cores ? ' · ' + hw.cpu_cores + 'c' : '');
+    var ramVal = hw.ram_gb ? (hw.ram_gb + 'GB' + (hw.ram_type ? ' ' + hw.ram_type : '')) : '—';
+    var gpus = hw.gpus || [];
+    var gpuVal = '—';
+    if (gpus.length > 0) {
+      var gl = [];
+      for (var gi = 0; gi < gpus.length; gi++) {
+        var g = gpus[gi];
+        var one = g.model || '?';
+        if (g.vram_mb) one += ' ' + Math.round(g.vram_mb/1024) + 'GB';
+        if (g.driver) one += ' · drv ' + g.driver;
+        gl.push(one);
+      }
+      gpuVal = gl.join(' + ');
+    }
+    var diskVal = '—';
+    if (hw.disks && hw.disks.length > 0) {
+      var dl = [];
+      for (var di = 0; di < hw.disks.length; di++) {
+        var dk = hw.disks[di];
+        dl.push((dk.model || 'disk') + ' ' + dk.size_gb + 'GB' + (dk.rotational ? ' HDD' : ''));
+      }
+      diskVal = dl.join(' + ');
+    }
+    html += '<h3>HARDWARE</h3>';
+    html += '<div class="metrics-grid">';
+    html += metricCard('CPU', cpuVal);
+    html += metricCard('RAM', ramVal);
+    html += metricCard('GPU', gpuVal);
+    html += metricCard('Disks', diskVal);
+    html += metricCard('Motherboard', hw.motherboard || '—');
+    html += '</div>';
+  }
 
   // Disk usage bars (per-mount, always shown)
   if (d.disk && d.disk.length > 0) {
