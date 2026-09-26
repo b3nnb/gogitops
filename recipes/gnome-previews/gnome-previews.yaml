@@ -1,0 +1,29 @@
+name: gnome-previews
+description: "3D-friendly GNOME file previews (Benn's gnome-sushi workflow): gnome-sushi (spacebar previewer) + f3d (instant 3D viewer, Nautilus grid thumbnails for STL/OBJ/GLB/PLY/FBX via VTK plugins) + standalone blender-thumbnailer (.blend grid icons). Sushi itself has NO 3D viewer and no plugin API (viewers are compiled in: image/video/audio/text/pdf/font/html/libreoffice) — grid thumbnails + Enter-opens-f3d is the 3D quick-look flow. Framework note: no passwordless sudo by design — apply manually there: sudo apt-get install -y gnome-sushi f3d && sudo cp recipes/gnome-previews/scripts/blender.thumbnailer /usr/share/thumbnailers/ && sudo cp recipes/gnome-previews/scripts/bin/blender-thumbnailer /usr/local/bin/ && nautilus -q. Caveat: .blend thumbnails only work for Blender-saved files (embedded preview block); tool-exported .blend (Meshy etc.) falls back to the generic icon — export those as GLB/STL for visual browsing."
+version: "1.0.0"
+labels: [primary-compute]
+auto_apply: true
+
+steps:
+  - name: install-sushi-f3d
+    description: "Idempotent apt install — gnome-sushi (spacebar previews) + f3d (3D viewer + thumbnailer)"
+    os: linux
+    script: install.sh
+    on_failure: abort
+
+  - name: install-blender-thumbnailer
+    description: "Standalone blender-thumbnailer binary to /usr/local/bin + /usr/share/thumbnailers/blender.thumbnailer registration (.blend grid icons)"
+    script: blender-thumb.sh
+    on_failure: warn
+
+  - name: activate
+    description: "Restart Nautilus so sushi and the new thumbnailers register (file windows are unaffected long-term)"
+    os: linux
+    command: "nautilus -q 2>/dev/null || true"
+
+  - name: verify
+    description: "All preview pieces present and registered"
+    os: linux
+    command: "test -f /usr/share/thumbnailers/blender.thumbnailer && test -f /usr/share/thumbnailers/f3d-plugin-native.thumbnailer && command -v f3d >/dev/null && dpkg-query -W -f='${Status}' gnome-sushi 2>/dev/null | grep -q 'install ok installed'"
+    assert: "gnome-sushi + f3d + .blend/.stl thumbnailers all registered"
+    on_failure: abort
