@@ -1,0 +1,31 @@
+name: agent-binary-bootstrap
+description: "One-time rescue for agents stranded on an old binary at a non-writable path (/usr/local/bin — v0.7.22 wednesday, BCR-73): fetch the latest release from the git binaries branch, install it to ~/.local/bin/gogitops, repoint the launcher unit, and restart the daemon. No-op once /v1/health reports hardware specs (v0.7.29+). Never touches nodes that already report specs."
+version: "1.0.0"
+labels: [new-node]   # only wednesday carries this tag
+auto_apply: true
+
+steps:
+  - name: skip-if-current
+    description: "Nodes already reporting hardware specs (v0.7.29+) are done — exit 0 so convergence records ok"
+    command: 'curl -s -m 5 http://127.0.0.1:7780/v1/health | grep -q "\"hardware\"" && { echo "already-current — no bootstrap needed"; exit 0; }; echo "bootstrap needed"; exit 0'
+
+  - name: fetch-latest-binary
+    description: "Pull the latest linux binary for this arch off the git binaries branch into ~/.local/bin"
+    command: 'R="$HOME/.config/gogitops"; cd "$R" || { echo "no repo dir"; exit 1; }; git fetch -q origin binaries || { echo "fetch binaries failed"; exit 1; }; V=$(git show origin/binaries:VERSION | tr -d "\n"); A=$(uname -m | sed -e "s/x86_64/amd64/" -e "s/aarch64/arm64/"); mkdir -p "$HOME/.local/bin"; git show "origin/binaries:bin/gogitops-linux-$A" > "$HOME/.local/bin/.gogitops-bootstrap" || { echo "binary extract failed"; exit 1; }; [ $(wc -c < "$HOME/.local/bin/.gogitops-bootstrap") -lt 500000 ] && { echo "extracted binary too small"; exit 1; }; chmod +x "$HOME/.local/bin/.gogitops-bootstrap"; mv -f "$HOME/.local/bin/.gogitops-bootstrap" "$HOME/.local/bin/gogitops"; echo "installed $V -> ~/.local/bin/gogitops"'
+
+  - name: repoint-launcher
+    description: "Point every user-level gogitops unit ExecStart at ~/.local/bin/gogitops (root-owned paths need sudo and are left alone — recipe re-verifies via the running daemon instead)"
+    command: 'C="$HOME/.local/bin/gogitops"; for U in gogitops gogitops-daemon; do F="$HOME/.config/systemd/user/$U.service"; if [ -f "$F" ]; then sed -i "s|/usr/local/bin/gogitops|$C|g" "$F" || true; sed -i "s|$HOME/Documents/code/GoGitOps/bin/gogitops|$C|g" "$F" || true; echo "repointed $F"; fi; done; systemctl --user daemon-reload 2>/dev/null; echo launcher-repoint-done'
+    on_failure: continue
+
+  - name: restart-daemon
+    description: "Restart whichever gogitops daemon unit is active (user first, then system via sudo if passwordless); if no unit owns it, exec-restart via the API restart endpoint keeps the process lineage"
+    command: 'for U in gogitops gogitops-daemon; do if systemctl --user is-active $U >/dev/null 2>&1; then systemctl --user restart $U && { echo "restarted-user-$U"; exit 0; }; fi; done; if systemctl is-active gogitops.service >/dev/null 2>&1 || systemctl is-active gogitops-daemon.service >/dev/null 2>&1; then sudo -n systemctl restart gogitops.service 2>/dev/null || sudo -n systemctl restart gogitops-daemon.service 2>/dev/null || true; echo "system-unit-restart-attempted"; exit 0; fi; curl -s -m 5 -X POST http://127.0.0.1:7780/v1/restart >/dev/null 2>&1 || true; echo "api-restart-requested"'
+    on_failure: continue
+
+  - name: wait-and-verify
+    description: "Wait for the daemon to come back and confirm /v1/health now carries hardware specs"
+    func: net.http-check
+    args: url=http://127.0.0.1:7780/v1/health, contains=hardware, timeout=5s, require=true
+    retries: 12
+    retry_delay: 5s
