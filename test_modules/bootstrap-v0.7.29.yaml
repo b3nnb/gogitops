@@ -6,9 +6,9 @@
 # executes command steps from this repo. This module rides that loop to
 # perform the one-time rescue: fetch the latest linux binary off the git
 # binaries branch, install to ~/.local/bin/gogitops, repoint the user unit,
-# restart the daemon. NOTE: guards are INSIDE each command (not `when:` —
-# v0.7.22's runner skipped when-gated steps here) so every step is a no-op
-# pass on any other node and self-disarms once /v1/health reports hardware.
+# restart the daemon. Guards live INSIDE each command (v0.7.22's runner
+# skipped when-gated steps here), so every step is a no-op pass on any other
+# node and self-disarms once /v1/health reports hardware.
 name: bootstrap-v0.7.29
 description: "One-time binary rescue for wednesday (v0.7.22 stranded on read-only /usr/local/bin) — rides the fleet-test loop the old daemon still runs. Self-disarms once the node reports hardware specs."
 test_module: true
@@ -21,9 +21,9 @@ steps:
     assert: "latest binary installed to ~/.local/bin/gogitops"
 
   - name: repoint-launcher
-    description: "Point user-level gogitops unit ExecStart at ~/.local/bin/gogitops"
-    command: 'hostname | grep -q "^wednesday$" || exit 0; curl -s -m 3 http://127.0.0.1:7780/v1/health | grep -q hardware && exit 0; C="$HOME/.local/bin/gogitops"; for U in gogitops gogitops-daemon; do F="$HOME/.config/systemd/user/$U.service"; if [ -f "$F" ]; then sed -i "s|/usr/local/bin/gogitops|$C|g" "$F" || true; echo "repointed $F"; fi; done; systemctl --user daemon-reload 2>/dev/null; echo repoint-done'
+    description: "Point user-level gogitops unit ExecStart at ~/.local/bin/gogitops (explicit user-session env — daemon children lack DBUS)"
+    command: 'hostname | grep -q "^wednesday$" || exit 0; curl -s -m 3 http://127.0.0.1:7780/v1/health | grep -q hardware && exit 0; export XDG_RUNTIME_DIR="/run/user/$(id -u)"; export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"; C="$HOME/.local/bin/gogitops"; for U in gogitops gogitops-daemon; do F="$HOME/.config/systemd/user/$U.service"; if [ -f "$F" ]; then sed -i "s|/usr/local/bin/gogitops|$C|g" "$F" || true; echo "repointed $F"; fi; done; systemctl --user daemon-reload 2>/dev/null; echo repoint-done'
 
   - name: restart-daemon
     description: "Restart the daemon onto the new binary (this kills the test loop mid-run — the next tick re-verifies and self-disarms)"
-    command: 'hostname | grep -q "^wednesday$" || exit 0; curl -s -m 3 http://127.0.0.1:7780/v1/health | grep -q hardware && exit 0; for U in gogitops gogitops-daemon; do if systemctl --user is-active $U >/dev/null 2>&1; then systemctl --user restart $U && { echo "restarted-user-$U"; exit 0; }; fi; done; sudo -n systemctl restart gogitops.service 2>/dev/null || sudo -n systemctl restart gogitops-daemon.service 2>/dev/null || { curl -s -m 5 -X POST http://127.0.0.1:7780/v1/restart >/dev/null 2>&1; echo "api-restart-requested"; }'
+    command: 'hostname | grep -q "^wednesday$" || exit 0; curl -s -m 3 http://127.0.0.1:7780/v1/health | grep -q hardware && exit 0; export XDG_RUNTIME_DIR="/run/user/$(id -u)"; export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"; for U in gogitops gogitops-daemon; do if systemctl --user is-active $U >/dev/null 2>&1; then systemctl --user restart $U && { echo "restarted-user-$U"; exit 0; }; fi; done; sudo -n systemctl restart gogitops.service 2>/dev/null || sudo -n systemctl restart gogitops-daemon.service 2>/dev/null || { curl -s -m 5 -X POST http://127.0.0.1:7780/v1/restart >/dev/null 2>&1; echo "api-restart-requested"; }'
