@@ -4,11 +4,11 @@
 # v0.7.22 predates the recipe auto-apply loop, so the agent-binary-bootstrap
 # RECIPE can't reach it — but the fleet-test loop DOES run on v0.7.22 and
 # executes command steps from this repo. This module rides that loop to
-# perform the one-time rescue the v0.7.29 updater would otherwise do itself:
-# fetch the latest linux binary off the git binaries branch, install it to
-# ~/.local/bin/gogitops, repoint the user unit, restart the daemon.
-# Self-disarming: every step is when-gated to wednesday AND skipped once
-# /v1/health reports hardware specs (v0.7.29+), so it no-ops forever after.
+# perform the one-time rescue: fetch the latest linux binary off the git
+# binaries branch, install to ~/.local/bin/gogitops, repoint the user unit,
+# restart the daemon. NOTE: guards are INSIDE each command (not `when:` —
+# v0.7.22's runner skipped when-gated steps here) so every step is a no-op
+# pass on any other node and self-disarms once /v1/health reports hardware.
 name: bootstrap-v0.7.29
 description: "One-time binary rescue for wednesday (v0.7.22 stranded on read-only /usr/local/bin) — rides the fleet-test loop the old daemon still runs. Self-disarms once the node reports hardware specs."
 test_module: true
@@ -17,16 +17,13 @@ labels: [new-node]   # fleet-test label gate — only wednesday carries this
 steps:
   - name: fetch-latest-binary
     description: "Pull the latest linux-amd64 binary off the git binaries branch into ~/.local/bin"
-    when: "hostname | grep -q '^wednesday$' && ! curl -s -m 3 http://127.0.0.1:7780/v1/health | grep -q hardware"
-    command: 'R="$HOME/.config/gogitops"; cd "$R" || exit 1; git fetch -q origin binaries || exit 1; V=$(git show origin/binaries:VERSION | tr -d "\n"); mkdir -p "$HOME/.local/bin"; git show "origin/binaries:bin/gogitops-linux-amd64" > "$HOME/.local/bin/.gogitops-bootstrap" || exit 1; [ $(wc -c < "$HOME/.local/bin/.gogitops-bootstrap") -lt 500000 ] && exit 1; chmod +x "$HOME/.local/bin/.gogitops-bootstrap"; mv -f "$HOME/.local/bin/.gogitops-bootstrap" "$HOME/.local/bin/gogitops"; echo "installed $V"'
+    command: 'hostname | grep -q "^wednesday$" || exit 0; curl -s -m 3 http://127.0.0.1:7780/v1/health | grep -q hardware && exit 0; R="$HOME/.config/gogitops"; cd "$R" || exit 1; git fetch -q origin binaries || exit 1; V=$(git show origin/binaries:VERSION | tr -d "\n"); mkdir -p "$HOME/.local/bin"; git show "origin/binaries:bin/gogitops-linux-amd64" > "$HOME/.local/bin/.gogitops-bootstrap" || exit 1; [ $(wc -c < "$HOME/.local/bin/.gogitops-bootstrap") -lt 500000 ] && exit 1; chmod +x "$HOME/.local/bin/.gogitops-bootstrap"; mv -f "$HOME/.local/bin/.gogitops-bootstrap" "$HOME/.local/bin/gogitops"; echo "installed $V"'
     assert: "latest binary installed to ~/.local/bin/gogitops"
 
   - name: repoint-launcher
     description: "Point user-level gogitops unit ExecStart at ~/.local/bin/gogitops"
-    when: "hostname | grep -q '^wednesday$' && ! curl -s -m 3 http://127.0.0.1:7780/v1/health | grep -q hardware"
-    command: 'C="$HOME/.local/bin/gogitops"; for U in gogitops gogitops-daemon; do F="$HOME/.config/systemd/user/$U.service"; if [ -f "$F" ]; then sed -i "s|/usr/local/bin/gogitops|$C|g" "$F" || true; echo "repointed $F"; fi; done; systemctl --user daemon-reload 2>/dev/null; echo repoint-done'
+    command: 'hostname | grep -q "^wednesday$" || exit 0; curl -s -m 3 http://127.0.0.1:7780/v1/health | grep -q hardware && exit 0; C="$HOME/.local/bin/gogitops"; for U in gogitops gogitops-daemon; do F="$HOME/.config/systemd/user/$U.service"; if [ -f "$F" ]; then sed -i "s|/usr/local/bin/gogitops|$C|g" "$F" || true; echo "repointed $F"; fi; done; systemctl --user daemon-reload 2>/dev/null; echo repoint-done'
 
   - name: restart-daemon
-    description: "Restart the daemon onto the new binary (this kills the test loop mid-run — the next tick re-verifies)"
-    when: "hostname | grep -q '^wednesday$' && ! curl -s -m 3 http://127.0.0.1:7780/v1/health | grep -q hardware"
-    command: 'for U in gogitops gogitops-daemon; do if systemctl --user is-active $U >/dev/null 2>&1; then systemctl --user restart $U && { echo "restarted-user-$U"; exit 0; }; fi; done; sudo -n systemctl restart gogitops.service 2>/dev/null || sudo -n systemctl restart gogitops-daemon.service 2>/dev/null || { curl -s -m 5 -X POST http://127.0.0.1:7780/v1/restart >/dev/null 2>&1; echo "api-restart-requested"; }'
+    description: "Restart the daemon onto the new binary (this kills the test loop mid-run — the next tick re-verifies and self-disarms)"
+    command: 'hostname | grep -q "^wednesday$" || exit 0; curl -s -m 3 http://127.0.0.1:7780/v1/health | grep -q hardware && exit 0; for U in gogitops gogitops-daemon; do if systemctl --user is-active $U >/dev/null 2>&1; then systemctl --user restart $U && { echo "restarted-user-$U"; exit 0; }; fi; done; sudo -n systemctl restart gogitops.service 2>/dev/null || sudo -n systemctl restart gogitops-daemon.service 2>/dev/null || { curl -s -m 5 -X POST http://127.0.0.1:7780/v1/restart >/dev/null 2>&1; echo "api-restart-requested"; }'
