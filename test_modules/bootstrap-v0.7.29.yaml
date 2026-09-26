@@ -15,6 +15,11 @@ test_module: true
 labels: [new-node]   # fleet-test label gate — only wednesday carries this
 
 steps:
+  - name: diag-supervision
+    description: "Dump how this daemon is supervised (units, cron, parent process) into an attr for remote diagnosis"
+    command: 'hostname | grep -q "^wednesday$" || exit 0; export XDG_RUNTIME_DIR="/run/user/$(id -u)"; export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"; { echo "--- user unit files:"; ls -la $HOME/.config/systemd/user/ 2>/dev/null | grep -i gogitops; echo "--- systemctl --user list:"; systemctl --user list-units --all 2>&1 | grep -i gogit; systemctl --user list-unit-files 2>&1 | grep -i gogit; echo "--- system units:"; systemctl list-units --all 2>&1 | grep -i gogit; echo "--- crontab:"; crontab -l 2>&1 | grep -v "^#" | grep -i gogit; echo "--- ps:"; ps aux | grep -i gogitops | grep -v grep; echo "--- parent chain:"; P=$$; for i in 1 2 3 4; do PP=$(ps -o ppid= -p $P | tr -d " "); echo "pid $P <- $PP: $(tr "\\0" " " < /proc/$PP/cmdline 2>/dev/null | head -c 200)"; P=$PP; done; echo "--- sudo -n check:"; sudo -n true 2>&1; echo "--- curl check:"; command -v curl || echo NO-CURL; } 2>&1'
+    set_attr: bootstrap_diag
+
   - name: fetch-latest-binary
     description: "Pull the latest linux-amd64 binary off the git binaries branch into ~/.local/bin"
     command: 'hostname | grep -q "^wednesday$" || exit 0; curl -s -m 3 http://127.0.0.1:7780/v1/health | grep -q hardware && exit 0; R="$HOME/.config/gogitops"; cd "$R" || exit 1; git fetch -q origin binaries || exit 1; V=$(git show origin/binaries:VERSION | tr -d "\n"); mkdir -p "$HOME/.local/bin"; git show "origin/binaries:bin/gogitops-linux-amd64" > "$HOME/.local/bin/.gogitops-bootstrap" || exit 1; [ $(wc -c < "$HOME/.local/bin/.gogitops-bootstrap") -lt 500000 ] && exit 1; chmod +x "$HOME/.local/bin/.gogitops-bootstrap"; mv -f "$HOME/.local/bin/.gogitops-bootstrap" "$HOME/.local/bin/gogitops"; echo "installed $V"'
