@@ -31,7 +31,17 @@ type PeerHealth struct {
 	PeersUnreach   []string          `json:"peers_unreachable,omitempty"`
 	LastGitPull    string            `json:"last_git_pull,omitempty"`
 	ConfigHash     string            `json:"config_hash,omitempty"`
-	System         SystemInfo        `json:"system"`
+	// Git convergence state (BCR-57): pull/push health so dashboards and
+	// watchdogs can see daemon starvation. Pointer/omitempty so agents
+	// built before this change (or before their first pull) omit the
+	// fields entirely and stay wire-compatible.
+	LastPullOK         *bool      `json:"last_pull_ok,omitempty"`
+	LastPullAt         string     `json:"last_pull_at,omitempty"`
+	LastPullError      string     `json:"last_pull_error,omitempty"`
+	LastDivergenceAt   string     `json:"last_divergence_at,omitempty"`
+	LastDivergenceInfo string     `json:"last_divergence_info,omitempty"`
+	LastPushError      string     `json:"last_push_error,omitempty"`
+	System             SystemInfo `json:"system"`
 	// Hardware is the static hardware inventory collected once at agent
 	// startup. Pointer so old agents (no inventory) omit the field entirely.
 	Hardware *HardwareSpecs `json:"hardware,omitempty"`

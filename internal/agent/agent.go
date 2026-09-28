@@ -47,6 +47,17 @@ type Agent struct {
 	lastGitPull      time.Time
 	lastGitResult    string
 	cycleCount       int64
+
+	// Git convergence state (BCR-57 starvation class-bug fix): surfaced via
+	// /v1/health so dashboards and watchdogs can see a starved pull instead
+	// of trusting a silently stale node. lastGitPull is the shared
+	// timestamp of the last pull attempt.
+	lastPullOK         bool
+	lastPullErr        string
+	lastDivergenceAt   time.Time
+	lastDivergenceInfo string
+	lastPushOK         bool
+	lastPushErr        string
 	// hw is the static hardware inventory, collected once in the
 	// background at startup (nil until the first probe round finishes).
 	hw *mesh.HardwareSpecs
@@ -127,6 +138,9 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	reachable := a.lastReachable
 	unreachable := a.lastUnreachable
 	hw := a.hw
+	pullOK, pullAt, pullErr := a.lastPullOK, a.lastGitPull, a.lastPullErr
+	divAt, divInfo := a.lastDivergenceAt, a.lastDivergenceInfo
+	pushErr := a.lastPushErr
 	a.mu.RUnlock()
 
 	sys := health.CollectSysInfo()
@@ -153,6 +167,21 @@ func (a *Agent) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		},
 		Hardware: hw, // nil → omitted (old agents / still probing)
 	}
+
+	// Pull convergence state (BCR-57): omitted until the first pull so old
+	// agents stay wire-compatible; last_pull_ok=false means the node is
+	// starved — dashboards and watchdogs must not trust its recipes.
+	if !pullAt.IsZero() {
+		ok := pullOK
+		h.LastPullOK = &ok
+		h.LastPullAt = pullAt.Format(time.RFC3339)
+		h.LastPullError = pullErr
+	}
+	if !divAt.IsZero() {
+		h.LastDivergenceAt = divAt.Format(time.RFC3339)
+		h.LastDivergenceInfo = divInfo
+	}
+	h.LastPushError = pushErr
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(h)
@@ -261,12 +290,24 @@ func (a *Agent) GitPullHandler(w http.ResponseWriter, r *http.Request) {
 
 	a.logger.Actionf("git", "manual git pull: %s", result)
 
+	a.mu.RLock()
+	pullOK, pullErr := a.lastPullOK, a.lastPullErr
+	divAt := a.lastDivergenceAt
+	a.mu.RUnlock()
+
+	resp := map[string]interface{}{
+		"result":          result,
+		"hostname":        a.node.Hostname,
+		"time":            time.Now().Format("2006-01-02T15:04:05"),
+		"last_pull_ok":    pullOK,
+		"last_pull_error": pullErr,
+	}
+	if !divAt.IsZero() {
+		resp["last_divergence_at"] = divAt.Format(time.RFC3339)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"result":   result,
-		"hostname": a.node.Hostname,
-		"time":     time.Now().Format("2006-01-02T15:04:05"),
-	})
+	json.NewEncoder(w).Encode(resp)
 }
 
 // RestartHandler serves POST /v1/restart — restarts the agent process
@@ -305,50 +346,210 @@ func (a *Agent) RestartHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-// gitPull runs git pull in the repo directory
+// gitOut runs a git command in dir, returning trimmed combined output and
+// success. Shared helper for the pull convergence path.
+func gitOut(dir string, args ...string) (string, bool) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err == nil
+}
+
+// loudf is the LOUD path (BCR-57): the agent log ring served by /v1/logs AND
+// stderr (systemd journal) — never a bare stderr print that dashboards and
+// watchdogs cannot see. Nil-logger-safe for tests.
+func (a *Agent) loudf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if a.logger != nil {
+		a.logger.Errorf("git", "%s", msg)
+	}
+	log.Printf("[gogitops] %s", msg)
+}
+
+// quietf logs to the ring + journal at info level. Nil-logger-safe.
+func (a *Agent) quietf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if a.logger != nil {
+		a.logger.Infof("git", "%s", msg)
+	}
+	log.Printf("[gogitops] %s", msg)
+}
+
+// actionf logs a state-changing action to the ring + journal. Nil-logger-safe.
+func (a *Agent) actionf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if a.logger != nil {
+		a.logger.Actionf("git", "%s", msg)
+	}
+	log.Printf("[gogitops] %s", msg)
+}
+
+// divergence reports (behind, ahead) vs the branch's upstream. ok=false when
+// there is no upstream or git cannot answer (e.g. repo without remotes).
+func (a *Agent) divergence() (behind, ahead int, ok bool) {
+	out, ok := gitOut(a.repoDir, "rev-list", "--left-right", "--count", "@{upstream}...HEAD")
+	if !ok {
+		return 0, 0, false
+	}
+	if _, err := fmt.Sscanf(out, "%d	%d", &behind, &ahead); err != nil {
+		return 0, 0, false
+	}
+	return behind, ahead, true
+}
+
+// pushMailboxRetry re-pushes HEAD to this node's submission mailbox branch
+// (refs/heads/node/<hostname>, force — single-writer by design) whenever the
+// local branch carries commits origin lacks. This is the retry loop that
+// finishes the starved submit path: a submit that failed for missing push
+// credentials keeps retrying every git tick and flows out the moment creds
+// exist. Failures are logged LOUDLY on transition (not every tick).
+func (a *Agent) pushMailboxRetry(ahead int) {
+	if a.node == nil || a.node.Hostname == "" || ahead == 0 {
+		return
+	}
+	out, ok := gitOut(a.repoDir, "push", "--force", "origin", "HEAD:refs/heads/node/"+a.node.Hostname)
+	a.mu.Lock()
+	prevErr := a.lastPushErr
+	wasOK := a.lastPushOK
+	a.lastPushOK = ok
+	if ok {
+		a.lastPushErr = ""
+	} else {
+		a.lastPushErr = clampOut(out, 500)
+	}
+	a.mu.Unlock()
+	if ok {
+		if !wasOK || prevErr != "" {
+			a.actionf("mesh mailbox push RECOVERED: HEAD pushed to refs/heads/node/%s", a.node.Hostname)
+		}
+		return
+	}
+	if a.lastPushErr != prevErr || !wasOK {
+		a.loudf("MESH PUSH FAILED — %d local commits stay on main (starvation risk): %s", ahead, a.lastPushErr)
+	}
+}
+
+// clampOut trims multi-line git output for log lines.
+func clampOut(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
+
+// gitPull converges the config repo. Starvation class-bug fix (BCR-57):
+//
+// Previously a node with local-only identity commits (mesh self-refreshes
+// that could not be pushed) would fail its ff-only pull the moment origin
+// advanced, and starve SILENTLY forever — recipes stopped converging and
+// nothing anywhere said why. Now:
+//
+//  1. origin is fetched and divergence (ahead+behind) is detected BEFORE the
+//     pull and logged LOUDLY (log ring + journal), even when self-heal then
+//     succeeds — a silent rebase is exactly the failure mode nobody noticed.
+//  2. ff-only failure self-heals via rebase (autostash keeps local edits).
+//  3. a rebase conflict no longer wedges the node: local-only commits are
+//     preserved in a backup ref, flagged LOUDLY, then main resets to
+//     upstream so convergence always resumes.
+//  4. pull state (last_pull_ok + error) is recorded and surfaced via
+//     /v1/health for dashboards and watchdogs.
+//  5. any remaining local-only commits are retried to the node's mailbox
+//     branch every tick, so they reach origin as soon as push auth allows.
 func (a *Agent) gitPull() string {
 	if a.repoDir == "" {
 		return "no repo directory configured"
 	}
+	run := func(args ...string) (string, bool) { return gitOut(a.repoDir, args...) }
 
-	cmd := exec.Command("git", "pull", "--ff-only")
-	cmd.Dir = a.repoDir
-	out, err := cmd.CombinedOutput()
-	result := strings.TrimSpace(string(out))
-	if err != nil {
-		// Diverged — our own mesh submission is not pushed yet while
-		// another node's landed. Per-node mesh.d/ files are disjoint,
-		// so a rebase is always clean; autostash protects uncommitted
+	// 1. Fetch so divergence is measurable before the pull.
+	if out, ok := run("fetch", "origin"); !ok {
+		a.loudf("git fetch FAILED — pulls may starve on stale refs: %s", clampOut(out, 300))
+		// fall through: a stale-refs pull is still better than none.
+	}
+
+	// 2. Divergence check + LOUD pre-log.
+	behind, ahead, divOK := a.divergence()
+	if divOK && ahead > 0 && behind > 0 {
+		local, _ := run("log", "--format=%h %s", "@{upstream}..HEAD")
+		a.mu.Lock()
+		a.lastDivergenceAt = time.Now()
+		a.lastDivergenceInfo = fmt.Sprintf("ahead %d, behind %d", ahead, behind)
+		a.mu.Unlock()
+		a.loudf("PULL DIVERGENCE: main is ahead %d / behind %d of upstream — self-heal starting. Local-only commits:\n%s",
+			ahead, behind, clampOut(local, 800))
+	}
+
+	// 3. Fast-forward pull.
+	pullOut, pullOK := run("pull", "--ff-only")
+	result := pullOut
+	errFailed := !pullOK
+	if errFailed {
+		// Diverged (or dirty) — rebase our local-only commits onto the
+		// fetched upstream. Per-node mesh.d/ files are disjoint, so a
+		// rebase is normally clean; autostash protects uncommitted
 		// repo-local state (older gits ignore it and fail cleanly).
-		rb := exec.Command("git", "-c", "rebase.autoStash=true", "pull", "--rebase")
-		rb.Dir = a.repoDir
-		rbOut, rbErr := rb.CombinedOutput()
-		if rbErr != nil {
-			// Unwedge any half-finished rebase and restore the autostash.
-			ab := exec.Command("git", "rebase", "--abort")
-			ab.Dir = a.repoDir
-			_, _ = ab.CombinedOutput()
-			sp := exec.Command("git", "stash", "pop")
-			sp.Dir = a.repoDir
-			_, _ = sp.CombinedOutput()
-			a.logger.Errorf("git", "git pull failed: %s", result)
-			result = "error: " + result
+		rbOut, rbOK := run("-c", "rebase.autoStash=true", "pull", "--rebase")
+		if rbOK {
+			errFailed = false
+			result = rbOut
+			if divOK && ahead > 0 && behind > 0 {
+				a.actionf("self-heal: rebased %d local-only commit(s) onto upstream (was behind %d) — starvation avoided", ahead, behind)
+			}
 		} else {
-			err = nil
-			result = strings.TrimSpace(string(rbOut))
+			// Unwedge any half-finished rebase and restore the autostash.
+			run("rebase", "--abort")
+			run("stash", "pop")
+			// 3b. Rebase conflicted. Flag LOUDLY, preserve the orphaned
+			// commits in a backup ref, then reset main to upstream so
+			// recipe convergence resumes no matter what. The backup ref
+			// keeps every local-only commit recoverable by hand.
+			ts := time.Now().UTC().Format("20060102T150405Z")
+			backup := "backup/divergence-" + ts
+			shas, _ := run("log", "--format=%h %s", "@{upstream}..HEAD")
+			if _, bok := run("branch", backup); !bok {
+				a.loudf("self-heal: could not create backup ref %s", backup)
+			}
+			if rsOut, rsOK := run("reset", "--hard", "@{upstream}"); rsOK {
+				a.loudf("STARVATION KILLED: rebase conflicted; main reset to upstream. Local-only commits preserved in %s:\n%s",
+					backup, clampOut(shas, 800))
+				a.actionf("self-heal: reset main to upstream after conflict; recover via %s", backup)
+				result = "self-heal: reset to upstream after conflict (backup: " + backup + ")"
+				errFailed = false
+			} else {
+				a.loudf("git pull failed AND self-heal failed — MAIN IS STARVED, recipes will not converge: %s", clampOut(rsOut, 400))
+				result = "error: " + clampOut(rsOut, 300)
+			}
 		}
 	}
-	if err == nil {
+	if !errFailed {
 		if result == "" || strings.Contains(result, "Already up to date") {
 			result = "up to date"
 		}
-		a.logger.Infof("git", "git pull: %s", result)
+		a.quietf("git pull: %s", result)
+	} else {
+		a.loudf("git pull failed: %s", clampOut(result, 400))
+		result = "error: " + clampOut(result, 400)
 	}
 
+	// 4. Record pull state for /v1/health.
 	a.mu.Lock()
 	a.lastGitPull = time.Now()
 	a.lastGitResult = result
+	a.lastPullOK = !errFailed
+	if errFailed {
+		a.lastPullErr = clampOut(result, 300)
+	} else {
+		a.lastPullErr = ""
+	}
 	a.mu.Unlock()
+
+	// 5. Retry the mailbox push while local-only commits persist.
+	if !errFailed {
+		if _, aheadNow, ok := a.divergence(); ok && aheadNow > 0 {
+			a.pushMailboxRetry(aheadNow)
+		}
+	}
 
 	return result
 }

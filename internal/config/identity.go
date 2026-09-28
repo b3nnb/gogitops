@@ -340,6 +340,27 @@ func submitMeshFile(repoDir, hostname string) {
 	SubmitSelfFiles(repoDir, hostname)
 }
 
+// SelfSubmitLog routes self-file submit outcomes into the daemon's log ring
+// (served by /v1/logs) AND the systemd journal, instead of the bare stderr
+// prints nothing could see (BCR-57: a node whose mesh push failed silently
+// starved). Nil (tests, CLI) keeps the legacy stderr behavior. isErr selects
+// the error level.
+var SelfSubmitLog func(isErr bool, format string, args ...interface{})
+
+// submitLogf reports a submit-path outcome through SelfSubmitLog when wired,
+// else legacy stderr.
+func submitLogf(isErr bool, format string, args ...interface{}) {
+	if SelfSubmitLog != nil {
+		SelfSubmitLog(isErr, format, args...)
+		return
+	}
+	prefix := "[gogitops] "
+	if isErr {
+		prefix = "[gogitops] ERROR "
+	}
+	fmt.Fprintf(os.Stderr, prefix+format+"\n", args...)
+}
+
 // SubmitSelfFiles stages and pushes the node's OWN disjoint files —
 // mesh.d/<hostname>.yaml and nodes/<hostname>.yaml — to
 // refs/heads/node/<hostname>. Beyond mesh refresh and first enrollment
@@ -360,7 +381,7 @@ func SubmitSelfFiles(repoDir, hostname string) {
 	meshRel := filepath.ToSlash(filepath.Join("mesh.d", hostname+".yaml"))
 	if _, err := os.Stat(filepath.Join(repoDir, meshRel)); err == nil {
 		if out, ok := run("add", "--", meshRel); !ok {
-			fmt.Fprintf(os.Stderr, "[gogitops] submit local-only: git add %s: %s\n", meshRel, out)
+			submitLogf(true, "submit local-only: git add %s: %s", meshRel, out)
 			return
 		}
 	}
@@ -387,7 +408,7 @@ func SubmitSelfFiles(repoDir, hostname string) {
 		msg = "node: " + hostname + " self-sync (agent)"
 	}
 	if out, ok := run("commit", "-m", msg); !ok {
-		fmt.Fprintf(os.Stderr, "[gogitops] submit local-only: git commit: %s\n", out)
+		submitLogf(true, "submit local-only: git commit: %s", out)
 		return
 	}
 	// Push to the node's own branch — a submission mailbox owned by exactly
@@ -395,10 +416,12 @@ func SubmitSelfFiles(repoDir, hostname string) {
 	// node's commits). CI opens/updates the PR; main stays human-gated.
 	branch := "refs/heads/node/" + hostname
 	if out, ok := run("push", "--force", "origin", "HEAD:"+branch); !ok {
-		fmt.Fprintf(os.Stderr, "[gogitops] submit local-only: git push: %s\n", out)
+		// LOUD (BCR-57): a silent push failure is how a node starved —
+		// commits stayed local, origin diverged, pulls failed silently.
+		submitLogf(true, "submit push FAILED — %s commits stay LOCAL (starvation risk); will retry via git ticks: %s", msg, out)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[gogitops] submitted to %s — CI opens the self-sync PR\n", branch)
+	submitLogf(false, "submitted to %s — CI opens the self-sync PR", branch)
 }
 
 // SyncSelfToMesh refreshes a KNOWN machine's own mesh entry at daemon

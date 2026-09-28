@@ -43,6 +43,14 @@ type liveResult struct {
 	TestsFailing  []string
 	UptimeSeconds float64 // agent process uptime seconds, from /v1/health
 	Hardware      *health.HardwareSpecs
+	// git convergence state from the agent's /v1/health (BCR-57): nil pull
+	// state = old agent or no pull yet.
+	PullOK  *bool
+	PullAt  string
+	PullErr string
+	PushErr string
+	DivAt   string
+	DivInfo string
 }
 
 // apiNodeStatus is the JSON shape returned by /api/status.
@@ -64,6 +72,13 @@ type apiNodeStatus struct {
 	TestsSkip     int                   `json:"tests_skip"`
 	TestsFailing  []string              `json:"tests_failing,omitempty"`
 	Hardware      *health.HardwareSpecs `json:"hardware,omitempty"`
+	// git convergence state (BCR-57) — nil pull state = old agent.
+	LastPullOK         *bool  `json:"last_pull_ok,omitempty"`
+	LastPullAt         string `json:"last_pull_at,omitempty"`
+	LastPullError      string `json:"last_pull_error,omitempty"`
+	LastPushError      string `json:"last_push_error,omitempty"`
+	LastDivergenceAt   string `json:"last_divergence_at,omitempty"`
+	LastDivergenceInfo string `json:"last_divergence_info,omitempty"`
 }
 
 // Handler serves the dashboard HTML and the API endpoints.
@@ -171,22 +186,28 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s := apiNodeStatus{
-			NodeName:      res.NodeName,
-			DisplayIP:     res.DisplayIP,
-			Online:        online,
-			Healthy:       res.Healthy,
-			HealthStatus:  healthStatus,
-			ServicesUp:    res.ServicesUp,
-			ServicesTotal: res.ServicesTotal,
-			Version:       res.Version,
-			ResponseMs:    res.ResponseMs,
-			Uptime24h:     uptime,
-			CheckedAt:     res.CheckedAt.Format(time.RFC3339),
-			TestsPass:     res.TestsPass,
-			TestsFail:     res.TestsFail,
-			TestsSkip:     res.TestsSkip,
-			TestsFailing:  res.TestsFailing,
-			Hardware:      res.Hardware,
+			NodeName:           res.NodeName,
+			DisplayIP:          res.DisplayIP,
+			Online:             online,
+			Healthy:            res.Healthy,
+			HealthStatus:       healthStatus,
+			ServicesUp:         res.ServicesUp,
+			ServicesTotal:      res.ServicesTotal,
+			Version:            res.Version,
+			ResponseMs:         res.ResponseMs,
+			Uptime24h:          uptime,
+			CheckedAt:          res.CheckedAt.Format(time.RFC3339),
+			TestsPass:          res.TestsPass,
+			TestsFail:          res.TestsFail,
+			TestsSkip:          res.TestsSkip,
+			TestsFailing:       res.TestsFailing,
+			Hardware:           res.Hardware,
+			LastPullOK:         res.PullOK,
+			LastPullAt:         res.PullAt,
+			LastPullError:      res.PullErr,
+			LastPushError:      res.PushErr,
+			LastDivergenceAt:   res.DivAt,
+			LastDivergenceInfo: res.DivInfo,
 		}
 		if res.Error != "" {
 			s.Error = res.Error
@@ -431,6 +452,12 @@ func (h *Handler) checkNode(ctx context.Context, cfg NodeConfig) liveResult {
 		Services      map[string]string     `json:"services"`
 		UptimeSeconds float64               `json:"uptime_seconds"`
 		Hardware      *health.HardwareSpecs `json:"hardware"`
+		LastPullOK    *bool                 `json:"last_pull_ok"`
+		LastPullAt    string                `json:"last_pull_at"`
+		LastPullError string                `json:"last_pull_error"`
+		LastPushError string                `json:"last_push_error"`
+		LastDivAt     string                `json:"last_divergence_at"`
+		LastDivInfo   string                `json:"last_divergence_info"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&hresp); err != nil {
 		res.Error = "decode error"
@@ -441,6 +468,12 @@ func (h *Handler) checkNode(ctx context.Context, cfg NodeConfig) liveResult {
 	res.Version = hresp.AgentVersion
 	res.UptimeSeconds = hresp.UptimeSeconds
 	res.Hardware = hresp.Hardware
+	res.PullOK = hresp.LastPullOK
+	res.PullAt = hresp.LastPullAt
+	res.PullErr = hresp.LastPullError
+	res.PushErr = hresp.LastPushError
+	res.DivAt = hresp.LastDivAt
+	res.DivInfo = hresp.LastDivInfo
 	up, total := 0, 0
 	for _, v := range hresp.Services {
 		total++

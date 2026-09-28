@@ -685,6 +685,15 @@ function renderDetail(name, d, logs, tests, attrs) {
   html += '<div class="metrics-grid">';
   html += metricCard('Services', svcUp + '/' + (svcUp+svcDown) + ' running');
   html += metricCard('Peers', peersUp + ' up / ' + peersDown + ' down');
+  // Git pull convergence (BCR-57): last_pull_ok=false means the daemon is
+  // starved — recipes on this node must not be trusted.
+  var pullVal = '—';
+  if (d.last_pull_ok === true) pullVal = 'ok';
+  else if (d.last_pull_ok === false) pullVal = '⚠️ STARVED';
+  if (d.last_pull_ok !== undefined && d.last_pull_ok !== null && d.last_pull_at) {
+    pullVal += ' · ' + String(d.last_pull_at).replace('T',' ').replace('Z','');
+  }
+  html += metricCard('Git Pull', pullVal);
   html += metricCard('OS', (sys.os || '—') + '/' + (sys.arch || ''));
   html += metricCard('Host ID', sys.host_id || '—');
   html += metricCard('Outbound IP', sys.ip || '—');

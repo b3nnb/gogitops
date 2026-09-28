@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/bennbanks/gogitops/internal/agent"
+	"github.com/bennbanks/gogitops/internal/agentlog"
 	"github.com/bennbanks/gogitops/internal/agentmodules"
 	"github.com/bennbanks/gogitops/internal/alert"
 	"github.com/bennbanks/gogitops/internal/cli"
@@ -4335,6 +4336,19 @@ func runDaemon(args []string) {
 	// (portable_macs:) override sysfs USB detection — they move OUT of the
 	// identity set into portable inventory. Byte-stable: only writes on
 	// real change (this repo git-pulls itself).
+	//
+	// Submit outcomes (mesh push success/failure) route into the agent log
+	// ring (/v1/logs) + journal instead of bare stderr — a silent push
+	// failure is the daemon-starvation root cause (BCR-57).
+	config.SelfSubmitLog = func(isErr bool, format string, args ...interface{}) {
+		if isErr {
+			agentlog.Default().Errorf("git", format, args...)
+			log.Printf("[gogitops] ERROR "+format, args...)
+			return
+		}
+		agentlog.Default().Infof("git", format, args...)
+		log.Printf("[gogitops] "+format, args...)
+	}
 	syncNIC := config.DetectNICs()
 	syncNIC.Portable = append(syncNIC.Portable, node.PortableMacs...)
 	syncMid := config.DetectMachineID()
