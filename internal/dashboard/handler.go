@@ -788,6 +788,36 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Registration guard: an old agent without hardware specs must not
+	// overwrite a newer registration for the same hostname. This keeps a
+	// stranded v0.7.22 system unit from clobbering the user-level v0.7.30
+	// daemon that actually serves the dashboard.
+	if existing, err := h.store.GetRegisteredNodes(r.Context()); err == nil {
+		for _, rn := range existing {
+			if rn.NodeName != req.Hostname || rn.Address == req.Address {
+				continue
+			}
+			client := &http.Client{Timeout: 2 * time.Second}
+			resp, herr := client.Get("http://" + req.Address + "/v1/health")
+			if herr != nil {
+				continue
+			}
+			var hr struct {
+				Hardware *health.HardwareSpecs `json:"hardware"`
+			}
+			decodeErr := json.NewDecoder(resp.Body).Decode(&hr)
+			resp.Body.Close()
+			if decodeErr == nil && hr.Hardware == nil {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"status": "ignored",
+					"reason": "agent reports no hardware specs; keeping newer registration",
+				})
+				return
+			}
+		}
+	}
+
 	if err := h.store.RegisterNode(r.Context(), req.Hostname, req.Address, req.DisplayIP); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
