@@ -1,0 +1,17 @@
+# GoGitOps Test Module — file-truth probe (wednesday, BCR-21 round 3)
+# The bootstrap-v0.7.29 module's steps all report pass with EMPTY outputs on
+# wednesday even though the identical file + v0.7.22 binary produces full
+# output on the friday sandbox (CLI path AND daemon-suite path). This probe
+# is UNGATED (the new-node label gate scopes it to wednesday only) and reads
+# the node's OWN disk: the real module file, its md5, the daemon's git state,
+# plus the supervision dump — everything lands in one attr (file_truth).
+name: file-truth
+description: "Read wednesday's actual test_modules/bootstrap-v0.7.29.yaml + git state + supervision into file_truth for remote diagnosis"
+test_module: true
+labels: [new-node]
+
+steps:
+  - name: dump-file-truth
+    description: "md5 + head of the module file as it exists on THIS node, git log/status, MID, hostname, full supervision dump"
+    command: 'R="$HOME/.config/gogitops"; F="$R/test_modules/bootstrap-v0.7.29.yaml"; { printf "MID=[%s]\n" "$(cat /etc/machine-id 2>/dev/null)"; printf "MATCH=%s\n" "$([ "$(cat /etc/machine-id 2>/dev/null)" = "2c66e054da874f2d9cfd0ed07da87037" ] && echo YES || echo NO)"; printf "HOSTNAME=[%s]\n" "$(hostname)"; printf "PATH=[%s]\n" "$PATH"; echo "--- module file:"; ls -la "$F" 2>&1; md5sum "$F" 2>&1; echo "--- machine-id-guard count in file:"; grep -c "2c66e054da874f2d9cfd0ed07da87037" "$F" 2>&1; echo "--- printf-probe count in file:"; grep -c "MID=" "$F" 2>&1; echo "--- first 240 chars of command line 20:"; sed -n "20p" "$F" 2>/dev/null | head -c 240; echo; echo "--- git state:"; git -C "$R" log --oneline -3 2>&1; git -C "$R" status --short 2>&1 | head -6; echo "--- user unit files:"; ls -la $HOME/.config/systemd/user/ 2>/dev/null | grep -i gogit; echo "--- systemctl --user:"; export XDG_RUNTIME_DIR="/run/user/$(id -u)"; export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"; systemctl --user list-units --all 2>&1 | grep -i gogit; systemctl --user list-unit-files 2>&1 | grep -i gogit; echo "--- system units:"; systemctl list-units --all 2>&1 | grep -i gogit; echo "--- ps:"; ps aux | grep -i gogitops | grep -v grep; echo "--- sudo -n:"; sudo -n true 2>&1; echo "--- ExecStart:"; grep -H "ExecStart" $HOME/.config/systemd/user/*.service 2>/dev/null | grep -i gogit; sudo -n grep -H "ExecStart" /etc/systemd/system/gogitops*.service 2>/dev/null; echo "--- binaries:"; ls -la /usr/local/bin/gogitops $HOME/.local/bin/gogitops 2>&1; } 2>&1'
+    set_attr: file_truth
