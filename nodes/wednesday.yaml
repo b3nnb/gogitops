@@ -22,3 +22,4 @@ agent:
   git_repo: https://github.com/b3nnb/gogitops.git
   git_branch: main
   git_pull_interval: 5m
+  tests_interval: 10s

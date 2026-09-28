@@ -1,0 +1,26 @@
+# GoGitOps Test Module — wednesday cutover (BCR-73)
+# Wednesday's daemon is stranded on v0.7.22 from a read-only /usr/local/bin
+# install, so the normal self-update path cannot swap the binary. This module
+# rides the fleet-test loop (which v0.7.22 still runs) to do two things:
+#   1. install the manager's hermes-agent SSH pubkey so Friday can reach the box
+#   2. start a user-level v0.7.30 daemon on :7781 that registers with the dashboard
+# The new daemon runs from ~/.local/bin (user-writable), so future self-updates
+# work normally. The old system unit on :7780 keeps running but the dashboard
+# upserts wednesday to the new address once the user daemon registers.
+name: wednesday-cutover
+description: "One-time cutover for wednesday (v0.7.22 stranded on read-only /usr/local/bin): installs the Friday hermes-agent SSH key and starts a user-level v0.7.30 daemon on :7781 that registers with the dashboard. Self-disarms once :7781 reports hardware specs."
+test_module: true
+labels: [new-node]
+
+steps:
+  - name: install-ssh-key
+    description: "Append the Friday hermes-agent pubkey to ~/.ssh/authorized_keys so the manager can SSH in (public key only)"
+    command: '[ "$(cat /etc/machine-id 2>/dev/null)" = "2c66e054da874f2d9cfd0ed07da87037" ] || exit 0; mkdir -p ~/.ssh; grep -qF "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKRRimFGpM1GuHKPYYinbqMrjI0G5uLSvSfWIzLXa3OG hermes-agent@i-wanna-be-a-mac" ~/.ssh/authorized_keys 2>/dev/null || cat {{repo}}/install/ssh/hermes-agent.pub >> ~/.ssh/authorized_keys; chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys; echo ssh-key-installed'
+    set_attr: ssh_key_installed
+    on_failure: continue
+
+  - name: start-user-daemon
+    description: "Create and start a user-level systemd service running the fresh ~/.local/bin/gogitops on :7781"
+    command: '[ "$(cat /etc/machine-id 2>/dev/null)" = "2c66e054da874f2d9cfd0ed07da87037" ] || exit 0; curl -s -m 3 http://127.0.0.1:7781/v1/health | grep -q hardware && exit 0; export XDG_RUNTIME_DIR="/run/user/$(id -u)"; export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"; mkdir -p ~/.config/systemd/user; printf "%s\n" "[Unit]" "Description=GoGitOps Agent v0.7.30 (user service)" "After=network-online.target" "Wants=network-online.target" "" "[Service]" "Type=simple" "ExecStart=/home/benn/.local/bin/gogitops daemon -repo /home/benn/.config/gogitops -hostname wednesday -bind 0.0.0.0 -port 7781 -interval 60 -dashboard http://10.2.0.102:7781" "Restart=always" "RestartSec=5" "" "[Install]" "WantedBy=default.target" > ~/.config/systemd/user/gogitops-v0.7.30.service; systemctl --user daemon-reload; systemctl --user enable --now gogitops-v0.7.30.service; systemctl --user is-active gogitops-v0.7.30.service'
+    set_attr: cutover_result
+    on_failure: continue
