@@ -2,11 +2,10 @@ hostname: wednesday
 nickname: "Wednesday"
 lan_ip: 10.0.0.213
 
-# Tags (docs/tags.md — plain words; new-node/needs-setup mark it for
-# first-time-setup recipes, flip them off in git once verified enrolled)
+# Tags (docs/tags.md — plain words; new-node/needs-setup were flipped off
+# after the v0.7.30 user-level cutover on Sep 28 '26 — the node now reports
+# hardware specs and is reachable over SSH from the manager)
 tags:
-  - new-node
-  - needs-setup
   - wifi
   - linux
 
@@ -22,4 +21,4 @@ agent:
   git_repo: https://github.com/b3nnb/gogitops.git
   git_branch: main
   git_pull_interval: 5m
-  tests_interval: 10s
+  tests_interval: 30m
