@@ -700,6 +700,41 @@ POST /v1/update/apply HTTP/1.1
 }
 ```
 
+### Git Convergence & Starvation Kill (v0.7.30, BCR-57)
+
+Root cause this closes: a node whose self-file submissions could not push
+(read-only deploy key) accumulated local-only identity commits; once origin
+advanced, its ff-only pull failed every tick and the node starved SILENTLY —
+recipes stopped converging and nothing anywhere said why.
+
+The daemon's git tick now guarantees convergence and visibility:
+
+1. **Fetch + divergence pre-check.** Before pulling, the daemon counts
+   ahead/behind vs `@{upstream}`. Divergence (ahead>0 AND behind>0) is
+   logged LOUDLY — agent log ring (`/v1/logs`) AND journal stderr — with the
+   local-only SHAs, even when self-heal then succeeds. A silent rebase was
+   the failure mode nobody noticed.
+2. **Rebase self-heal.** ff-only failure re-bases local-only commits onto
+   upstream (autostash protects uncommitted state). Per-node `mesh.d/` files
+   are disjoint, so this is normally clean.
+3. **Reset after flagging.** If the rebase conflicts, the orphaned commits
+   are preserved in `backup/divergence-<ts>` and flagged LOUDLY, then main
+   resets to upstream. Convergence always resumes; nothing is lost.
+4. **Mailbox push retry.** While local main carries commits origin lacks,
+   each tick force-pushes HEAD to the node's submission mailbox
+   `refs/heads/node/<hostname>` (single-writer; CI opens the self-sync PR).
+   A submit that failed for missing push creds now flows out the moment
+   creds exist — transition failures log LOUDLY (`MESH PUSH FAILED`),
+   recoveries log the RECOVERED action.
+5. **Health surfacing.** `/v1/health` (and `/v1/git/pull`) expose
+   `last_pull_ok`, `last_pull_at`, `last_pull_error`,
+   `last_divergence_at/info`, `last_push_error` — fields are omitempty so
+   pre-v0.7.30 agents stay wire-compatible. Dashboards show a Git Pull
+   card (ok / ⚠️ STARVED); watchdogs can alert on `last_pull_ok == false`.
+
+Node deploy keys are read/write by design (scope = the node's own mailbox
+branch); main remains human-gated through the CI self-sync PR.
+
 ---
 
 ## Device Migration Workflow
