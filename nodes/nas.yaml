@@ -52,6 +52,10 @@ services:
     type: docker
     check: container-alive
     container: seerr
+  - name: nenv-agent
+    type: docker
+    check: container-alive
+    container: nenv-agent
 
 disk:
   - mount: /

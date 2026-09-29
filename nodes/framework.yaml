@@ -13,6 +13,9 @@ services:
 - name: nebula
   type: systemd
   unit: dnclient.service
+- name: nenv-agent
+  type: process
+  pattern: nenv-agent
 disk:
 - mount: /
   warn_pct: 85
