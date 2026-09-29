@@ -4453,7 +4453,10 @@ func resolveWebhook(url string) string {
 		if len(parts) == 2 {
 			ns, key = parts[0], parts[1]
 		}
-		out, err := exec.Command("nenv", "get", ns, key).Output()
+		// NenvBin carries the ~/.local/bin fallback — a plain "nenv"
+		// lookup fails on user-mode nenv installs (mini, Sep 29 '26) and
+		// the webhook silently degrades to the raw nenv: string.
+		out, err := exec.Command(alert.NenvBin(), "get", ns, key).Output()
 		if err == nil {
 			resolved := strings.TrimSpace(string(out))
 			if resolved != "" {

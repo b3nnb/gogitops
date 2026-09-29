@@ -72,7 +72,7 @@ func (s *DMSender) Configured() bool {
 // "" on any failure (the caller decides whether that is fatal).
 func resolveNenv(ref string) string {
 	ns, key := splitNenvRef(ref)
-	out, err := exec.Command(nenvBin(), "get", ns, key).Output()
+	out, err := exec.Command(NenvBin(), "get", ns, key).Output()
 	if err != nil {
 		return ""
 	}

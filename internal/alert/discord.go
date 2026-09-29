@@ -33,7 +33,7 @@ func resolveWebhook(url string) string {
 	if len(url) > 5 && url[:5] == "nenv:" {
 		ref := url[5:] // e.g. "ctl/ALERT_DISCORD_WEBHOOK"
 		ns, key := splitNenvRef(ref)
-		out, err := exec.Command(nenvBin(), "get", ns, key).Output()
+		out, err := exec.Command(NenvBin(), "get", ns, key).Output()
 		if err == nil {
 			resolved := trimNewline(string(out))
 			if resolved != "" {
@@ -47,7 +47,10 @@ func resolveWebhook(url string) string {
 // nenvBin resolves the nenv CLI with a ~/.local/bin fallback — systemd user
 // daemons run with the default PATH, which does not include ~/.local/bin
 // (user-mode nenv installs live there; server hosts use /usr/local/bin).
-func nenvBin() string {
+// Exported: the daemon's flag-level webhook resolver (main.go) needs the
+// same fallback — a plain exec.Command("nenv") silently fails to resolve
+// nenv: refs on nodes where nenv is a user-mode install (mini, Sep 29 '26).
+func NenvBin() string {
 	if _, err := exec.LookPath("nenv"); err == nil {
 		return "nenv"
 	}
