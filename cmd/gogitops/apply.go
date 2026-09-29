@@ -126,7 +126,7 @@ func lastMeaningfulLine(out []byte) string {
 	}
 	return ""
 }
-
+// ansiStrip strips ANSI escape sequences from a string.
 func ansiStrip(s string) string {
 	var b strings.Builder
 	inEscape := false
@@ -146,18 +146,85 @@ func ansiStrip(s string) string {
 	return b.String()
 }
 
+// ── manual-step surfacing (BCR-19) ───────────────────────────────────────────
+//
+// When a recipe blocks on a privilege boundary it prints manual
+// instructions (the "NEEDS-SUDO: run manually ->" convention — internal-dns,
+// netmount's "reason=needs-sudo", or sudo's own password denial). The
+// daemon's auto-apply loop is a blind path: nobody watches that output.
+// On the FIRST transition into a sudo-blocked failure the loop DMs Benn
+// the manual command — detection + notification only, never a grant.
+
+// sudoBlockMarkers are the output shapes that mean "blocked on sudo".
+// Detection is deliberately tight: a generic failure must NOT wake Benn's
+// phone — only a block that needs his hands does.
+var sudoBlockMarkers = []string{
+	"NEEDS-SUDO",                      // recipe convention (adopt_dns.sh et al.)
+	"reason=needs-sudo",                // netmount key=value convention
+	"sudo: a password is required",    // sudo's own denial
+	"sudo: a terminal is required",     // sudo without a tty
+	"sudo: no password was provided",   // sudo non-interactive variant
+	"sudo: authentication failure",     // sudo bad-credential variant
+}
+
+// detectSudoBlock scans recipe output for a privilege-block marker and
+// extracts the manual instructions to surface. It reads from the END: a
+// recipe run exits on the first failing step, so the LAST marker is the
+// live block. Extraction keeps the marker line plus up to two following
+// non-empty lines — the convention prints the command to run on the
+// line(s) right after "NEEDS-SUDO: run manually ->".
+func detectSudoBlock(out string) (manual string, found bool) {
+	lines := strings.Split(strings.ReplaceAll(ansiStrip(out), "\r", "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(lines[i])
+		if l == "" {
+			continue
+		}
+		matched := ""
+		for _, m := range sudoBlockMarkers {
+			if strings.Contains(l, m) {
+				matched = m
+				break
+			}
+		}
+		if matched == "" {
+			continue
+		}
+		// collect the marker line + up to 2 following non-empty lines
+		parts := []string{l}
+		if l == "NEEDS-SUDO: run manually ->" || strings.HasSuffix(l, "NEEDS-SUDO: run manually ->") {
+			// pure pointer line — the command is what follows
+			parts = nil
+		}
+		for j := i + 1; j < len(lines) && len(parts) < 2; j++ {
+			n := strings.TrimSpace(lines[j])
+			if n == "" {
+				continue
+			}
+			parts = append(parts, n)
+		}
+		if len(parts) == 0 {
+			// pointer line with nothing after it — keep the pointer itself
+			parts = []string{l}
+		}
+		return strings.Join(parts, " | "), true
+	}
+	return "", false
+}
+
 // runRecipeApplyLoop mirrors runFleetTestLoop: settle, first cycle, then tick.
-func runRecipeApplyLoop(interval time.Duration, repoDir, hostname, webhook string) {
+// dm may be nil (manual-step DMs disabled) — webhook alerts are independent.
+func runRecipeApplyLoop(interval time.Duration, repoDir, hostname, webhook string, dm *alert.DMSender) {
 	time.Sleep(10 * time.Second)
-	recipeApplyCycle(repoDir, hostname, webhook)
+	recipeApplyCycle(repoDir, hostname, webhook, dm)
 	ticker := time.NewTicker(interval)
 	for range ticker.C {
-		recipeApplyCycle(repoDir, hostname, webhook)
+		recipeApplyCycle(repoDir, hostname, webhook, dm)
 	}
 }
 
 // recipeApplyCycle is one convergence pass over the recipe set.
-func recipeApplyCycle(repoDir, hostname, webhook string) {
+func recipeApplyCycle(repoDir, hostname, webhook string, dm *alert.DMSender) {
 	logger := agentlog.Default()
 	resolved := resolveRepoDir(repoDir)
 	st := loadApplyState()
@@ -179,6 +246,7 @@ func recipeApplyCycle(repoDir, hostname, webhook string) {
 	nodeLabels := nodeLabelsFor(resolved, hostname)
 	files := discoverRecipes(resolved)
 	var newFails []string
+	var newSudoBlocks []string
 
 	for _, f := range files {
 		key := recipeFileKey(f)
@@ -245,6 +313,12 @@ func recipeApplyCycle(repoDir, hostname, webhook string) {
 			} else {
 				logger.Errorf("recipe", "auto-apply FAILED: %s — %s", r.Name, detail)
 				newFails = append(newFails, r.Name+": "+detail)
+				// Manual-step surfacing (BCR-19): a sudo block needs Benn's
+				// hands — DM the printed manual instructions on first
+				// transition only (retries stay silent, like webhook alerts).
+				if manual, blocked := detectSudoBlock(string(out)); blocked {
+					newSudoBlocks = append(newSudoBlocks, r.Name+": "+manual)
+				}
 			}
 		}
 	}
@@ -261,6 +335,17 @@ func recipeApplyCycle(repoDir, hostname, webhook string) {
 		if err := alert.NewSender(webhook).SendAlert("warn", hostname,
 			"recipe auto-apply: "+strconv.Itoa(len(newFails))+" new failure(s) — "+strings.Join(newFails, " | ")); err != nil {
 			logger.Warnf("alert", "auto-apply failure alert failed: %v", err)
+		}
+	}
+
+	// Manual-step surfacing (BCR-19): DM Benn the printed manual command when
+	// a recipe blocks on sudo — independent of the webhook, phone-first.
+	if len(newSudoBlocks) > 0 && dm != nil && dm.Configured() {
+		msg := "🔧 gogitops [" + hostname + "] recipe blocked on sudo — needs your hands:\n" + strings.Join(newSudoBlocks, "\n")
+		if err := dm.Send(msg); err != nil {
+			logger.Warnf("alert", "sudo-block DM failed: %v", err)
+		} else {
+			logger.Actionf("alert", "sudo-block DM sent: %d blocked recipe(s) — %s", len(newSudoBlocks), strings.Join(newSudoBlocks, " | "))
 		}
 	}
 }

@@ -4307,6 +4307,7 @@ func runDaemon(args []string) {
 		port      = flag.Int("port", 7780, "health API port")
 		intervalS = flag.Int("interval", 60, "check interval in seconds")
 		webhook   = flag.String("webhook", "", "Discord webhook URL or nenv:<ns>/<key> (empty = no alerts)")
+		dmNotify  = flag.String("dm-notify", "", "Manual-step DM on sudo-blocked recipes: nenv:<ns>/<key> or <channel_id>|<bot_token> (empty = off; BCR-19)")
 		dashFlag  = flag.String("dashboard", "", "dashboard URL to register with (e.g. http://10.2.0.102:7781)")
 	)
 	flag.CommandLine.Parse(args)
@@ -4358,6 +4359,9 @@ func runDaemon(args []string) {
 	config.SyncSelfToMesh(repoPath, hostname, config.DetectNebulaIP(), config.DetectLanIP(), syncNIC, syncMid)
 
 	wbhook := resolveWebhook(*webhook)
+
+	// Manual-step DM sender (BCR-19): nil-safe no-op when unconfigured.
+	dmSender := alert.NewDMSender(*dmNotify)
 
 	bind := *bindAddr
 	if bind == "" {
@@ -4428,7 +4432,12 @@ func runDaemon(args []string) {
 	}
 	if recipesInterval > 0 {
 		log.Printf("recipe auto-apply enabled: converging every %s (changed/new/failed recipes; full sweep every 24h)", recipesInterval)
-		go runRecipeApplyLoop(recipesInterval, repoPath, hostname, wbhook)
+		if dmSender.Configured() {
+			log.Printf("manual-step DMs enabled: sudo-blocked recipes DM Benn via Discord bot API (BCR-19)")
+		} else {
+			log.Printf("manual-step DMs disabled (-dm-notify unset or unresolvable)")
+		}
+		go runRecipeApplyLoop(recipesInterval, repoPath, hostname, wbhook, dmSender)
 	}
 
 	interval := time.Duration(*intervalS) * time.Second

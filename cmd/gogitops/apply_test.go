@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,61 @@ func TestParseRecipeAutoApply(t *testing.T) {
 	r2 := parseRecipe("name: y\nlabels: []\nsteps:\n  - name: s\n    command: echo hi\n")
 	if r2.AutoApply {
 		t.Error("auto_apply default must be false")
+	}
+}
+
+// ── detectSudoBlock: manual-step surfacing (BCR-19) ──────────────────────────
+func TestDetectSudoBlock(t *testing.T) {
+	// recipe convention: NEEDS-SUDO pointer + the manual command on the next line
+	needSudo := "▸ 1/3 adopt-dns — Point this node's resolver\nmigrating: active resolver is 10.2.0.103 -> 10.2.0.105 1.1.1.1\nNEEDS-SUDO: run manually ->\n  sudo networksetup -setdnsservers \"Wi-Fi\" 10.2.0.105 1.1.1.1\n"
+	manual, found := detectSudoBlock(needSudo)
+	if !found {
+		t.Fatal("NEEDS-SUDO output must be detected")
+	}
+	if manual != `sudo networksetup -setdnsservers "Wi-Fi" 10.2.0.105 1.1.1.1` {
+		t.Errorf("manual cmd extraction = %q", manual)
+	}
+
+	// netmount key=value convention: hint rides on the marker line
+	netmount := "state=fail reason=needs-sudo hint='run from your terminal with sudo -v first, or add a scoped NOPASSWD sudoers entry for this user'\n"
+	manual, found = detectSudoBlock(netmount)
+	if !found {
+		t.Fatal("reason=needs-sudo output must be detected")
+	}
+	if !strings.Contains(manual, "reason=needs-sudo") || !strings.Contains(manual, "sudo -v") {
+		t.Errorf("netmount hint extraction = %q", manual)
+	}
+
+	// raw sudo denial — no command available, the denial line itself surfaces
+	raw := "sudo: a password is required\n"
+	manual, found = detectSudoBlock(raw)
+	if !found {
+		t.Fatal("raw sudo denial must be detected")
+	}
+	if manual != "sudo: a password is required" {
+		t.Errorf("raw denial extraction = %q", manual)
+	}
+
+	// last marker wins (recipe run exits on first failing step)
+	two := "NEEDS-SUDO: run manually ->\n  echo old\nNEEDS-SUDO: run manually ->\n  echo new\n"
+	manual, _ = detectSudoBlock(two)
+	if !strings.Contains(manual, "echo new") || strings.Contains(manual, "echo old") {
+		t.Errorf("last marker must win, got %q", manual)
+	}
+
+	// generic failures must NOT trigger — Benn's phone only rings for sudo
+	if _, found := detectSudoBlock("✖ step verify failed: curl exited 1\n"); found {
+		t.Error("generic failure must not be flagged as sudo block")
+	}
+	if _, found := detectSudoBlock(""); found {
+		t.Error("empty output must not be flagged")
+	}
+
+	// ANSI-colored output (recipe runs print colored steps)
+	colored := "\x1b[38;5;196m✖\x1b[0m adopt failed\nNEEDS-SUDO: run manually ->\n  sudo nmcli con mod X\n"
+	manual, found = detectSudoBlock(colored)
+	if !found || !strings.Contains(manual, "nmcli con mod X") {
+		t.Errorf("ANSI output detection = %q found=%v", manual, found)
 	}
 }
 

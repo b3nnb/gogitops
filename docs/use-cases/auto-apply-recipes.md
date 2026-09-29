@@ -45,13 +45,28 @@ convergence respects the same applicability rules as manual runs.
   `auto-apply: <recipe> converged`, `auto-apply FAILED: ...`, retry lines.
 - Fleet webhook alert **on transition into failure only** — a recipe that
   stays failed retraces silently each cycle, no alert spam.
+- **Manual-step DM (BCR-19)** — when a recipe's failure is a privilege
+  block (the `NEEDS-SUDO: run manually ->` convention, netmount's
+  `reason=needs-sudo`, or sudo's own password denial), the daemon DMs the
+  printed manual instructions to Benn's phone via the Discord bot API.
+  Webhooks cannot DM a user, so this rides a bot token. Enable with the
+  daemon flag:
+
+  ```
+  -dm-notify nenv:gogitops/DISCORD_DM     # value: <channel_id>|<bot_token>
+  ```
+
+  Same semantics as the webhook: fires once on first transition into the
+  blocked state, silent on retries. Detection + notification only — the
+  DM never grants privileges or runs anything; Benn does the step by hand.
 
 ## Gotchas
 
 - A recipe with a root part (e.g. `mount:` unit writes) on a node without
   passwordless sudo will fail its root step unattended (sudo -n → pkexec →
-  clean fail) and retry every cycle. Run it once interactively (pkexec
-  dialog) — after that, idempotent state checks need no privilege.
+  clean fail) and retry every cycle. The sudo-block DM surfaces the
+  printed manual command (with `-dm-notify` configured); run it once
+  interactively — after that, idempotent state checks need no privilege.
 - `new-node`-style orchestration recipes stay manual: just don't mark them
   `auto_apply`. The flag is the boundary between "converges" and "ran by a
   human".
