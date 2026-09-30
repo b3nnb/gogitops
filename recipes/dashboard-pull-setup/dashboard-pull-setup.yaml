@@ -38,12 +38,9 @@ steps:
     os: linux
 
   - name: verify-beacon-sees-node
-    description: "Beacon status API lists this node (registration lands within a tick of restart)"
-    func: net.http-check
-    args: url=http://10.2.0.102:7781/api/status, contains={{hostname}}, timeout=5s, require=true
-    retries: 2
-    retry_delay: 5s
-    on_failure: continue
+    description: "Beacon status API lists this node — hostname resolved by ASKING THE LOCAL AGENT (self-truth), not the {{hostname}} template: manual runs without -hostname expand to the SYSTEM hostname (benn-Laptop-…) which the beacon never lists, false-failing healthy nodes (found on framework, Sep 30 '26)"
+    command: 'H=$(curl -s --max-time 5 http://127.0.0.1:7780/v1/health | grep -oE "\"hostname\":[^,]+" | cut -d\" -f4); if [ -z "$H" ]; then echo WARN-agent-health-unreachable; exit 1; fi; ok=0; for i in 1 2 3; do if curl -s --max-time 5 http://10.2.0.102:7781/api/status | grep -q "\"node_name\":\"$H\""; then ok=1; break; fi; sleep 5; done; if [ $ok = 1 ]; then echo beacon-sees-node $H; else echo "beacon does not list $H"; exit 1; fi'
+    os: linux
 
   - name: darwin-note
     description: "macOS: daemon is hand-started (no unit) — start it with -bind 0.0.0.0 -dashboard http://10.2.0.102:7781"
