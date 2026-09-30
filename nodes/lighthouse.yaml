@@ -1,0 +1,19 @@
+hostname: lighthouse
+nebula_ip: 10.200.0.1
+lan_ip: 10.6.101.83
+machine_id: ec22d362e1cd4fb87706b3885d15e470
+macs:
+    - 12:31:0c:0e:e7:3f
+labels:
+    - compute
+    - linux
+services: []
+disk: []
+agent:
+    update_url: ""
+    check_interval: ""
+    git_repo: ""
+    git_branch: ""
+    git_pull_interval: ""
+    tests_interval: ""
+    recipes_interval: ""
