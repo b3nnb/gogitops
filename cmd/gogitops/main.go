@@ -1466,6 +1466,8 @@ func cmdUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	repoDir := fs.String("repo", ".", "path to the config repo (needs the binaries branch remote)")
 	hostname := fs.String("hostname", "", "node hostname for pin resolution (default: system hostname)")
+	addr := fs.String("addr", "127.0.0.1:7780", "agent health API address (restart target for -install)")
+	install := fs.Bool("install", false, "check AND install: swap this platform's binary from the binaries branch, then restart the agent — escape hatch for wedged daemons that cannot self-swap")
 	fs.Parse(args)
 	resolved := resolveRepoDir(*repoDir)
 
@@ -1486,7 +1488,7 @@ func cmdUpdate(args []string) {
 		fmt.Printf("  update check: no VERSION on the binaries branch — self-update dormant\n")
 		fmt.Printf("  running: %s\n", runDisp)
 	case agent.IsNewer(published, running):
-		fmt.Printf("  update check: AVAILABLE — %s → v%s (daemon swaps + exec-restarts on its git tick)\n", runDisp, pub)
+		fmt.Printf("  update check: AVAILABLE — %s → v%s (daemon swaps + exec-restarts on its git tick; add -install to do it now)\n", runDisp, pub)
 	case published == running:
 		fmt.Printf("  update check: up to date (%s)\n", runDisp)
 	default:
@@ -1494,35 +1496,63 @@ func cmdUpdate(args []string) {
 	}
 
 	// Version pin policy (versions.yaml) + what THIS node resolves to.
+	// tgt defaults to latest when there are no pins — the -install path
+	// needs a target even with versions.yaml absent.
+	tgt := "latest"
 	pins, perr := agent.LoadVersionPins(resolved)
 	if perr != nil {
-		fmt.Printf("  pins: unreadable — %v\n", perr)
-		return
-	}
-	if pins == nil {
-		return
-	}
-	fmt.Printf("  pins: %s\n", pins.PinSummary())
-	host := config.DetectHostname()
-	if *hostname != "" {
-		host = *hostname
-	}
-	var labels []string
-	if mesh, merr := config.LoadMesh(resolved); merr == nil {
-		for _, p := range mesh.Peers {
-			if strings.EqualFold(p.Hostname, host) {
-				labels = p.Labels
-				break
+		fmt.Printf("  pins: unreadable — %v (tracking latest)\n", perr)
+	} else if pins != nil {
+		fmt.Printf("  pins: %s\n", pins.PinSummary())
+		host := config.DetectHostname()
+		if *hostname != "" {
+			host = *hostname
+		}
+		var labels []string
+		if mesh, merr := config.LoadMesh(resolved); merr == nil {
+			for _, p := range mesh.Peers {
+				if strings.EqualFold(p.Hostname, host) {
+					labels = p.Labels
+					break
+				}
 			}
 		}
+		tgt, src := agent.ResolveVersion(pins, host, labels)
+		if ov, ok := agent.LoadRecipeVersionOverride(resolved, host); ok {
+				tgt, src = agent.NormalizePinValue(ov.Version), "recipe:"+ov.Recipe
+		}
+		fmt.Printf("  this node (%s): %s via %s\n", host, tgt, src)
 	}
-	tgt, src := agent.ResolveVersion(pins, host, labels)
-	if ov, ok := agent.LoadRecipeVersionOverride(resolved, host); ok {
-		tgt, src = agent.NormalizePinValue(ov.Version), "recipe:"+ov.Recipe
-	}
-	fmt.Printf("  this node (%s): %s via %s\n", host, tgt, src)
-}
 
+	if !*install {
+		return
+	}
+
+	// -install: fetch, atomic swap, restart the agent so it execs the new file.
+	// Wedged-daemon recovery: a deadlocked agent never reaches its git tick,
+	// so this CLI path is the only way in (framework, Sep 30 '26).
+	fmt.Printf("\n  \033[38;5;51m▸\033[0m install: swapping %s from the binaries branch...\n", tgt)
+	path, ver, ierr := agent.InstallBinaryUpdate(resolved, tgt)
+	if ierr != nil {
+		cli.PrintError(fmt.Sprintf("install failed: %v", ierr))
+		os.Exit(1)
+	}
+	if path == "" {
+		fmt.Printf("  install: already running %s — nothing to do\n", agent.Version)
+		return
+	}
+	fmt.Printf("  \033[38;5;46m✓\033[0m installed %s -> %s (path: %s)\n", agent.Version, ver, path)
+
+	// Restart the agent so the daemon execs the new file. POST /v1/restart
+	// exec-restarts in place; if the agent is unreachable, say so — the next
+	// daemon restart (systemd or manual) picks the binary up anyway.
+	if resp, rerr := http.Post("http://"+*addr+"/v1/restart", "application/json", nil); rerr == nil {
+		resp.Body.Close()
+		fmt.Printf("  \033[38;5;46m✓\033[0m agent restart requested — new version on next boot\n")
+	} else {
+		fmt.Printf("  ⚠ agent not reachable at %s — run gogitops restart to pick up the new binary\n", *addr)
+	}
+}
 func cmdAttrs(args []string) {
 	// optional subcommands read nicer: gogitops attrs scan / attrs verify
 	sub := ""
@@ -3415,7 +3445,7 @@ func recipeRunAll(args []string) {
 				}
 			}
 			if len(req) > 0 {
-				fmt.Printf("  \033[38;5;240m\u2298 %s skipped (needs --var: %s)\033[0m\n", pr.Name, strings.Join(req, ", "))
+				fmt.Printf("  \033[38;5;80m\u2298 %s skipped (needs --var: %s)\033[0m\n", pr.Name, strings.Join(req, ", "))
 				continue
 			}
 		}

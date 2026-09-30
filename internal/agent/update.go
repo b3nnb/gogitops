@@ -90,6 +90,78 @@ func (a *Agent) maybeSelfUpdate() {
 	a.swapAndRestart(bin, published, "binaries branch")
 }
 
+// InstallBinaryUpdate is the CLI escape hatch (gogitops update -install):
+// fetch this platform's binary from the binaries branch and atomically swap
+// it into the running executable's path (fallback ~/.local/bin/gogitops when
+// unwritable). Returns (swappedPath, version, err); swappedPath == "" means
+// nothing to do (already up to date / already on the pin). Does NOT restart
+// the agent — the caller decides (POST /v1/restart exec-restarts in place).
+// A wedged daemon can never swap itself (framework deadlock, Sep 30 '26:
+// git tick never fired for 18 minutes) — the manual CLI path is the recovery.
+func InstallBinaryUpdate(repoDir, target string) (string, string, error) {
+	remote := "origin/" + BinariesBranch
+	ver := target
+	binPath := fmt.Sprintf("bin/gogitops-%s-%s", runtime.GOOS, runtime.GOARCH)
+	if target == "" || target == "latest" {
+		vOut, err := gitShowBytes(repoDir, remote, "VERSION")
+		if err != nil || strings.TrimSpace(string(vOut)) == "" {
+			return "", "", fmt.Errorf("binaries branch has no VERSION")
+		}
+		ver = strings.TrimSpace(string(vOut))
+		if !isNewer(ver, Version) {
+			return "", ver, nil
+		}
+	} else {
+		binPath = fmt.Sprintf("versions/%s/bin/gogitops-%s-%s", target, runtime.GOOS, runtime.GOARCH)
+		if normalizeTag(target) == normalizeTag(Version) {
+			return "", ver, nil
+		}
+	}
+	bin, err := gitShowBytes(repoDir, remote, binPath)
+	if err != nil {
+		return "", ver, fmt.Errorf("download %s: %v", binPath, err)
+	}
+	if len(bin) < 500*1024 {
+		return "", ver, fmt.Errorf("downloaded %s too small (%d bytes) — refusing", binPath, len(bin))
+	}
+	writeSwap := func(tmp, dest string) error {
+		if err := os.WriteFile(tmp, bin, 0755); err != nil {
+			return err
+		}
+		// Apple Silicon SIGKILLs unsigned binaries at exec — ad-hoc sign
+		if runtime.GOOS == "darwin" {
+			if out, serr := exec.Command("codesign", "--force", "--sign", "-", tmp).CombinedOutput(); serr != nil {
+				os.Remove(tmp)
+				return fmt.Errorf("codesign: %s", strings.TrimSpace(string(out)))
+			}
+		}
+		if err := os.Rename(tmp, dest); err != nil {
+			os.Remove(tmp)
+			return err
+		}
+		return nil
+	}
+	if exe, xerr := os.Executable(); xerr == nil {
+		tmp := filepath.Join(filepath.Dir(exe), ".gogitops-install-"+ver)
+		if err := writeSwap(tmp, exe); err == nil {
+			return exe, ver, nil
+		}
+	}
+	home, herr := os.UserHomeDir()
+	if herr != nil {
+		return "", ver, fmt.Errorf("executable path unwritable and no home dir")
+	}
+	altDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(altDir, 0755); err != nil {
+		return "", ver, fmt.Errorf("fallback dir %s: %v", altDir, err)
+	}
+	altExe := filepath.Join(altDir, "gogitops")
+	if err := writeSwap(filepath.Join(altDir, ".gogitops-install-"+ver), altExe); err != nil {
+		return "", ver, fmt.Errorf("swap to %s failed: %v", altExe, err)
+	}
+	return altExe, ver, nil
+}
+
 // swapAndRestart atomically replaces the running binary and exec-restarts.
 // When the binary's location is not writable (e.g. a deb install under
 // /usr/local/bin driven by a user-level unit), falls back to a
