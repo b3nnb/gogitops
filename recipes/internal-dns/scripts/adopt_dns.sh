@@ -21,7 +21,15 @@ DNS2=1.1.1.1
 if [ "$(uname)" = "Darwin" ]; then
   CUR=$(scutil --dns 2>/dev/null | awk '/nameserver\[0\]/{print $3; exit}')
 else
-  CUR=$(nmcli -g ipv4.dns con show --active 2>/dev/null | grep -oE '10\.2\.0\.[0-9]+|10\.0\.0\.[0-9]+' | head -1)
+  # Linux: find the active wired/wireless NM connection FIRST (terse TYPE is
+  # '802-3-ethernet', NOT 'ethernet'), then read its configured DNS. The old
+  # `nmcli -g ipv4.dns con show --active` form is an invalid field for a LIST
+  # and always came back empty — the idempotency probe never worked on Linux
+  # (found on friday, Sep 30 '26).
+  CONN=$(nmcli -t -f NAME,TYPE con show --active 2>/dev/null | grep -E ':802-3-ethernet|:802-11-wireless' | head -1 | cut -d: -f1)
+  if [ -n "$CONN" ]; then
+    CUR=$(nmcli -g ipv4.dns con show "$CONN" 2>/dev/null | grep -oE '10\.2\.0\.[0-9]+|10\.0\.0\.[0-9]+' | head -1)
+  fi
 fi
 
 if [ "$CUR" = "$DNS1" ]; then
@@ -60,7 +68,9 @@ fi
 
 # ── Linux (NetworkManager) ──
 command -v nmcli >/dev/null 2>&1 || { echo "BLOCKED: nmcli not found on this Linux node"; exit 1; }
-CONN=$(nmcli -t -f NAME,TYPE con show --active 2>/dev/null | grep -E ':802-11-wireless|:ethernet' | head -1 | cut -d: -f1)
+# reuse the probe's CONN when present; terse TYPE is '802-3-ethernet' — the old
+# ':ethernet' pattern never matched (found on friday, Sep 30 '26)
+[ -z "$CONN" ] && CONN=$(nmcli -t -f NAME,TYPE con show --active 2>/dev/null | grep -E ':802-3-ethernet|:802-11-wireless' | head -1 | cut -d: -f1)
 [ -z "$CONN" ] && { echo "BLOCKED: no active NetworkManager connection found"; exit 1; }
 
 # Try direct nmcli first — polkit authorizes active local sessions without sudo
