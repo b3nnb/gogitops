@@ -2247,7 +2247,7 @@ func recipeRun(args []string, all *runAllCtx) {
 	// Recipe-level label gate (recipe labels: node must have ALL of them;
 	// empty = all nodes)
 	if len(r.Labels) > 0 && !labelsMatch(nodeLabels, r.Labels, nil) {
-		fmt.Printf("  \033[38;5;240m⊘ %s — node labels don't satisfy recipe labels %v\033[0m\n", r.Name, r.Labels)
+		fmt.Printf("  \033[38;5;80m⊘ %s — node labels don't satisfy recipe labels %v\033[0m\n", r.Name, r.Labels)
 		if all != nil {
 			all.recipeSkipped++
 		}
@@ -2367,7 +2367,7 @@ func recipeRun(args []string, all *runAllCtx) {
 		// OS filter
 		if step.OS != "" && step.OS != vars["os"] {
 			if showDetail {
-				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: os=%s, host=%s)\033[0m\n", stepNum, len(r.Steps), displayName, step.OS, vars["os"])
+				fmt.Printf("  \033[38;5;80m⊘ %d/%d %s (skipped: os=%s, host=%s)\033[0m\n", stepNum, len(r.Steps), displayName, step.OS, vars["os"])
 			}
 			skipped++
 			continue
@@ -2375,7 +2375,7 @@ func recipeRun(args []string, all *runAllCtx) {
 		// Arch filter
 		if step.Arch != "" && step.Arch != vars["arch"] {
 			if showDetail {
-				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: arch=%s)\033[0m\n", stepNum, len(r.Steps), displayName, step.Arch)
+				fmt.Printf("  \033[38;5;80m⊘ %d/%d %s (skipped: arch=%s)\033[0m\n", stepNum, len(r.Steps), displayName, step.Arch)
 			}
 			skipped++
 			continue
@@ -2384,7 +2384,7 @@ func recipeRun(args []string, all *runAllCtx) {
 		// labels_exclude = node must have NONE of them
 		if !labelsMatch(nodeLabels, step.LabelsReq, step.LabelsExcl) {
 			if showDetail {
-				fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: labels required=%v exclude=%v)\033[0m\n", stepNum, len(r.Steps), displayName, step.LabelsReq, step.LabelsExcl)
+				fmt.Printf("  \033[38;5;80m⊘ %d/%d %s (skipped: labels required=%v exclude=%v)\033[0m\n", stepNum, len(r.Steps), displayName, step.LabelsReq, step.LabelsExcl)
 			}
 			skipped++
 			continue
@@ -2396,7 +2396,7 @@ func recipeRun(args []string, all *runAllCtx) {
 			wCmd := exec.Command("bash", "-c", whenCmd)
 			if err := wCmd.Run(); err != nil {
 				if showDetail {
-					fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: when condition false)\033[0m\n", stepNum, len(r.Steps), displayName)
+					fmt.Printf("  \033[38;5;80m⊘ %d/%d %s (skipped: when condition false)\033[0m\n", stepNum, len(r.Steps), displayName)
 				}
 				skipped++
 				continue
@@ -2409,7 +2409,7 @@ func recipeRun(args []string, all *runAllCtx) {
 			oCmd := exec.Command("bash", "-c", onlyCmd)
 			if err := oCmd.Run(); err != nil {
 				if showDetail {
-					fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: only_if false)\033[0m\n", stepNum, len(r.Steps), displayName)
+					fmt.Printf("  \033[38;5;80m⊘ %d/%d %s (skipped: only_if false)\033[0m\n", stepNum, len(r.Steps), displayName)
 				}
 				skipped++
 				continue
@@ -2421,7 +2421,7 @@ func recipeRun(args []string, all *runAllCtx) {
 			cond := substituteVars(step.WhenAttr, vars)
 			if !evalAttrCondition(cond, attrs) {
 				if showDetail {
-					fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: when_attr false)\033[0m\n", stepNum, len(r.Steps), displayName)
+					fmt.Printf("  \033[38;5;80m⊘ %d/%d %s (skipped: when_attr false)\033[0m\n", stepNum, len(r.Steps), displayName)
 				}
 				skipped++
 				continue
@@ -2433,7 +2433,7 @@ func recipeRun(args []string, all *runAllCtx) {
 			cond := substituteVars(step.OnlyIfAttr, vars)
 			if !evalAttrCondition(cond, attrs) {
 				if showDetail {
-					fmt.Printf("  \033[38;5;240m⊘ %d/%d %s (skipped: only_if_attr false)\033[0m\n", stepNum, len(r.Steps), displayName)
+					fmt.Printf("  \033[38;5;80m⊘ %d/%d %s (skipped: only_if_attr false)\033[0m\n", stepNum, len(r.Steps), displayName)
 				}
 				skipped++
 				continue
@@ -2623,17 +2623,28 @@ func recipeRun(args []string, all *runAllCtx) {
 			}
 		}
 
-		// Verbose output
+		// Verbose output — all but the LAST line; the last line is held back so
+		// the result marker can attach to it (a bare ✓ on its own line read as
+		// ambiguous — Benn, Sep 30 '26: did it belong to the step above or the
+		// header below?)
+		var lastLine string
 		if *verbose && lastOutput != "" {
-			for _, line := range strings.Split(strings.TrimSpace(lastOutput), "\n") {
+			lines := strings.Split(strings.TrimSpace(lastOutput), "\n")
+			for _, line := range lines[:len(lines)-1] {
 				fmt.Printf("     \033[38;5;240m%s\033[0m\n", line)
 			}
+			lastLine = lines[len(lines)-1]
 		}
 
-		// Result
+		// Result — the marker rides the step's last output line when there is
+		// one; otherwise it stands alone directly under the step header
 		if lastExitCode == 0 || (step.ExpectExit != nil && lastExitCode == *step.ExpectExit) {
 			if showDetail {
-				fmt.Printf("     \033[38;5;46m✓\033[0m\n")
+				if lastLine != "" {
+					fmt.Printf("     \033[38;5;240m%s\033[0m  \033[38;5;46m✓\033[0m\n", lastLine)
+			} else {
+					fmt.Printf("     \033[38;5;46m✓\033[0m\n")
+			}
 			}
 			passed++
 		} else {
@@ -2641,7 +2652,11 @@ func recipeRun(args []string, all *runAllCtx) {
 			if failureAction == "" {
 				failureAction = "abort"
 			}
-			fmt.Printf("     \033[38;5;196m✖ (exit %d)\033[0m\n", lastExitCode)
+			if lastLine != "" {
+				fmt.Printf("     \033[38;5;240m%s\033[0m  \033[38;5;196m✖ (exit %d)\033[0m\n", lastLine, lastExitCode)
+			} else {
+				fmt.Printf("     \033[38;5;196m✖ (exit %d)\033[0m\n", lastExitCode)
+			}
 			if *verbose == false && lastOutput != "" {
 				// Show last 3 lines of output on failure
 				lines := strings.Split(strings.TrimSpace(lastOutput), "\n")
