@@ -288,12 +288,17 @@ func recipeApplyCycle(repoDir, hostname, webhook string, dm *alert.DMSender) {
 
 		// Exec in a child of the agent binary: recipe run exits non-zero on
 		// step failure and its os.Exit paths must never take the daemon down.
+		// GOGITOPS_AUTO_APPLY marks the child so the manual-run DM hook in
+		// recipeRun stays quiet — this loop already DMs the sudo-block on the
+		// failure TRANSITION (dedup'd), and a child DM would double-fire.
 		self, selfErr := os.Executable()
 		if selfErr != nil {
 			logger.Errorf("recipe", "auto-apply: cannot resolve agent binary: %v", selfErr)
 			return
 		}
-		out, runErr := exec.Command(self, "recipe", "run", f, "--repo", resolved, "--hostname", hostname).CombinedOutput()
+		child := exec.Command(self, "recipe", "run", f, "--repo", resolved, "--hostname", hostname)
+		child.Env = append(os.Environ(), "GOGITOPS_AUTO_APPLY=1")
+		out, runErr := child.CombinedOutput()
 
 		if runErr == nil {
 			wasFailed := known && prev.Status == "failed"

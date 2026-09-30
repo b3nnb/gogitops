@@ -1066,7 +1066,8 @@ func cmdSet(args []string) {
 
 	// Keys that go in config.yaml (non-systemd config)
 	configKeys := map[string]string{
-		"webhook": "webhook",
+		"webhook":   "webhook",
+		"dm-notify": "dm_notify",
 	}
 
 	// Keys that need a daemon restart
@@ -2653,6 +2654,20 @@ func recipeRun(args []string, all *runAllCtx) {
 				}
 			}
 			failed++
+			// Manual-step surfacing (BCR-19), manual-run half: a step that
+			// blocks on a privilege boundary reads as gibberish to a
+			// non-IT user. Say it in plain words at the terminal, and DM
+			// Benn the manual command when nobody is watching this run
+			// (agent-driven SSH runs) — auto-apply children are excluded
+			// via GOGITOPS_AUTO_APPLY: the daemon loop DMs the transition
+			// itself, dedup'd, and a child DM would double-fire.
+			if !*dryRun && os.Getenv("GOGITOPS_AUTO_APPLY") == "" {
+				if manual, blocked := detectSudoBlock(lastOutput); blocked {
+					fmt.Printf("     \033[38;5;226m⚠ not broken — this step needs your sudo password and can't ask for one on its own.\033[0m\n")
+					fmt.Printf("     \033[38;5;226m  fix: run `sudo -v` on %s (or add a scoped NOPASSWD sudoers entry), then re-run.\033[0m\n", vars["hostname"])
+					notifyManualSudoDM(vars["hostname"], r.Name, displayName, manual)
+				}
+			}
 			if failureAction == "abort" {
 				if all != nil {
 					all.recipeFailed++
@@ -4466,6 +4481,62 @@ func resolveWebhook(url string) string {
 		log.Printf("warning: failed to resolve nenv:%s — using raw value", ref)
 	}
 	return url
+}
+
+// ── Manual-run sudo-block DM (BCR-19 manual half) ────────────────────────────
+//
+// Manual `recipe run` invocations have no daemon watching them: an agent
+// running a recipe over SSH (or a cron wrapper) prints the sudo-block to a
+// terminal nobody reads. The DM route ref comes from config.yaml
+// (`gogitops set dm-notify nenv:gogitops/DISCORD_DM`) — same single-ref
+// shape as the daemon's -dm-notify flag, so both paths share one transport.
+// Empty/missing = DMs off; the terminal hint above still prints.
+
+// notifyManualSudoDM DMs Benn the blocked recipe's manual command.
+// Best-effort by design — a DM failure must never change the recipe's exit.
+func notifyManualSudoDM(hostname, recipe, step, manual string) {
+	ref := readConfigYAMLKey("dm_notify")
+	if ref == "" {
+		return
+	}
+	dm := alert.NewDMSender(ref)
+	if !dm.Configured() {
+		return
+	}
+	msg := "🔧 gogitops [" + hostname + "] recipe " + recipe + " (step " + step + ", manual run) blocked on sudo — needs your hands:\n" + manual
+	if err := dm.Send(msg); err != nil {
+		fmt.Printf("     \033[38;5;240m(sudo-block DM failed: %v)\033[0m\n", err)
+	}
+}
+
+// readConfigYAMLKey reads one top-level `key: value` line from config.yaml
+// (path chain mirrors `gogitops set`: /etc first, user fallback).
+func readConfigYAMLKey(key string) string {
+	for _, p := range configYAMLPaths() {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, key+":") {
+				v := strings.TrimSpace(strings.TrimPrefix(trimmed, key+":"))
+				v = strings.Trim(v, "\"'")
+				if v != "" {
+					return v
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func configYAMLPaths() []string {
+	paths := []string{"/etc/gogitops/config.yaml"}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".config", "gogitops", "config.yaml"))
+	}
+	return paths
 }
 
 func registerWithDashboard(dashURL, hostname, bindAddr string, port int, node *config.NodeConfig) {
