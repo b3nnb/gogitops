@@ -21,7 +21,8 @@ steps:
     on_failure: continue
 
   - name: restart-agent
-    description: "Restart via the service manager — exec-restart keeps old argv, so a sed'd unit needs a real systemctl restart"
+    description: "MANUAL RUNS ONLY — the daemon convergence loop sets GOGITOPS_AUTO_APPLY=1 for its children, and a restart spawned from inside a convergence run kills the daemon mid-recipe: the recipe records failed forever and every cycle restarts the agent again (framework ~60s restart-loop, Sep 30 '26). A skipped restart just means a rewritten unit applies on the next manual run or daemon restart."
+    when: '[ -z "$GOGITOPS_AUTO_APPLY" ]'
     command: 'for U in gogitops gogitops-daemon; do if systemctl --user is-active $U >/dev/null 2>&1; then systemctl --user restart $U && echo restarted-user-$U; exit 0; fi; done; if systemctl is-active gogitops-daemon >/dev/null 2>&1; then sudo -n systemctl restart gogitops-daemon && echo restarted-system; else echo WARN-no-unit-restarted; fi'
     os: linux
     on_failure: continue
