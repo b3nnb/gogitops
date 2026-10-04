@@ -425,3 +425,184 @@ func TestFormatOutputs(t *testing.T) {
 		t.Errorf("line = %q", line)
 	}
 }
+
+// ── system.info ─────────────────────────────────────────────────────────────
+
+func TestSystemInfoHasUser(t *testing.T) {
+	fn, ok := Get("system.info")
+	if !ok {
+		t.Fatal("system.info not registered")
+	}
+	out, err := fn.Run(Context{Hostname: "testhost", OS: "linux", Arch: "amd64"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["hostname"] != "testhost" || out["os"] != "linux" || out["arch"] != "amd64" {
+		t.Errorf("identity outputs = %v", out)
+	}
+	if out["user"] == "" {
+		t.Errorf("user output empty — tests always run as some user (out: %v)", out)
+	}
+}
+
+// ── net.source-ip ───────────────────────────────────────────────────────────
+
+func TestSourceIPTable(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    map[string]any
+		wantFnd bool
+		wantIP  string
+		wantErr bool
+	}{
+		{
+			name:    "loopback source is loopback (hermetic — no network needed)",
+			args:    map[string]any{"host": "127.0.0.1"},
+			wantFnd: true,
+			wantIP:  "127.0.0.1",
+		},
+		{
+			name:    "explicit port accepted (route choice only)",
+			args:    map[string]any{"host": "127.0.0.1", "port": "53"},
+			wantFnd: true,
+			wantIP:  "127.0.0.1",
+		},
+		{
+			name:    "unresolvable host is a result, not an error",
+			args:    map[string]any{"host": "no-such-host-invalid-xyz", "timeout": "300ms"},
+			wantFnd: false,
+		},
+		{
+			name:    "missing host errors",
+			args:    map[string]any{},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := sourceIP(Context{}, tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got out=%v", out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if out["found"] != tc.wantFnd {
+				t.Errorf("found = %v, want %v (out: %v)", out["found"], tc.wantFnd, out)
+			}
+			if tc.wantFnd && out["ip"] != tc.wantIP {
+				t.Errorf("ip = %v, want %v", out["ip"], tc.wantIP)
+			}
+			if !tc.wantFnd {
+				if out["ip"] != "" || out["error"] == "" {
+					t.Errorf("down result must carry empty ip + error text (out: %v)", out)
+				}
+			}
+		})
+	}
+}
+
+// ── net.json-get ────────────────────────────────────────────────────────────
+
+func TestJsonGetTable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			fmt.Fprint(w, `{"hostname":"friday","agent_version":"v9.9.9","agent":{"build":"abc"},"peers":["mini","nas"],"items":[{"name":"first"},{"name":"second"}],"count":42,"ok":true,"nul":null}`)
+		case "/notjson":
+			fmt.Fprint(w, "<html>nope</html>")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name     string
+		args     map[string]any
+		wantFnd  bool
+		wantVal  string
+		wantStat int
+	}{
+		{name: "top-level string key", args: map[string]any{"url": srv.URL + "/health", "key": "hostname"}, wantFnd: true, wantVal: "friday", wantStat: 200},
+		{name: "nested dot-path", args: map[string]any{"url": srv.URL + "/health", "key": "agent.build"}, wantFnd: true, wantVal: "abc", wantStat: 200},
+		{name: "array index", args: map[string]any{"url": srv.URL + "/health", "key": "peers[1]"}, wantFnd: true, wantVal: "nas", wantStat: 200},
+		{name: "array of objects", args: map[string]any{"url": srv.URL + "/health", "key": "items[1].name"}, wantFnd: true, wantVal: "second", wantStat: 200},
+		{name: "number stringifies", args: map[string]any{"url": srv.URL + "/health", "key": "count"}, wantFnd: true, wantVal: "42", wantStat: 200},
+		{name: "bool stringifies", args: map[string]any{"url": srv.URL + "/health", "key": "ok"}, wantFnd: true, wantVal: "true", wantStat: 200},
+		{name: "object stringifies as compact JSON", args: map[string]any{"url": srv.URL + "/health", "key": "agent"}, wantFnd: true, wantVal: `{"build":"abc"}`, wantStat: 200},
+		{name: "missing key is a result", args: map[string]any{"url": srv.URL + "/health", "key": "nope"}, wantFnd: false, wantStat: 200},
+		{name: "index out of range is a result", args: map[string]any{"url": srv.URL + "/health", "key": "peers[9]"}, wantFnd: false, wantStat: 200},
+		{name: "null is not a value", args: map[string]any{"url": srv.URL + "/health", "key": "nul"}, wantFnd: false, wantStat: 200},
+		{name: "404 body is a result", args: map[string]any{"url": srv.URL + "/nope", "key": "hostname"}, wantFnd: false, wantStat: 404},
+		{name: "non-JSON body is a result", args: map[string]any{"url": srv.URL + "/notjson", "key": "hostname"}, wantFnd: false, wantStat: 200},
+		{name: "unreachable server is a result", args: map[string]any{"url": "http://127.0.0.1:1/health", "key": "hostname", "timeout": "300ms"}, wantFnd: false, wantStat: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := jsonGet(Context{}, tc.args)
+			if err != nil {
+				t.Fatalf("unexpected error (down must be a result): %v", err)
+			}
+			if out["found"] != tc.wantFnd {
+				t.Errorf("found = %v, want %v (out: %v)", out["found"], tc.wantFnd, out)
+			}
+			if out["value"] != tc.wantVal {
+				t.Errorf("value = %v, want %q", out["value"], tc.wantVal)
+			}
+			if out["status"] != tc.wantStat {
+				t.Errorf("status = %v, want %v", out["status"], tc.wantStat)
+			}
+			if !tc.wantFnd && out["error"] == "" {
+				t.Errorf("found=false must carry the reason (out: %v)", out)
+			}
+		})
+	}
+	if _, err := jsonGet(Context{}, map[string]any{"url": srv.URL + "/health"}); err == nil {
+		t.Error("missing key= must error")
+	}
+	if _, err := jsonGet(Context{}, map[string]any{"key": "x"}); err == nil {
+		t.Error("missing url= must error")
+	}
+}
+
+func TestJSONLookupPathGrammar(t *testing.T) {
+	doc := map[string]any{
+		"a": map[string]any{"b": []any{
+			map[string]any{"c": "deep"},
+			[]any{"x", "y"},
+		}},
+		"flat": []any{float64(10), float64(20), float64(30)}, // float64 mirrors real JSON decoding
+	}
+	tests := []struct {
+		path string
+		want any
+		ok   bool
+	}{
+		{"a.b[0].c", "deep", true},
+		{"a.b[1][1]", "y", true},
+		{"a.b[0].missing", nil, false},
+		{"a.b[5].c", nil, false},
+		{"flat[2]", float64(30), true},
+		{"flat[-1]", nil, false},
+		{"[0].c", nil, false}, // root is an object, [0] indexes fail
+		{"a.b[1][0]", "x", true},
+		{"a[0]", nil, false}, // a is an object, not an array
+		{"a.bad[", nil, false},
+		{"a.b[zero]", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			got, ok := jsonLookup(doc, tc.path)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v (got: %v)", ok, tc.ok, got)
+			}
+			if ok && got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

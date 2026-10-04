@@ -1,7 +1,12 @@
 name: starship-terminal-setup
 description: "Install Starship prompt + Friday login splash on any node — idempotent, self-reporting"
-version: "2.2.0"
+version: "2.3.0"
 labels: []
+
+# v2.3.0: LAN-IP reporting → typed net.source-ip (kernel UDP route probe,
+# one function for linux + macOS instead of the hostname -I / ipconfig
+# getifaddr ×2 / awk '{print $1}' fallback chain; the private_ip attr is
+# replaced by the func's typed outputs — deploy_summary still carries the IP).
 
 steps:
   # ── Environment (reported as attributes) ─────────────────────────────
@@ -151,9 +156,9 @@ steps:
     set_attr: nickname
 
   - name: report-private-ip
-    description: "Report LAN IP"
-    command: "ip=$(hostname -I 2>/dev/null || ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr $(route -n get default 2>/dev/null | awk '/interface/{print $2}') 2>/dev/null); [[ -n $ip ]] && echo $ip | awk '{print $1}' || echo unknown"
-    set_attr: private_ip
+    description: "Report LAN IP — the kernel-chosen source address toward the default route (typed net.source-ip probe; same trick on every OS, no hostname -I / ipconfig / awk branching)"
+    func: net.source-ip
+    args: host=1.1.1.1
 
   - name: report-public-ip
     description: "Report cached public IP"
@@ -167,5 +172,5 @@ steps:
 
   - name: deploy-summary
     description: "Compile the full deployment report as one attribute"
-    command: "echo starship={{attr.starship_version}} splash={{attr.nickname}} gpu={{attr.gpu}} lan={{attr.private_ip}} wan={{attr.public_ip}} ascii={{attr.ascii_renderer}}"
+    command: "echo starship={{attr.starship_version}} splash={{attr.nickname}} gpu={{attr.gpu}} lan={{func.ip}} wan={{attr.public_ip}} ascii={{attr.ascii_renderer}}"
     set_attr: deploy_summary
