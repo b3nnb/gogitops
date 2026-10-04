@@ -35,7 +35,9 @@ steps:
 | `net.port-check` | TCP connect check: `up`, `latency_ms`, `error` (`host=`, `port=`, `timeout=`) |
 | `net.http-check` | HTTP GET check: `up`, `status`, `latency_ms`, `matched` (`url=`, `contains=`, `require=`) — replaces curl\|grep wait-loops |
 | `net.github-asset` | Release asset URL from the GitHub API, JSON-parsed (`repo=`, `match=`, `walk=`) — replaces grep-of-JSON scrapes |
-| `system.info` | hostname/os/arch, typed — branching without `uname` |
+| `net.source-ip` | Kernel-chosen local source IP toward a host (UDP dial, nothing sent): `found`, `ip` (`host=`, `port=`, `timeout=`) — replaces the `ip route get`/`hostname -I`/`ipconfig` fallback dances |
+| `net.json-get` | GET a JSON document, extract one value by dot-path (`hostname`, `a.b`, `peers[0].name`): `found`, `value`, `status` (`url=`, `key=`, `timeout=`) — replaces `curl \| grep -oE \| cut` scrapes |
+| `system.info` | hostname/os/arch + effective `user`, typed — branching and `authorized_keys.d/<user>`-style paths without `uname`/`whoami` parse-chaining |
 | `system.which` | Command lookup: PATH first, then explicit candidates (`name=`, `candidates=`) — replaces `command -v` + fallback dances |
 
 Args containing commas (like `candidates=a,b`) must use the JSON args form: `args: {"name": "brew", "candidates": "/opt/homebrew/bin/brew,/usr/local/bin/brew"}`.

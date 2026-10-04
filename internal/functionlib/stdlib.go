@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -83,18 +84,53 @@ func init() {
 		Run: which,
 	})
 
-	// system.info — the runner context, typed, for branching recipes.
+	// system.info — the runner context, typed, for branching recipes and
+	// user-scoped paths (authorized_keys.d/<user>) without shell probes.
 	Register(Function{
 		Name:        "system.info",
-		Description: "Node identity + run context: hostname, os, arch. For when_attr branching without shell probes.",
+		Description: "Node identity + run context: hostname, os, arch, user (effective user — os/user lookup, $USER fallback). For when_attr branching and <user>-path addressing without uname/whoami parse-chaining.",
 		Params:      nil,
 		Run: func(ctx Context, args map[string]any) (map[string]any, error) {
 			return map[string]any{
 				"hostname": ctx.Hostname,
 				"os":       ctx.OS,
 				"arch":     ctx.Arch,
+				"user":     effectiveUser(),
 			}, nil
 		},
+	})
+
+	// net.source-ip — which local source address would the KERNEL use to
+	// reach host:port? A UDP "connect" (no packet is ever sent), the same
+	// trick the agent's /v1/health system.ip uses. Typed replacement for
+	// the per-OS fallback dances (ip -4 route get | grep -oP 'src \K',
+	// hostname -I, ipconfig getifaddr ×3, awk '{print $1}') recipes kept
+	// reimplementing. No route is a RESULT (found=false), not an error.
+	Register(Function{
+		Name:        "net.source-ip",
+		Description: "Kernel-chosen local source IP toward host:port (UDP dial, no traffic sent). Outputs found, ip. No route/unresolvable host is a result (found=false), not an error.",
+		Params: []Param{
+			{Name: "host", Type: "string", Description: "Destination the kernel would route to (required) — e.g. the beacon IP for 'the address the beacon polls back', 1.1.1.1 for the default route"},
+			{Name: "port", Type: "int", Description: "UDP target port (default 80 — only affects route selection, nothing is sent)"},
+			{Name: "timeout", Type: "duration", Description: "Dial timeout (default 2s)"},
+		},
+		Run: sourceIP,
+	})
+
+	// net.json-get — GET a URL, extract ONE value by dot-path (a.b[0].c).
+	// Typed replacement for the curl | grep -oE '"key":[^,]*' | cut -d'"'
+	// scrapes over JSON documents — the exact fragile-parse class that was
+	// quadruple-quote-escaped in YAML twice over. Down/missing/bad-JSON is
+	// a RESULT (found=false, value=""), so expect:/when_attr: decide.
+	Register(Function{
+		Name:        "net.json-get",
+		Description: "GET a JSON document and extract one value by dot-path (hostname, agent.version, peers[0].name). Outputs found, value, status. Unreachable URL / bad JSON / missing key is a result (found=false), not an error.",
+		Params: []Param{
+			{Name: "url", Type: "string", Description: "URL to GET (required)"},
+			{Name: "key", Type: "string", Description: "Dot-path into the JSON: top-level key, a.b nested, list[0] index, items[2].name (required)"},
+			{Name: "timeout", Type: "duration", Description: "Request timeout (default 5s)"},
+		},
+		Run: jsonGet,
 	})
 }
 
@@ -356,4 +392,176 @@ func isExecutableFile(p string) bool {
 		return false
 	}
 	return info.Mode().Perm()&0111 != 0
+}
+
+// ── net.source-ip ───────────────────────────────────────────────────────────
+
+// sourceIP asks the kernel which local source address it would use to
+// reach host:port — a UDP DialTimeout, nothing is ever written to the
+// socket. Same trick as internal/health's SystemInfo IP (toward 8.8.8.8).
+func sourceIP(ctx Context, args map[string]any) (map[string]any, error) {
+	host, _ := args["host"].(string)
+	if host == "" {
+		return nil, fmt.Errorf("host= required")
+	}
+	port := "80"
+	if p, ok := args["port"].(string); ok && p != "" {
+		port = p
+	}
+	timeout := 2 * time.Second
+	if t, ok := args["timeout"].(string); ok && t != "" {
+		if d, err := time.ParseDuration(t); err == nil {
+			timeout = d
+		}
+	}
+	conn, err := net.DialTimeout("udp", net.JoinHostPort(host, port), timeout)
+	if err != nil {
+		// No route / unresolvable host is a RESULT — the recipe decides.
+		return map[string]any{
+			"found": false,
+			"ip":    "",
+			"error": err.Error(),
+			"math":  fmt.Sprintf("udp dial %s:%s — no source address: %v", host, port, err),
+		}, nil
+	}
+	defer conn.Close()
+	ip := conn.LocalAddr().(*net.UDPAddr).IP.String()
+	return map[string]any{
+		"found": true,
+		"ip":    ip,
+		"math":  fmt.Sprintf("udp dial %s:%s → local %s (no packet sent)", host, port, ip),
+	}, nil
+}
+
+// ── net.json-get ────────────────────────────────────────────────────────────
+
+func jsonGet(ctx Context, args map[string]any) (map[string]any, error) {
+	url, _ := args["url"].(string)
+	key, _ := args["key"].(string)
+	if url == "" || key == "" {
+		return nil, fmt.Errorf("url= and key= required")
+	}
+	timeout := 5 * time.Second
+	if t, ok := args["timeout"].(string); ok && t != "" {
+		if d, err := time.ParseDuration(t); err == nil {
+			timeout = d
+		}
+	}
+	// miss renders every not-found outcome as a RESULT with the same
+	// output keys, so expect:/when_attr: see one stable shape.
+	miss := func(status int, errText, math string) (map[string]any, error) {
+		return map[string]any{
+			"found":  false,
+			"value":  "",
+			"status": status,
+			"error":  errText,
+			"math":   math,
+		}, nil
+	}
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		return miss(0, err.Error(), fmt.Sprintf("GET %s — no response: %v", url, err))
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<24))
+	if readErr != nil {
+		return miss(resp.StatusCode, readErr.Error(), fmt.Sprintf("GET %s → %d — body read failed: %v", url, resp.StatusCode, readErr))
+	}
+	var doc any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return miss(resp.StatusCode, "bad JSON: "+err.Error(), fmt.Sprintf("GET %s → %d — body is not JSON", url, resp.StatusCode))
+	}
+	val, ok := jsonLookup(doc, key)
+	if !ok {
+		return miss(resp.StatusCode, fmt.Sprintf("key %q not found", key), fmt.Sprintf("GET %s → %d — no JSON value at %q", url, resp.StatusCode, key))
+	}
+	return map[string]any{
+		"found":  true,
+		"value":  stringifyJSON(val),
+		"status": resp.StatusCode,
+		"math":   fmt.Sprintf("GET %s → %d — %s = %s", url, resp.StatusCode, key, stringifyJSON(val)),
+	}, nil
+}
+
+// jsonLookup walks a decoded JSON tree by dot-path with [n] array indexes:
+// hostname, agent.version, peers[0].name, list[1][2], [0].name. Keys
+// containing a literal '.' are not addressable (documented limitation).
+func jsonLookup(root any, path string) (any, bool) {
+	cur := root
+	for _, seg := range strings.Split(path, ".") {
+		// Each segment: name, name[0], name[0][1], or just [0].
+		name := seg
+		var idxs []int
+		for {
+			open := strings.Index(name, "[")
+			if open < 0 {
+				break
+			}
+			rel := strings.Index(name[open:], "]")
+			if rel < 0 {
+				return nil, false
+			}
+			n, err := strconv.Atoi(name[open+1 : open+rel])
+			if err != nil {
+				return nil, false
+			}
+			idxs = append(idxs, n)
+			name = name[:open] + name[open+rel+1:]
+		}
+		if name != "" {
+			m, ok := cur.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			cur, ok = m[name]
+			if !ok {
+				return nil, false
+			}
+		}
+		for _, n := range idxs {
+			arr, ok := cur.([]any)
+			if !ok || n < 0 || n >= len(arr) {
+				return nil, false
+			}
+			cur = arr[n]
+		}
+	}
+	if cur == nil {
+		return nil, false
+	}
+	return cur, true
+}
+
+// stringifyJSON renders a decoded JSON value the way it would print:
+// strings raw, numbers/bools as-is, objects/arrays as compact JSON.
+func stringifyJSON(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	default:
+		b, err := json.Marshal(t)
+		if err != nil {
+			return fmt.Sprintf("%v", t)
+		}
+		return string(b)
+	}
+}
+
+// effectiveUser is whoami, typed: the effective user running the agent or
+// recipe. os/user first (getpwuid on the effective uid); $USER fallback
+// covers macOS DS-local users under CGO_ENABLED=0 builds (no /etc/passwd
+// entry); "" when neither knows — callers branch on the emptiness.
+func effectiveUser() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	return os.Getenv("USER")
 }

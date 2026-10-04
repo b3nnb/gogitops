@@ -1,6 +1,6 @@
 name: setup-ssh-access
 description: "Ensure SSH daemon is running, enabled on boot, and agent keys are installed for key-based access"
-version: "1.1.0"
+version: "1.2.0"
 labels: []  # all nodes
 
 # Params (documentation-only; the parser reads steps/labels/node_overrides —
@@ -8,19 +8,16 @@ labels: []  # all nodes
 #   key_name: SSH key to install from install/ssh/ (default: hermes-agent)
 
 steps:
-  # --- Detect OS ---
-  - name: detect-os
-    description: "Detect operating system"
-    command: "uname -s | tr '[:upper:]' '[:lower:]'"
-    parse: regex
-    pattern: "(.+)"
-
-  # --- Detect username ---
-  - name: detect-user
-    description: "Get current username for authorized_keys path"
-    command: "whoami"
-    parse: regex
-    pattern: "(.+)"
+  # --- Detect run context (typed) ---
+  # v1.2.0: detect-os + detect-user were two parse: regex steps threading the
+  # USERNAME through the positional "{{1}}" capture — which every later parse
+  # step OVERWRITES (documented capture model), so the uname step was dead
+  # weight and "{{1}}" was an opaque username across 10 security-sensitive
+  # steps. One typed system.info step: {{func.user}} is named, can't be
+  # clobbered, and arrives with os/arch/hostname for free.
+  - name: detect-context
+    description: "Run context: user (authorized_keys.d/<user>), os/arch, hostname — typed, no whoami/uname parse-chaining"
+    func: system.info
 
   # --- Ensure SSH daemon is running ---
   - name: ensure-sshd-running
@@ -51,47 +48,47 @@ steps:
   # --- Build user keys file (sshd reads authorized_keys.d/%u = username) ---
   - name: build-user-keys
     description: "Assemble all keys into ~/.ssh/authorized_keys.d/<username>"
-    command: "cat /dev/null > ~/.ssh/authorized_keys.d/.{{1}}.new"
+    command: "cat /dev/null > ~/.ssh/authorized_keys.d/.{{func.user}}.new"
     on_failure: abort
 
   - name: install-hermes-key-repo
     description: "Append hermes-agent public key from gogitops repo"
-    command: "cat {{repo}}/install/ssh/hermes-agent.pub >> ~/.ssh/authorized_keys.d/.{{1}}.new && chmod 600 ~/.ssh/authorized_keys.d/.{{1}}.new"
+    command: "cat {{repo}}/install/ssh/hermes-agent.pub >> ~/.ssh/authorized_keys.d/.{{func.user}}.new && chmod 600 ~/.ssh/authorized_keys.d/.{{func.user}}.new"
     when: "test -f {{repo}}/install/ssh/hermes-agent.pub"
     on_failure: continue
 
   - name: install-hermes-key-env
     description: "Append hermes-agent public key from GOGITOPS_SSH_PUBKEY env var"
-    command: 'echo "$GOGITOPS_SSH_PUBKEY" >> ~/.ssh/authorized_keys.d/.{{1}}.new && chmod 600 ~/.ssh/authorized_keys.d/.{{1}}.new'
+    command: 'echo "$GOGITOPS_SSH_PUBKEY" >> ~/.ssh/authorized_keys.d/.{{func.user}}.new && chmod 600 ~/.ssh/authorized_keys.d/.{{func.user}}.new'
     when: "test -n \"$GOGITOPS_SSH_PUBKEY\""
     on_failure: continue
 
   - name: install-friday-key-repo
     description: "Append friday-automation public key from gogitops repo"
-    command: "cat {{repo}}/install/ssh/friday-automation.pub >> ~/.ssh/authorized_keys.d/.{{1}}.new"
+    command: "cat {{repo}}/install/ssh/friday-automation.pub >> ~/.ssh/authorized_keys.d/.{{func.user}}.new"
     when: "test -f {{repo}}/install/ssh/friday-automation.pub"
     on_failure: continue
 
   - name: install-friday-key-env
     description: "Append friday-automation public key from GOGITOPS_SSH_PUBKEY_FRIDAY env var"
-    command: 'echo "$GOGITOPS_SSH_PUBKEY_FRIDAY" >> ~/.ssh/authorized_keys.d/.{{1}}.new'
+    command: 'echo "$GOGITOPS_SSH_PUBKEY_FRIDAY" >> ~/.ssh/authorized_keys.d/.{{func.user}}.new'
     when: "test -n \"$GOGITOPS_SSH_PUBKEY_FRIDAY\""
     on_failure: continue
 
   - name: install-named-key
     description: "Append named SSH key from gogitops repo"
-    command: "cat {{repo}}/install/ssh/{{key_name}}.pub >> ~/.ssh/authorized_keys.d/.{{1}}.new"
+    command: "cat {{repo}}/install/ssh/{{key_name}}.pub >> ~/.ssh/authorized_keys.d/.{{func.user}}.new"
     when: "test -n '{{key_name}}' && test -f {{repo}}/install/ssh/{{key_name}}.pub"
     on_failure: continue
 
   - name: commit-user-keys
     description: "Atomically install assembled keys: merge old + new (deduped). If nothing was gathered, existing authorized_keys stays untouched (lockout guard, Sep 25 '26)"
-    command: "if [ -s ~/.ssh/authorized_keys.d/.{{1}}.new ]; then cat ~/.ssh/authorized_keys.d/{{1}} ~/.ssh/authorized_keys.d/.{{1}}.new 2>/dev/null | awk '!seen[$0]++' > ~/.ssh/authorized_keys.d/.{{1}}.merged && mv ~/.ssh/authorized_keys.d/.{{1}}.merged ~/.ssh/authorized_keys.d/{{1}} && chmod 600 ~/.ssh/authorized_keys.d/{{1}} && rm -f ~/.ssh/authorized_keys.d/.{{1}}.new && echo KEYS-COMMITTED; else rm -f ~/.ssh/authorized_keys.d/.{{1}}.new; echo 'WARN: no fleet keys found - existing authorized_keys left untouched'; fi"
+    command: "if [ -s ~/.ssh/authorized_keys.d/.{{func.user}}.new ]; then cat ~/.ssh/authorized_keys.d/{{func.user}} ~/.ssh/authorized_keys.d/.{{func.user}}.new 2>/dev/null | awk '!seen[$0]++' > ~/.ssh/authorized_keys.d/.{{func.user}}.merged && mv ~/.ssh/authorized_keys.d/.{{func.user}}.merged ~/.ssh/authorized_keys.d/{{func.user}} && chmod 600 ~/.ssh/authorized_keys.d/{{func.user}} && rm -f ~/.ssh/authorized_keys.d/.{{func.user}}.new && echo KEYS-COMMITTED; else rm -f ~/.ssh/authorized_keys.d/.{{func.user}}.new; echo 'WARN: no fleet keys found - existing authorized_keys left untouched'; fi"
     on_failure: abort
 
   - name: fix-key-permissions
     description: "Ensure user keys file has correct permissions"
-    command: "chmod 600 ~/.ssh/authorized_keys.d/{{1}}"
+    command: "chmod 600 ~/.ssh/authorized_keys.d/{{func.user}}"
     on_failure: continue
 
   # --- Ensure legacy authorized_keys exists ---
@@ -137,7 +134,7 @@ steps:
   # --- Verify keys are installed ---
   - name: verify-user-keys
     description: "Confirm user keys file has content"
-    command: "test -s ~/.ssh/authorized_keys.d/{{1}}"
+    command: "test -s ~/.ssh/authorized_keys.d/{{func.user}}"
     on_failure: abort
 
   - name: verify-keys-dir

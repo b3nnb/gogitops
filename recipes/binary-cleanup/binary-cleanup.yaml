@@ -1,6 +1,6 @@
 name: binary-cleanup
 description: "Converge every gogitops binary to the ONE canonical user-mode path (~/.local/bin/gogitops): migrate daemons running from deviant paths (unit repoint + restart), de-symlink, remove shadow copies (root-owned /usr/local/bin needs sudo/pkexec), then verify PATH resolves to exactly one binary whose version matches the daemon. Never deletes the binary a running daemon uses before the daemon is migrated off it. v1.1.2: verify resolves PATH via a LOGIN shell (bash -lc) — non-interactive runners (ssh one-shots, recipe runners) lack ~/.local/bin in PATH and false-failed path-ok (found on framework, Sep 30 '26); v1.1.1: atomic mv-swap + copy-failure abort + verify WARNs fail"
-version: "1.1.0"
+version: "1.2.0"
 labels: []   # any user-mode agent node
 
 steps:
@@ -28,9 +28,19 @@ steps:
     command: 'if [ -e /usr/local/bin/gogitops ]; then if sudo -n true 2>/dev/null; then sudo -n rm /usr/local/bin/gogitops && echo removed-root-shadow-via-sudo; elif command -v pkexec >/dev/null 2>&1; then pkexec rm /usr/local/bin/gogitops && echo removed-root-shadow-via-pkexec || echo "WARN pkexec declined — root fossil remains, remove manually: sudo rm /usr/local/bin/gogitops"; else echo "WARN no sudo/pkexec — remove manually: sudo rm /usr/local/bin/gogitops"; fi; else echo no-root-shadow; fi'
     on_failure: continue
 
+  # v1.2.0: the daemon version scrape (`curl | grep -oE '"agent_version":…'`)
+  # is a typed net.json-get now — down agent yields found=false and the
+  # verify step below reports the mismatch with all its other diagnostics.
+
+  - name: read-daemon-version
+    description: "Daemon version from the agent's own /v1/health (JSON-parsed; continue on down so verify-converged still prints its full diagnostic line)"
+    func: net.json-get
+    args: url=http://127.0.0.1:7780/v1/health, key=agent_version
+    on_failure: continue
+
   - name: verify-converged
     description: "PATH must resolve to ~/.local/bin/gogitops, exactly one binary must exist across known paths, and CLI version must match the daemon"
-    command: 'W=$(bash -lc "command -v gogitops" 2>/dev/null || command -v gogitops); N=$(ls /usr/local/bin/gogitops $HOME/bin/gogitops $HOME/.local/bin/gogitops 2>/dev/null | wc -l); V=$($HOME/.local/bin/gogitops version 2>/dev/null | grep -oE "v[0-9]+\\.[0-9]+\\.[0-9]+" | tail -1); H=$(curl -s --max-time 4 http://127.0.0.1:7780/v1/health | grep -oE "\"agent_version\":\"v[0-9.]+\"" | grep -oE "v[0-9.]+"); echo "path=$W count=$N cli=$V daemon=$H"; FAIL=0; [ "$W" = "$HOME/.local/bin/gogitops" ] && echo path-ok || { echo WARN-path-resolves-elsewhere; FAIL=1; }; [ "$N" = "1" ] && echo exactly-one-binary || { echo WARN-$N-binaries-remain; FAIL=1; }; [ -n "$V" ] && [ "$V" = "$H" ] && echo version-match || { echo WARN-version-mismatch; FAIL=1; }; rm -f /tmp/gogitops-cleanup-daemon; [ $FAIL = 0 ] || exit 1'
+    command: 'W=$(bash -lc "command -v gogitops" 2>/dev/null || command -v gogitops); N=$(ls /usr/local/bin/gogitops $HOME/bin/gogitops $HOME/.local/bin/gogitops 2>/dev/null | wc -l); V=$($HOME/.local/bin/gogitops version 2>/dev/null | grep -oE "v[0-9]+\.[0-9]+\.[0-9]+" | tail -1); H="{{func.value}}"; echo "path=$W count=$N cli=$V daemon=$H"; FAIL=0; [ "$W" = "$HOME/.local/bin/gogitops" ] && echo path-ok || { echo WARN-path-resolves-elsewhere; FAIL=1; }; [ "$N" = "1" ] && echo exactly-one-binary || { echo WARN-$N-binaries-remain; FAIL=1; }; [ -n "$V" ] && [ "$V" = "$H" ] && echo version-match || { echo WARN-version-mismatch; FAIL=1; }; rm -f /tmp/gogitops-cleanup-daemon; [ $FAIL = 0 ] || exit 1'
 
   - name: darwin-note
     description: "macOS: daemon is hand-started — this recipe copies/migrates the binary, but the RUNNING daemon keeps the old path until the next manual start (launchd/cron spawns hang by design)"

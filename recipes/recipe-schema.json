@@ -15,15 +15,20 @@
       "description": "Which nodes run this recipe (empty = all). Union of every label in mesh.d/ — add new labels to mesh.d first.",
       "items": {
         "enum": [
+          "admin",
           "compute",
           "docker-host",
           "gpu",
           "hermes-host",
           "image-gen",
+          "internal-dns",
           "laptop",
           "llm-inference",
           "lora-training",
+          "magic-mirror",
+          "nas",
           "primary-compute",
+          "remote-admin",
           "trader-host"
         ],
         "type": "string"
@@ -51,6 +56,7 @@
         "enum": [
           "framework",
           "friday",
+          "magicmirror",
           "mini"
         ]
       },
@@ -121,9 +127,14 @@
           "func": {
             "description": "Native function step: run a stdlib function in-process (typed, no shell). See `gogitops functions`.",
             "enum": [
+              "net.github-asset",
+              "net.http-check",
+              "net.json-get",
               "net.port-check",
+              "net.source-ip",
               "storage.disk-free",
-              "system.info"
+              "system.info",
+              "system.which"
             ],
             "type": "string"
           },
@@ -131,15 +142,20 @@
             "description": "Step is skipped if the node has ANY of these labels.",
             "items": {
               "enum": [
+                "admin",
                 "compute",
                 "docker-host",
                 "gpu",
                 "hermes-host",
                 "image-gen",
+                "internal-dns",
                 "laptop",
                 "llm-inference",
                 "lora-training",
+                "magic-mirror",
+                "nas",
                 "primary-compute",
+                "remote-admin",
                 "trader-host"
               ],
               "type": "string"
@@ -150,15 +166,20 @@
             "description": "Node must have ALL of these labels for this step to run.",
             "items": {
               "enum": [
+                "admin",
                 "compute",
                 "docker-host",
                 "gpu",
                 "hermes-host",
                 "image-gen",
+                "internal-dns",
                 "laptop",
                 "llm-inference",
                 "lora-training",
+                "magic-mirror",
+                "nas",
                 "primary-compute",
+                "remote-admin",
                 "trader-host"
               ],
               "type": "string"

@@ -5,7 +5,7 @@ description: >
   stdlib func: step — typed outputs, {{func.*}} var passing, port-check
   up/down semantics, and the reserved-namespace rules. Run via:
   gogitops test run test-funcs (or recipe run test-funcs).
-version: 1.1.0
+version: 1.2.0
 test_module: true
 
 steps:
@@ -37,6 +37,29 @@ steps:
     description: typed identity probe, no shell uname
     func: system.info
     expect: hostname=
+
+  - name: system-info-user
+    description: the run context's effective user (authorized_keys.d/<user> addressing without whoami parse steps)
+    func: system.info
+    expect: user=
+
+  - name: source-ip-loopback
+    description: kernel-chosen source address toward loopback — typed route probe, hermetic (no network needed)
+    func: net.source-ip
+    args: host=127.0.0.1
+    expect: found=true
+
+  - name: json-get-self
+    description: extract a JSON value from the agent's own health — no grep/cut dance
+    func: net.json-get
+    args: url=http://127.0.0.1:7780/v1/health, key=hostname
+    expect: found=true
+
+  - name: json-get-down
+    description: unreachable URL is a RESULT (found=false), never an error
+    func: net.json-get
+    args: url=http://127.0.0.1:1/v1/health, key=hostname, timeout=500ms
+    expect: found=false
 
   - name: which-bash
     description: system.which PATH lookup — bash exists on every agent node

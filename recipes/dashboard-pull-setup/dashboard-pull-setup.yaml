@@ -1,6 +1,6 @@
 name: dashboard-pull-setup
-description: "Make this node's agent pull-able by the fleet dashboard/beacon (Friday :7781): bind all interfaces, register the beacon URL, fix hand-rolled units that hardcode -bind 127.0.0.1, open ufw to the dashboard node, restart, verify. macOS note: daemon is hand-started — flags apply at next start. v1.1.0: beacon verification → typed net.http-check"
-version: "1.1.0"
+description: "Make this node's agent pull-able by the fleet dashboard/beacon (Friday :7781): bind all interfaces, register the beacon URL, fix hand-rolled units that hardcode -bind 127.0.0.1, open ufw to the dashboard node, restart, verify. macOS note: daemon is hand-started — flags apply at next start. v1.1.0: beacon verification → typed net.http-check; v1.2.0: LAN-IP discovery + node-identity resolution → typed net.source-ip / net.json-get (no ip-route-grep, no curl|grep JSON scrapes)"
+version: "1.2.0"
 labels: []
 
 steps:
@@ -33,14 +33,39 @@ steps:
     os: linux
     on_failure: continue
 
+  # ── Verify (typed) ─────────────────────────────────────────────────────
+  # v1.2.0: the old verify-pullable discovered the LAN IP with
+  # `ip -4 route get 10.2.0.102 | grep -oP 'src \K[0-9.]+'` and retried
+  # curl in a shell loop. Two typed steps now: the kernel picks the source
+  # address (net.source-ip), net.http-check owns the retry loop.
+
+  - name: resolve-lan-ip
+    description: "The source IP the kernel uses to reach the beacon — the address the beacon polls back (typed UDP route probe, nothing sent)"
+    func: net.source-ip
+    args: host=10.2.0.102
+    os: linux
+
   - name: verify-pullable
     description: "Agent API must answer on the LAN IP — the address the beacon polls (retries while the freshly restarted daemon binds)"
-    command: 'IP=$(ip -4 route get 10.2.0.102 2>/dev/null | grep -oP "src \K[0-9.]+"); ok=0; for i in 1 2 3 4 5 6; do if [ -n "$IP" ] && curl -s --max-time 5 http://$IP:7780/v1/health | grep -q hostname; then ok=1; break; fi; sleep 5; done; if [ $ok = 1 ]; then echo pull-ready ip=$IP; else echo WARN-not-pullable-on-lan; exit 1; fi'
+    func: net.http-check
+    args: url=http://{{func.ip}}:7780/v1/health, contains=hostname, require=true
+    retries: 6
+    retry_delay: 5s
+    os: linux
+
+  - name: resolve-node-identity
+    description: "Fleet identity resolved by ASKING THE LOCAL AGENT (self-truth) — {{hostname}} is the SYSTEM hostname on manual runs without -hostname (benn-Laptop-…), which the beacon never lists, false-failing healthy nodes (found on framework, Sep 30 '26)"
+    func: net.json-get
+    args: url=http://127.0.0.1:7780/v1/health, key=hostname
+    expect: found=true
     os: linux
 
   - name: verify-beacon-sees-node
-    description: "Beacon status API lists this node — hostname resolved by ASKING THE LOCAL AGENT (self-truth), not the {{hostname}} template: manual runs without -hostname expand to the SYSTEM hostname (benn-Laptop-…) which the beacon never lists, false-failing healthy nodes (found on framework, Sep 30 '26)"
-    command: 'H=$(curl -s --max-time 5 http://127.0.0.1:7780/v1/health | grep -oE "\"hostname\":[^,]+" | cut -d\" -f4); if [ -z "$H" ]; then echo WARN-agent-health-unreachable; exit 1; fi; ok=0; for i in 1 2 3; do if curl -s --max-time 5 http://10.2.0.102:7781/api/status | grep -q "\"node_name\":\"$H\""; then ok=1; break; fi; sleep 5; done; if [ $ok = 1 ]; then echo beacon-sees-node $H; else echo "beacon does not list $H"; exit 1; fi'
+    description: "Beacon status API lists this node by its daemon-reported identity (retries while the beacon's 60s cache cycle fills)"
+    func: net.http-check
+    args: {"url": "http://10.2.0.102:7781/api/status", "contains": "\"node_name\":\"{{func.value}}\"", "require": "true"}
+    retries: 3
+    retry_delay: 5s
     os: linux
 
   - name: darwin-note

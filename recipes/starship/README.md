@@ -56,15 +56,17 @@ fields are ignored, translated steps run as harmless one-shot commands.
 | Splash name | `~/.config/node-nickname` (create it per node), fallback: `hostname` |
 | Mounts | auto-detected (`cifs/nfs/smbfs/sshfs/afpfs` from `mount`) |
 | GPU | `nvidia-smi` (line hidden when absent) |
-| Public/LAN/nebula IPs | `~/.cache/external_ip` / `hostname -I` or `ipconfig` / `ip addr` |
+| Public/LAN/nebula IPs | `~/.cache/external_ip` / typed `net.source-ip` func (kernel route probe) / `ip addr` |
 | Fleet failures | `~/.cache/gogitops/prompt.json` (down services only) |
 
 ## Attributes reported
 
 `os`, `arch`, `starship_before`, `starship_version`, `ascii_renderer`,
-`nickname`, `private_ip`, `public_ip`, `gpu`, `deploy_summary` — plus
+`nickname`, `public_ip`, `gpu`, `deploy_summary` — plus
 asserts: `starship installed and callable`, `starship config deployed`,
 `dashboard script syntax valid`, `dashboard renders without error`.
+(v2.3.0: the standalone `private_ip` attr became the typed
+`net.source-ip` outputs — the LAN IP still lands in `deploy_summary`.)
 
 Example summary attribute:
 
