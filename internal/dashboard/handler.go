@@ -152,6 +152,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, "/api/node/"):
 		name := strings.TrimPrefix(r.URL.Path, "/api/node/")
 		h.handleNodeAPI(w, r, name)
+	case r.URL.Path == "/tier":
+		h.handleTierMock(w, r)
 	case r.URL.Path == "/" || r.URL.Path == "/index.html":
 		h.handleDashboard(w, r)
 	default:
