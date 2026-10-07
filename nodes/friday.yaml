@@ -10,6 +10,7 @@ labels:
 - hermes-host
 - trader-host
 - gpu
+- gnome-desktop
 - stack:trader
 - stack:ctl
 - stack:curation
@@ -79,3 +80,4 @@ agent:
   git_repo: git@github.com:b3nnb/gogitops.git
   git_branch: main
   git_pull_interval: 5m
+  recipes_interval: 10m

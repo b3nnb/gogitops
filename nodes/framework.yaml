@@ -9,6 +9,7 @@ labels:
 - nas
 - admin
 - remote-admin
+- gnome-desktop
 services:
 - name: nebula
   type: systemd

@@ -2,6 +2,7 @@ name: ubuntu-2604-postupgrade
 description: "Post-upgrade repair for Ubuntu 26.04 Resolute. Fixes PEP 668 pip break-system-packages, docker group membership, gogitops daemon service re-enable + binary path, syncthing user service. Only runs on 26.04. Only runs once — creates a marker file on full success so re-runs skip."
 version: "1.0.0"
 labels: []
+auto_apply: true
 
 # One-shot mechanism: every fix step AND the marker step carry the same
 # when: condition — version is 26.04 AND marker file does not exist.
