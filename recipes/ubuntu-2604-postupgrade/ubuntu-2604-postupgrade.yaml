@@ -1,0 +1,74 @@
+name: ubuntu-2604-postupgrade
+description: "Post-upgrade repair for Ubuntu 26.04 Resolute. Fixes PEP 668 pip break-system-packages, docker group membership, gogitops daemon service re-enable + binary path, syncthing user service. Only runs on 26.04. Only runs once — creates a marker file on full success so re-runs skip."
+version: "1.0.0"
+labels: []
+
+# One-shot mechanism: every fix step AND the marker step carry the same
+# when: condition — version is 26.04 AND marker file does not exist.
+# If any step aborts, the marker is never created → re-running retries.
+# On 24.04 or older: every step skips (version gate fails).
+# On 26.04 + marker exists: every step skips (already done).
+
+steps:
+  # --- Detect Ubuntu version ---
+  - name: detect-ubuntu-version
+    description: "Check if running Ubuntu 26.04"
+    command: "lsb_release -rs 2>/dev/null || echo 0"
+    parse: regex
+    pattern: "([0-9.]+)"
+
+  # --- Check if already completed ---
+  - name: check-marker
+    description: "Check if post-upgrade fixes already applied successfully"
+    command: "test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done && echo ALREADY-DONE || echo NEEDS-FIX"
+    when: "lsb_release -rs 2>/dev/null | grep -q '^26.04'"
+    on_failure: continue
+
+  # ═══ PEP 668: pip --break-system-packages ═══
+  - name: fix-pip-break-system-packages
+    description: "Enable --break-system-packages in pip config so pip sources work on 26.04 (PEP 668 enforcement)"
+    command: "mkdir -p ~/.config/pip && if ! grep -q 'break-system-packages' ~/.config/pip/pip.conf 2>/dev/null; then printf '[global]\nbreak-system-packages = true\n' >> ~/.config/pip/pip.conf && echo PIP-FIXED; else echo PIP-ALREADY-FIXED; fi"
+    when: "lsb_release -rs 2>/dev/null | grep -q '^26.04' && ! test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done"
+    on_failure: continue
+
+  # ═══ Docker group membership ═══
+  - name: fix-docker-group
+    description: "Re-add user to docker group (26.04 may reset group membership). Verify with id."
+    command: "if ! id -nG | tr ' ' '\n' | grep -qx docker; then sudo usermod -aG docker $(whoami) && echo DOCKER-GROUP-ADDED; else echo DOCKER-GROUP-OK; fi"
+    when: "lsb_release -rs 2>/dev/null | grep -q '^26.04' && ! test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done"
+    on_failure: continue
+
+  # ═══ gogitops daemon: re-enable + fix binary path ═══
+  - name: fix-gogitops-daemon
+    description: "Re-enable gogitops daemon user service. Point ExecStart at ~/.local/bin/gogitops (not source tree)."
+    command: "UNIT=~/.config/systemd/user/gogitops-daemon.service; if [ -f \"$UNIT\" ]; then if ! grep -q '.local/bin/gogitops' \"$UNIT\"; then sed -i 's|ExecStart=.*|ExecStart='$HOME/.local/bin/gogitops' daemon|' \"$UNIT\" && echo UNIT-PATH-FIXED; fi; systemctl --user daemon-reload; systemctl --user enable gogitops-daemon.service 2>/dev/null && echo GOGITOPS-ENABLED || echo GOGITOPS-ALREADY-ENABLED; else echo GOGITOPS-NO-UNIT; fi"
+    when: "lsb_release -rs 2>/dev/null | grep -q '^26.04' && ! test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done"
+    on_failure: continue
+
+  # ═══ Syncthing user service ═══
+  - name: fix-syncthing-service
+    description: "Re-enable syncthing user service if installed"
+    command: "if command -v syncthing >/dev/null 2>&1 || test -x ~/.local/bin/syncthing; then systemctl --user enable --now syncthing.service 2>/dev/null && echo SYNCTHING-ENABLED || echo SYNCTHING-ALREADY-RUNNING; else echo SYNCTHING-NOT-INSTALLED; fi"
+    when: "lsb_release -rs 2>/dev/null | grep -q '^26.04' && ! test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done"
+    on_failure: continue
+
+  # ═══ gcr-ssh-agent: re-verify (26.04/GNOME 50 may reset SSH agent sockets) ═══
+  - name: verify-gcr-ssh-agent
+    description: "Verify GCR ssh-agent socket is still active. If not, re-enable it."
+    command: "if systemctl --user is-active gcr-ssh-agent.socket 2>/dev/null | grep -q active; then echo GCR-OK; else systemctl --user enable --now gcr-ssh-agent.socket 2>/dev/null && echo GCR-REENABLED || echo GCR-UNAVAILABLE; fi"
+    when: "lsb_release -rs 2>/dev/null | grep -q '^26.04' && ! test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done"
+    on_failure: continue
+
+  # ═══ Create success marker (only reached if no step aborted) ═══
+  - name: create-marker
+    description: "Mark post-upgrade fixes as complete. Future runs skip entirely."
+    command: "mkdir -p ~/.local/share/gogitops && date -Iseconds > ~/.local/share/gogitops/ubuntu-2604-postupgrade.done && echo POSTUPGRADE-COMPLETE"
+    when: "lsb_release -rs 2>/dev/null | grep -q '^26.04' && ! test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done"
+    expect: "POSTUPGRADE-COMPLETE"
+    on_failure: abort
+
+  # --- Summary (always runs, shows skip state on non-26.04 or already-done) ---
+  - name: report-status
+    description: "Report recipe outcome"
+    command: "if ! lsb_release -rs 2>/dev/null | grep -q '^26.04'; then echo 'SKIP: not Ubuntu 26.04'; elif test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done; then echo 'SKIP: already applied'; else echo 'ERROR: should have run but marker missing'; fi"
+    on_failure: continue
