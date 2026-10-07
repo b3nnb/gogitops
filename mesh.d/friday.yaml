@@ -15,3 +15,4 @@ peers:
         - hermes-host
         - trader-host
         - gpu
+        - gnome-desktop

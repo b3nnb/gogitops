@@ -1,0 +1,69 @@
+name: gcr-ssh-agent
+description: "Standardize SSH agent to GCR (gnome-keyring successor) on GNOME desktop nodes. Disables gpg-agent SSH socket hijack, enables gcr-ssh-agent, points .bashrc at GCR socket."
+version: "1.1.0"
+labels:
+  - gnome-desktop
+
+steps:
+  # --- Detect UID for socket path ---
+  - name: detect-uid
+    description: "Get user ID for XDG_RUNTIME_DIR socket path"
+    command: "id -u"
+    parse: regex
+    pattern: "([0-9]+)"
+
+  # --- Check gcr-ssh-agent is installed ---
+  - name: check-gcr-installed
+    description: "Verify gcr-ssh-agent binary exists"
+    command: "test -x /usr/libexec/gcr-ssh-agent || test -x /usr/lib/gcr-ssh-agent"
+    on_failure: abort
+
+  # --- Enable gcr-ssh-agent socket ---
+  - name: enable-gcr-socket
+    description: "Enable and start gcr-ssh-agent user socket"
+    command: "systemctl --user enable --now gcr-ssh-agent.socket 2>/dev/null && echo GCR-SOCKET-ENABLED || echo GCR-SOCKET-ALREADY-ENABLED"
+    on_failure: continue
+
+  # --- Disable AND mask gpg-agent SSH socket (the hijacker) ---
+  - name: disable-gpg-ssh-socket
+    description: "Disable and mask gpg-agent SSH emulation socket so it stops hijacking SSH_AUTH_SOCK on session start"
+    command: "systemctl --user disable --now gpg-agent-ssh.socket 2>/dev/null; systemctl --user mask gpg-agent-ssh.socket 2>/dev/null && echo GPG-SSH-MASKED || echo GPG-SSH-ALREADY-MASKED"
+    on_failure: continue
+
+  # --- Disable systemd ssh-agent (empty, redundant) ---
+  - name: disable-systemd-ssh-agent
+    description: "Disable systemd bare ssh-agent service (no identities, redundant with GCR)"
+    command: "systemctl --user disable --now ssh-agent.service 2>/dev/null && echo SYSTEMD-SSH-DISABLED || echo SYSTEMD-SSH-ALREADY-DISABLED"
+    on_failure: continue
+
+  # --- Update .bashrc to point at GCR socket ---
+  - name: set-bashrc-gcr-socket
+    description: "Point SSH_AUTH_SOCK in .bashrc to GCR socket path"
+    command: "GCR=/run/user/{{1}}/gcr/ssh; if grep -q 'SSH_AUTH_SOCK' ~/.bashrc; then sed -i "s|export SSH_AUTH_SOCK=.*|export SSH_AUTH_SOCK=\\\"$GCR\\\"  # GCR ssh-agent (modern GNOME)|" ~/.bashrc && echo BASHRC-UPDATED; else printf '\\nexport SSH_AUTH_SOCK="%s"  # GCR ssh-agent (modern GNOME)\\n' "$GCR" >> ~/.bashrc && echo BASHRC-APPENDED; fi"
+    on_failure: abort
+
+  # --- Also set in .profile (for non-interactive shells) ---
+  - name: set-profile-gcr-socket
+    description: "Ensure .profile also exports GCR socket (for non-interactive / login shells)"
+    command: "GCR=/run/user/{{1}}/gcr/ssh; if [ -f ~/.profile ] && grep -q 'SSH_AUTH_SOCK' ~/.profile; then sed -i "s|export SSH_AUTH_SOCK=.*|export SSH_AUTH_SOCK=\\\"$GCR\\\"  # GCR ssh-agent (modern GNOME)|" ~/.profile && echo PROFILE-UPDATED; elif [ -f ~/.profile ]; then printf '\\nexport SSH_AUTH_SOCK="%s"  # GCR ssh-agent (modern GNOME)\\n' "$GCR" >> ~/.profile && echo PROFILE-APPENDED; else echo PROFILE-SKIPPED; fi"
+    on_failure: continue
+
+  # --- Verify GCR socket exists and responds ---
+  - name: verify-gcr-socket
+    description: "Confirm GCR socket is live and has keys"
+    command: "GCR=/run/user/{{1}}/gcr/ssh; test -S "$GCR" && SSH_AUTH_SOCK=$GCR ssh-add -l 2>/dev/null | head -1 && echo GCR-VERIFIED"
+    expect: "GCR-VERIFIED"
+    on_failure: abort
+
+  # --- Verify gpg-agent SSH is masked ---
+  - name: verify-gpg-ssh-disabled
+    description: "Confirm gpg-agent SSH socket is masked (cannot start)"
+    command: "systemctl --user is-enabled gpg-agent-ssh.socket 2>/dev/null | grep -q masked && echo GPG-SSH-CONFIRMED-MASKED || echo GPG-SSH-STILL-ACTIVE"
+    expect: "GPG-SSH-CONFIRMED-MASKED"
+    on_failure: continue
+
+  # --- Report (does NOT reboot; user reboots manually) ---
+  - name: report-status
+    description: "Summary of changes. Reboot required for session to pick up new agent."
+    command: "echo 'GCR-SSH-AGENT-SETUP-COMPLETE: Reboot required for session to pick up GCR as primary SSH agent'"
+    expect: "GCR-SSH-AGENT-SETUP-COMPLETE"

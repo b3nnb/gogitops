@@ -11,3 +11,4 @@ peers:
         - nas
         - admin
         - remote-admin
+        - gnome-desktop
