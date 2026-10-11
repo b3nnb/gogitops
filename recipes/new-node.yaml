@@ -1,6 +1,6 @@
 name: new-node
-description: "Full first-time node setup — updates first, then base packages, user hygiene, SSH fleet keys, nenv, dnclient/Nebula, Docker, Caddy, firewall, CLI tools, cosmetics. v1.5: ISO-first-boot steps (password rotation + fleet-enroll.service disable) moved to recipes/iso-first-boot (labels: [iso-install]) — new-node is install-path-agnostic"
-version: "1.5.0"
+description: "Full first-time node setup — updates first, then base packages, user hygiene, SSH fleet keys, nenv, dnclient/Nebula, Docker, Caddy, firewall, CLI tools, cosmetics. v1.5: ISO-first-boot steps (password rotation + fleet-enroll.service disable) moved to recipes/iso-first-boot (labels: [iso-install]) — new-node is install-path-agnostic. v1.6: bashrc aliases → typed system.rc-line."
+version: "1.6.0"
 labels: [new-node]   # first-boot only: fresh nodes carry the new-node tag (see
               # nodes/*.yaml convention: new-node + needs-setup, flipped off in
               # git once verified enrolled). run-all skips this recipe on every
@@ -165,7 +165,8 @@ steps:
 
   - name: bashrc-aliases
     description: "Add ll and dc aliases to benn's bashrc (idempotent)"
-    command: "grep -q 'alias ll=' ~/.bashrc 2>/dev/null || printf '\nalias ll=\"ls -alF\"\nalias dc=\"docker compose\"\n' >> ~/.bashrc"
+    func: system.rc-line
+    args: 'file=~/.bashrc, marker=alias ll=, line=\nalias ll="ls -alF"\nalias dc="docker compose"\n'
     on_failure: continue
 
   # ── 8. Done ──

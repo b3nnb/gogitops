@@ -1,19 +1,19 @@
 name: starship-terminal-setup
 description: "Install Starship prompt + Friday login splash on any node — idempotent, self-reporting"
-version: "2.2.0"
+version: "2.3.0"
 labels: []
 
-steps:
-  # ── Environment (reported as attributes) ─────────────────────────────
-  - name: detect-os
-    description: "Record operating system"
-    command: "uname -s | tr '[:upper:]' '[:lower:]'"
-    set_attr: os
+# v2.3.0 (fleet function-library scan, Oct 11 '26): platform detect → typed
+# system.info, the 8× "grep -q … || printf … >>" rc-file edits → typed
+# system.rc-line, the LAN IP probe → typed net.lan-ip. The printf/awk
+# quoting landmines are gone; rc appends are idempotent by construction.
 
-  - name: detect-arch
-    description: "Record CPU architecture"
-    command: "uname -m"
-    set_attr: arch
+steps:
+  # ── Environment (typed — no shell) ────────────────────────────────────
+  - name: detect-platform
+    description: "Typed platform context — os/arch arrive normalized for fleet branching"
+    func: system.info
+    on_failure: continue
 
   # ── Create directories first (starship installer needs its bin dir) ───
   - name: create-dirs
@@ -36,13 +36,15 @@ steps:
 
   - name: ensure-path-bash
     description: "Ensure ~/.local/bin is on PATH in .bashrc"
-    command: "grep -q '.local/bin' $HOME/.bashrc 2>/dev/null || printf '\nexport PATH=\"$HOME/.local/bin:$PATH\"\n' >> $HOME/.bashrc"
+    func: system.rc-line
+    args: 'file=~/.bashrc, marker=.local/bin, line=\nexport PATH="$HOME/.local/bin:$PATH"\n'
     when: "test -f $HOME/.bashrc 2>/dev/null || echo $SHELL | grep -q bash"
     on_failure: continue
 
   - name: ensure-path-zsh
     description: "Ensure ~/.local/bin is on PATH in .zshrc"
-    command: "grep -q '.local/bin' $HOME/.zshrc 2>/dev/null || printf '\nexport PATH=\"$HOME/.local/bin:$PATH\"\n' >> $HOME/.zshrc"
+    func: system.rc-line
+    args: 'file=~/.zshrc, marker=.local/bin, line=\nexport PATH="$HOME/.local/bin:$PATH"\n'
     when: "test -f $HOME/.zshrc || echo $SHELL | grep -q zsh"
     on_failure: continue
 
@@ -80,32 +82,44 @@ steps:
   # ── Shell init (idempotent — greps before appending) ──────────────────
   - name: init-starship-bash
     description: "Add starship init to .bashrc if missing"
-    command: "grep -q 'starship init' $HOME/.bashrc 2>/dev/null || printf 'eval \"$(starship init bash)\"\n' >> $HOME/.bashrc"
+    func: system.rc-line
+    args: 'file=~/.bashrc, marker=starship init, line=eval "$(starship init bash)"\n'
     when: "test -f $HOME/.bashrc 2>/dev/null || echo $SHELL | grep -q bash"
     on_failure: continue
 
   - name: init-starship-zsh
     description: "Add starship init to .zshrc if missing"
-    command: "grep -q 'starship init zsh' $HOME/.zshrc 2>/dev/null || printf '\neval \"$(starship init zsh)\"\n' >> $HOME/.zshrc"
+    func: system.rc-line
+    args: 'file=~/.zshrc, marker=starship init zsh, line=\neval "$(starship init zsh)"\n'
     when: "test -f $HOME/.zshrc || echo $SHELL | grep -q zsh"
     on_failure: continue
 
   - name: init-dashboard-hook-bash
     description: "Add first-shell dashboard splash + alias to .bashrc if missing"
-    command: "grep -q 'bin/dashboard' $HOME/.bashrc 2>/dev/null || printf '\n# Login dashboard (first shell only) + alias to re-show\nif [ -z \"$GOGITOPS_DASHBOARD_SHOWN\" ]; then\n    export GOGITOPS_DASHBOARD_SHOWN=1\n    $HOME/bin/dashboard\nfi\n' >> $HOME/.bashrc"
+    func: system.rc-line
+    args: 'file=~/.bashrc, marker=bin/dashboard, line=\n# Login dashboard (first shell only) + alias to re-show\nif [ -z "$GOGITOPS_DASHBOARD_SHOWN" ]; then\n    export GOGITOPS_DASHBOARD_SHOWN=1\n    $HOME/bin/dashboard\nfi\n'
     when: "test -f $HOME/.bashrc 2>/dev/null || echo $SHELL | grep -q bash"
     on_failure: continue
 
   - name: init-dashboard-hook-zsh
-    description: "Add first-shell dashboard splash + alias to .zshrc if missing"
-    command: "grep -q 'bin/dashboard' $HOME/.zshrc 2>/dev/null || printf '\n# Login dashboard (first shell only) + alias to re-show\nif [ -z \"$GOGITOPS_DASHBOARD_SHOWN\" ]; then\n    export GOGITOPS_DASHBOARD_SHOWN=1\n    $HOME/bin/dashboard\nfi\n' >> $HOME/.zshrc && (grep -q 'alias dashboard=' $HOME/.zshrc 2>/dev/null || printf 'alias dashboard=\"$HOME/bin/dashboard\"\n' >> $HOME/.zshrc)"
+    description: "Add first-shell dashboard splash to .zshrc if missing (alias split into its own step, mirroring the bash side)"
+    func: system.rc-line
+    args: 'file=~/.zshrc, marker=bin/dashboard, line=\n# Login dashboard (first shell only) + alias to re-show\nif [ -z "$GOGITOPS_DASHBOARD_SHOWN" ]; then\n    export GOGITOPS_DASHBOARD_SHOWN=1\n    $HOME/bin/dashboard\nfi\n'
     when: "test -f $HOME/.zshrc || echo $SHELL | grep -q zsh"
     on_failure: continue
 
   - name: init-dashboard-alias-bash
     description: "Add dashboard alias to .bashrc if missing"
-    command: "grep -q 'alias dashboard=' $HOME/.bashrc 2>/dev/null || printf 'alias dashboard=\"$HOME/bin/dashboard\"\n' >> $HOME/.bashrc"
+    func: system.rc-line
+    args: 'file=~/.bashrc, marker=alias dashboard=, line=alias dashboard="$HOME/bin/dashboard"\n'
     when: "test -f $HOME/.bashrc 2>/dev/null || echo $SHELL | grep -q bash"
+    on_failure: continue
+
+  - name: init-dashboard-alias-zsh
+    description: "Add dashboard alias to .zshrc if missing"
+    func: system.rc-line
+    args: 'file=~/.zshrc, marker=alias dashboard=, line=alias dashboard="$HOME/bin/dashboard"\n'
+    when: "test -f $HOME/.zshrc || echo $SHELL | grep -q zsh"
     on_failure: continue
 
   # ── External IP cache (for the splash) ────────────────────────────────
@@ -151,8 +165,8 @@ steps:
     set_attr: nickname
 
   - name: report-private-ip
-    description: "Report LAN IP"
-    command: "ip=$(hostname -I 2>/dev/null || ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr $(route -n get default 2>/dev/null | awk '/interface/{print $2}') 2>/dev/null); [[ -n $ip ]] && echo $ip | awk '{print $1}' || echo unknown"
+    description: "Report LAN IP (typed — net.lan-ip replaces the hostname -I / ipconfig / route dance)"
+    func: net.lan-ip
     set_attr: private_ip
 
   - name: report-public-ip
@@ -167,5 +181,5 @@ steps:
 
   - name: deploy-summary
     description: "Compile the full deployment report as one attribute"
-    command: "echo starship={{attr.starship_version}} splash={{attr.nickname}} gpu={{attr.gpu}} lan={{attr.private_ip}} wan={{attr.public_ip}} ascii={{attr.ascii_renderer}}"
+    command: "echo starship={{attr.starship_version}} splash={{attr.nickname}} gpu={{attr.gpu}} lan={{func.ip}} wan={{attr.public_ip}} ascii={{attr.ascii_renderer}}"
     set_attr: deploy_summary

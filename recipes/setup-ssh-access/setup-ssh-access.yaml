@@ -1,6 +1,6 @@
 name: setup-ssh-access
 description: "Ensure SSH daemon is running, enabled on boot, and agent keys are installed for key-based access"
-version: "1.1.0"
+version: "1.2.0"
 labels: []  # all nodes
 
 # Params (documentation-only; the parser reads steps/labels/node_overrides —
@@ -8,12 +8,11 @@ labels: []  # all nodes
 #   key_name: SSH key to install from install/ssh/ (default: hermes-agent)
 
 steps:
-  # --- Detect OS ---
+  # --- Detect OS (typed — v1.2.0; the {{1}} capture was dead: overwritten
+  #     by detect-user before any consumer) ---
   - name: detect-os
-    description: "Detect operating system"
-    command: "uname -s | tr '[:upper:]' '[:lower:]'"
-    parse: regex
-    pattern: "(.+)"
+    description: "Typed platform context"
+    func: system.info
 
   # --- Detect username ---
   - name: detect-user
