@@ -1,6 +1,9 @@
 name: obsidian-vault
 description: "Ensure Obsidian is installed on admin nodes; pre-configure the remote vault connection on remote-admin nodes (non-Friday devices only — Friday hosts the vault natively)"
-version: "1.6.0"
+version: "1.7.0"
+# v1.7.0 (fleet function-library scan, Oct 11 '26): the uname platform dance
+#         (detect-os + detect-arch, 2 shell steps) → typed system.info;
+#         deploy-summary reads {{func.os}}.
 # v1.6.0: brew cask + deb URL resolution moved to typed stdlib funcs
 #         (system.which, net.github-asset) — the inline BREW=$(...) shell was
 #         escaping-corrupted (exit 127 on every mac); the deb scrape is now
@@ -14,16 +17,11 @@ labels: [admin]
 #                  Friday is excluded on purpose: the canonical vault lives there.
 
 steps:
-  # ── Environment ────────────────────────────────────────────────────────
-  - name: detect-os
-    description: "Record operating system"
-    command: "uname -s | tr '[:upper:]' '[:lower:]'"
-    set_attr: os
-
-  - name: detect-arch
-    description: "Record CPU architecture"
-    command: "uname -m"
-    set_attr: arch
+  # ── Environment (typed — no shell) ────────────────────────────────────
+  - name: detect-platform
+    description: "Typed platform context — os/arch arrive normalized for fleet branching"
+    func: system.info
+    on_failure: continue
 
   - name: detect-obsidian-before
     description: "Check whether Obsidian is already present in any install form"
@@ -158,5 +156,5 @@ steps:
 
   - name: deploy-summary
     description: "Compile the full deployment report as one attribute"
-    command: "echo 'os={{attr.os}} obsidian={{attr.obsidian_after}} role={{attr.vault_role}} syncthing={{attr.syncthing_state}}'"
+    command: "echo 'os={{func.os}} obsidian={{attr.obsidian_after}} role={{attr.vault_role}} syncthing={{attr.syncthing_state}}'"
     set_attr: deploy_summary

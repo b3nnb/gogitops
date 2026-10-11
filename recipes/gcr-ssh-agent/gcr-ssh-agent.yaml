@@ -1,6 +1,6 @@
 name: gcr-ssh-agent
-description: "Standardize SSH agent to GCR (gnome-keyring successor) on GNOME desktop nodes. Disables gpg-agent SSH socket hijack, enables gcr-ssh-agent, points .bashrc at GCR socket."
-version: "1.1.0"
+description: "Standardize SSH agent to GCR (gnome-keyring successor) on GNOME desktop nodes. Disables gpg-agent SSH socket hijack, enables gcr-ssh-agent, points .bashrc at GCR socket. v1.2.0: the SSH_AUTH_SOCK rc upserts → typed system.rc-export."
+version: "1.2.0"
 labels:
   - gnome-desktop
 auto_apply: true
@@ -37,16 +37,21 @@ steps:
     command: "systemctl --user disable --now ssh-agent.service 2>/dev/null && echo SYSTEMD-SSH-DISABLED || echo SYSTEMD-SSH-ALREADY-DISABLED"
     on_failure: continue
 
-  # --- Update .bashrc to point at GCR socket ---
+  # --- Point SSH_AUTH_SOCK at GCR (typed upsert — v1.2.0: the
+  #     quadruple-escaped sed was the most corruption-prone command in the
+  #     fleet; the function owns the update-or-append logic now) ---
   - name: set-bashrc-gcr-socket
-    description: "Point SSH_AUTH_SOCK in .bashrc to GCR socket path"
-    command: "GCR=/run/user/{{1}}/gcr/ssh; if grep -q 'SSH_AUTH_SOCK' ~/.bashrc; then sed -i "s|export SSH_AUTH_SOCK=.*|export SSH_AUTH_SOCK=\\\"$GCR\\\"  # GCR ssh-agent (modern GNOME)|" ~/.bashrc && echo BASHRC-UPDATED; else printf '\\nexport SSH_AUTH_SOCK="%s"  # GCR ssh-agent (modern GNOME)\\n' "$GCR" >> ~/.bashrc && echo BASHRC-APPENDED; fi"
+    description: "Point SSH_AUTH_SOCK in .bashrc to GCR socket path (upsert: rewrites an existing export line in place, appends when missing)"
+    func: system.rc-export
+    args: 'file=~/.bashrc, var=SSH_AUTH_SOCK, value=/run/user/{{1}}/gcr/ssh, comment=GCR ssh-agent (modern GNOME)'
     on_failure: abort
 
   # --- Also set in .profile (for non-interactive shells) ---
   - name: set-profile-gcr-socket
     description: "Ensure .profile also exports GCR socket (for non-interactive / login shells)"
-    command: "GCR=/run/user/{{1}}/gcr/ssh; if [ -f ~/.profile ] && grep -q 'SSH_AUTH_SOCK' ~/.profile; then sed -i "s|export SSH_AUTH_SOCK=.*|export SSH_AUTH_SOCK=\\\"$GCR\\\"  # GCR ssh-agent (modern GNOME)|" ~/.profile && echo PROFILE-UPDATED; elif [ -f ~/.profile ]; then printf '\\nexport SSH_AUTH_SOCK="%s"  # GCR ssh-agent (modern GNOME)\\n' "$GCR" >> ~/.profile && echo PROFILE-APPENDED; else echo PROFILE-SKIPPED; fi"
+    func: system.rc-export
+    args: 'file=~/.profile, var=SSH_AUTH_SOCK, value=/run/user/{{1}}/gcr/ssh, comment=GCR ssh-agent (modern GNOME)'
+    when: "test -f $HOME/.profile"
     on_failure: continue
 
   # --- Verify GCR socket exists and responds ---

@@ -35,8 +35,12 @@ steps:
 | `net.port-check` | TCP connect check: `up`, `latency_ms`, `error` (`host=`, `port=`, `timeout=`) |
 | `net.http-check` | HTTP GET check: `up`, `status`, `latency_ms`, `matched` (`url=`, `contains=`, `require=`) — replaces curl\|grep wait-loops |
 | `net.github-asset` | Release asset URL from the GitHub API, JSON-parsed (`repo=`, `match=`, `walk=`) — replaces grep-of-JSON scrapes |
+| `net.lan-ip` | This node's primary LAN/outbound IPv4, cross-platform (`toward=` resolves per-destination on multi-homed nodes) — replaces `hostname -I`/`ip route get`/`ipconfig` fallback dances |
 | `system.info` | hostname/os/arch, typed — branching without `uname` |
 | `system.which` | Command lookup: PATH first, then explicit candidates (`name=`, `candidates=`) — replaces `command -v` + fallback dances |
+| `system.rc-line` | Idempotent rc-file line append: `file=`, `marker=`, `line=` (printf-style `\n`) — replaces the grep-`||`-printf quoting dances |
+| `system.rc-export` | Upsert `export VAR="value"` in an rc file: rewrites existing export lines in place, appends when missing (`file=`, `var=`, `value=`, `comment=`) — replaces escaped `sed -i` upserts |
+| `system.login-trigger` | Run a command at every login: oneshot systemd user unit (Linux) / RunAtLoad LaunchAgent (macOS), written + armed (`name=`, `command=`) — replaces hand-printed unit/plist scaffolds |
 
 Args containing commas (like `candidates=a,b`) must use the JSON args form: `args: {"name": "brew", "candidates": "/opt/homebrew/bin/brew,/usr/local/bin/brew"}`.
 
