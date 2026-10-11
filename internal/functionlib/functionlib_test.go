@@ -16,7 +16,9 @@ import (
 func TestRegistryHasStdlib(t *testing.T) {
 	for _, want := range []string{
 		"net.port-check", "net.http-check", "net.github-asset",
-		"system.info", "system.which", "storage.disk-free",
+		"net.lan-ip", "system.info", "system.which",
+		"system.rc-line", "system.rc-export", "system.login-trigger",
+		"storage.disk-free",
 	} {
 		if _, ok := Get(want); !ok {
 			t.Errorf("stdlib function missing: %s (have: %v)", want, names())

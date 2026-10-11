@@ -70,6 +70,18 @@ func init() {
 		Run: githubAsset,
 	})
 
+	// net.lan-ip — this node's primary LAN IPv4, typed. Replaces the
+	// per-recipe `hostname -I | awk` / `ip route get … | grep -oP 'src \K'`
+	// dances (multi-homed nodes resolve per-destination via toward=).
+	Register(Function{
+		Name:        "net.lan-ip",
+		Description: "Primary LAN/outbound IPv4 of this node. Linux: source IP of the route toward toward= (default route when unset), then `hostname -I` first token; macOS: ipconfig getifaddr en0, then the default-route interface. found=false is a result, not an error.",
+		Params: []Param{
+			{Name: "toward", Type: "string", Description: "Destination IP to resolve the outbound source address for (e.g. the beacon) — matters on multi-homed nodes"},
+		},
+		Run: lanIP,
+	})
+
 	// system.which — command lookup with explicit-path fallbacks. Kills the
 	// launchd/cron PATH problem (brew) and the YAML-escaping quoting hell
 	// the inline BREW=$(...) dances dragged around. Not-found is a result.
@@ -356,4 +368,119 @@ func isExecutableFile(p string) bool {
 		return false
 	}
 	return info.Mode().Perm()&0111 != 0
+}
+
+// ── net.lan-ip ──────────────────────────────────────────────────────────────
+
+func lanIP(ctx Context, args map[string]any) (map[string]any, error) {
+	toward, _ := args["toward"].(string)
+	var ip, source string
+	switch ctx.OS {
+	case "darwin":
+		// Mirror the shell originals: en0 first, then the interface that
+		// owns the default route (docks can move the default off en0).
+		if ip = ipconfigIfAddr("en0"); ip != "" {
+			source = "ipconfig:en0"
+		} else if iface := darwinRouteIface("default"); iface != "" {
+			if ip = ipconfigIfAddr(iface); ip != "" {
+				source = "ipconfig:" + iface
+			}
+		}
+		if ip == "" && toward != "" {
+			if iface := darwinRouteIface(toward); iface != "" {
+				if ip = ipconfigIfAddr(iface); ip != "" {
+					source = "ipconfig:" + iface
+				}
+			}
+		}
+	default:
+		// toward= first: the source address for THAT destination is what
+		// the beacon actually polls (multi-homed nodes). Route lookups are
+		// FIB queries — no packet is sent, works offline.
+		if toward != "" {
+			if src := linuxRouteSrc(toward); src != "" {
+				ip, source = src, "route-get:"+toward
+			}
+		}
+		if ip == "" {
+			if t := firstField(runOut("hostname", "-I")); t != "" {
+				ip, source = t, "hostname-I"
+			}
+		}
+		if ip == "" {
+			if src := linuxRouteSrc("default"); src != "" {
+				ip, source = src, "route-get:default"
+			}
+		}
+	}
+	if ip == "" {
+		return map[string]any{
+			"found":  false,
+			"ip":     "",
+			"source": "none",
+			"math":   fmt.Sprintf("no LAN IPv4 resolved (os=%s, toward=%s)", ctx.OS, toward),
+		}, nil
+	}
+	return map[string]any{
+		"found":  true,
+		"ip":     ip,
+		"source": source,
+		"math":   fmt.Sprintf("LAN IPv4 %s via %s (os=%s)", ip, source, ctx.OS),
+	}, nil
+}
+
+// runOut runs a command and returns trimmed stdout ("" on any error — probe
+// helpers treat missing binaries / nonzero exits as "no answer").
+func runOut(name string, a ...string) string {
+	b, err := exec.Command(name, a...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// firstField returns the first whitespace-separated token.
+func firstField(s string) string {
+	if f := strings.Fields(s); len(f) > 0 {
+		return f[0]
+	}
+	return ""
+}
+
+// linuxRouteSrc extracts the `src` address from `ip -4 route get <dest>`.
+func linuxRouteSrc(dest string) string {
+	return srcFromRoute(runOut("ip", "-4", "route", "get", dest))
+}
+
+// srcFromRoute parses `… src 10.2.0.102 …` — pure, table-tested.
+func srcFromRoute(output string) string {
+	fields := strings.Fields(output)
+	for i, f := range fields {
+		if f == "src" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
+// darwinRouteIface parses `interface: en0` from `route -n get <dest>`.
+func darwinRouteIface(dest string) string {
+	return ifaceFromRoute(runOut("route", "-n", "get", dest))
+}
+
+// ifaceFromRoute is the pure parser behind darwinRouteIface.
+func ifaceFromRoute(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "interface:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "interface:"))
+		}
+	}
+	return ""
+}
+
+// ipconfigIfAddr wraps `ipconfig getifaddr <iface>` (darwin-only tool; on
+// other OSes the exec fails → "").
+func ipconfigIfAddr(iface string) string {
+	return runOut("ipconfig", "getifaddr", iface)
 }
