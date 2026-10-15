@@ -1,13 +1,14 @@
 name: agent-binary-bootstrap
-description: "One-time rescue for agents stranded on an old binary at a non-writable path (/usr/local/bin — v0.7.22 wednesday, BCR-73): fetch the latest release from the git binaries branch, install it to ~/.local/bin/gogitops, repoint the launcher unit, and restart the daemon. No-op once /v1/health reports hardware specs (v0.7.29+). Never touches nodes that already report specs."
-version: "1.0.0"
+description: "One-time rescue for agents stranded on an old binary at a non-writable path (/usr/local/bin — v0.7.22 wednesday, BCR-73): fetch the latest release from the git binaries branch, install it to ~/.local/bin/gogitops, repoint the launcher unit, and restart the daemon. No-op once /v1/health reports hardware specs (v0.7.29+). Never touches nodes that already report specs. v1.0.1: skip-check → typed net.http-check (same endpoint/pattern as wait-and-verify; a down check still passes — convergence records ok either way, exactly like the old curl|grep that exited 0 both ways)"
+version: "1.0.1"
 labels: [new-node]   # only wednesday carries this tag
 auto_apply: true
 
 steps:
   - name: skip-if-current
-    description: "Nodes already reporting hardware specs (v0.7.29+) are done — exit 0 so convergence records ok"
-    command: 'curl -s -m 5 http://127.0.0.1:7780/v1/health | grep -q "\"hardware\"" && { echo "already-current — no bootstrap needed"; exit 0; }; echo "bootstrap needed"; exit 0'
+    description: "Nodes already reporting hardware specs (v0.7.29+) are done — a down/matching check still passes so convergence records ok"
+    func: net.http-check
+    args: {"url": "http://127.0.0.1:7780/v1/health", "contains": "\"hardware\"", "timeout": "5s"}
 
   - name: fetch-latest-binary
     description: "Pull the latest linux binary for this arch off the git binaries branch into ~/.local/bin"
