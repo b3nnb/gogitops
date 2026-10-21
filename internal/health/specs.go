@@ -196,7 +196,13 @@ func linuxBoard() string {
 func collectDarwin() HardwareSpecs {
 	var hw HardwareSpecs
 
-	if out, err := runTimed(3*time.Second, "sysctl", "-n", "machdep.cpu.brand_string"); err == nil {
+	// On macOS, sysctl/system_profiler/diskutil live in /usr/sbin — NOT in the
+	// minimal PATH that launchd gives daemons (typically /usr/bin:/bin). Bare
+	// command names silently fail with "executable not found", yielding an
+	// empty hardware inventory. Absolute paths fix this universally.
+	const sysctl = "/usr/sbin/sysctl"
+
+	if out, err := runTimed(3*time.Second, sysctl, "-n", "machdep.cpu.brand_string"); err == nil {
 		hw.CPU = strings.TrimSpace(out)
 	}
 	if hw.CPU == "" {
@@ -204,15 +210,22 @@ func collectDarwin() HardwareSpecs {
 		// system_profiler instead (collected below when it's fast enough).
 		hw.CPU = darwinChip()
 	}
-	if out, err := runTimed(3*time.Second, "sysctl", "-n", "hw.ncpu"); err == nil {
+	if out, err := runTimed(3*time.Second, sysctl, "-n", "hw.ncpu"); err == nil {
 		hw.CPUCores, _ = strconv.Atoi(strings.TrimSpace(out))
 	}
-	if out, err := runTimed(3*time.Second, "sysctl", "-n", "hw.memsize"); err == nil {
+	if out, err := runTimed(3*time.Second, sysctl, "-n", "hw.memsize"); err == nil {
 		if bytes, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64); err == nil {
 			hw.RAMGB = gbFromBytes(bytes)
 		}
 	}
 	hw.GPUs = darwinGPUs()
+	// Apple Silicon fallback: the GPU is the SoC itself. If system_profiler
+	// timed out (common on headless/SSH-launched daemons — SPDisplaysDataType
+	// can take 20s+ on an M4 Pro), derive the GPU from the chip name so the
+	// dashboard card isn't blank. The SoC GPU shares the chip's name.
+	if len(hw.GPUs) == 0 && strings.HasPrefix(hw.CPU, "Apple M") {
+		hw.GPUs = []GPUInfo{{Model: hw.CPU}}
+	}
 	hw.Motherboard = darwinModel()
 	hw.Disks = darwinDisks()
 
@@ -220,7 +233,7 @@ func collectDarwin() HardwareSpecs {
 }
 
 func darwinChip() string {
-	out, err := runTimed(8*time.Second, "system_profiler", "SPHardwareDataType")
+	out, err := runTimed(8*time.Second, "/usr/sbin/system_profiler", "SPHardwareDataType")
 	if err != nil {
 		return ""
 	}
@@ -228,7 +241,7 @@ func darwinChip() string {
 }
 
 func darwinGPUs() []GPUInfo {
-	out, err := runTimed(8*time.Second, "system_profiler", "SPDisplaysDataType")
+	out, err := runTimed(8*time.Second, "/usr/sbin/system_profiler", "SPDisplaysDataType")
 	if err != nil {
 		return nil
 	}
@@ -236,7 +249,7 @@ func darwinGPUs() []GPUInfo {
 }
 
 func darwinModel() string {
-	out, err := runTimed(3*time.Second, "sysctl", "-n", "hw.model")
+	out, err := runTimed(3*time.Second, "/usr/sbin/sysctl", "-n", "hw.model")
 	if err != nil {
 		return ""
 	}
@@ -245,7 +258,7 @@ func darwinModel() string {
 
 // darwinDisks reports the root physical volume via diskutil (best-effort).
 func darwinDisks() []DiskInfo {
-	out, err := runTimed(5*time.Second, "diskutil", "info", "/")
+	out, err := runTimed(5*time.Second, "/usr/sbin/diskutil", "info", "/")
 	if err != nil {
 		return nil
 	}
