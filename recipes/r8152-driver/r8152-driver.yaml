@@ -1,0 +1,13 @@
+name: r8152-driver
+description: "Install Realtek r8152 DKMS driver for USB 10GbE adapters (RTL8156/RTL8153). Downloads the .deb from GitHub, installs dkms + build deps, builds the module for the current kernel. After install, plug in the USB 10G adapter and run 'sudo modprobe -r r8152 && sudo modprobe r8152' to activate."
+version: "1.0.0"
+labels:
+  - laptop
+auto_apply: true
+
+steps:
+  - name: install-driver
+    description: "Install r8152 DKMS driver — idempotent (skips if already built for current kernel)"
+    os: linux
+    script: install-r8152.sh
+    on_failure: abort
