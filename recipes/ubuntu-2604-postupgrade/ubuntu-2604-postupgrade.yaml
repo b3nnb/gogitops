@@ -1,6 +1,6 @@
 name: ubuntu-2604-postupgrade
 description: "Post-upgrade repair for Ubuntu 26.04 Resolute. Fixes PEP 668 pip break-system-packages, docker group membership, gogitops daemon service re-enable + binary path, syncthing user service. Only runs on 26.04. Only runs once — creates a marker file on full success so re-runs skip."
-version: "1.0.0"
+version: "1.1.0"
 labels: []
 auto_apply: true
 
@@ -9,14 +9,19 @@ auto_apply: true
 # If any step aborts, the marker is never created → re-running retries.
 # On 24.04 or older: every step skips (version gate fails).
 # On 26.04 + marker exists: every step skips (already done).
+#
+# v1.1.0 (fleet function-library scan, Oct 18 '26): the platform gate
+# became one typed step (system.file-state reads /etc/os-release, no
+# grep -oE). fix-docker-group stays shell on purpose — a group-membership
+# fix is not a package install. Fix steps keep their original when: guards.
 
 steps:
-  # --- Detect Ubuntu version ---
+  # --- Detect Ubuntu version (typed — feeds when_attr gates) ---
   - name: detect-ubuntu-version
-    description: "Check if running Ubuntu 26.04"
-    command: "lsb_release -rs 2>/dev/null || echo 0"
-    parse: regex
-    pattern: "([0-9.]+)"
+    description: "Extract the VERSION_ID from /etc/os-release into an attribute"
+    func: system.file-state
+    args: {"path": "/etc/os-release", "version": "true"}
+    set_attr: os_version
 
   # --- Check if already completed ---
   - name: check-marker
@@ -28,14 +33,16 @@ steps:
   # ═══ PEP 668: pip --break-system-packages ═══
   - name: fix-pip-break-system-packages
     description: "Enable --break-system-packages in pip config so pip sources work on 26.04 (PEP 668 enforcement)"
-    command: "mkdir -p ~/.config/pip && if ! grep -q 'break-system-packages' ~/.config/pip/pip.conf 2>/dev/null; then printf '[global]\nbreak-system-packages = true\n' >> ~/.config/pip/pip.conf && echo PIP-FIXED; else echo PIP-ALREADY-FIXED; fi"
+    command: "mkdir -p ~/.config/pip && if ! grep -q 'break-system-packages' ~/.config/pip/pip.conf 2>/dev/null; then printf '[global]\\nbreak-system-packages = true\\n' >> ~/.config/pip/pip.conf && echo PIP-FIXED; else echo PIP-ALREADY-FIXED; fi"
     when: "lsb_release -rs 2>/dev/null | grep -q '^26.04' && ! test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done"
     on_failure: continue
 
-  # ═══ Docker group membership ═══
+  # ═══ Docker group membership (unchanged — a group-membership fix is not
+  #     a package install; promoting it would need a user-group function,
+  #     not a repurpose of apt-install) ═══
   - name: fix-docker-group
     description: "Re-add user to docker group (26.04 may reset group membership). Verify with id."
-    command: "if ! id -nG | tr ' ' '\n' | grep -qx docker; then sudo usermod -aG docker $(whoami) && echo DOCKER-GROUP-ADDED; else echo DOCKER-GROUP-OK; fi"
+    command: "if ! id -nG | tr ' ' '\\n' | grep -qx docker; then sudo usermod -aG docker $(whoami) && echo DOCKER-GROUP-ADDED; else echo DOCKER-GROUP-OK; fi"
     when: "lsb_release -rs 2>/dev/null | grep -q '^26.04' && ! test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done"
     on_failure: continue
 
@@ -60,11 +67,24 @@ steps:
     when: "lsb_release -rs 2>/dev/null | grep -q '^26.04' && ! test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done"
     on_failure: continue
 
+  # --- Typed probe ahead of the marker step: state in outputs, not stdout ---
+  - name: probe-marker
+    description: "Marker-file state as typed outputs (feeds create-marker's when_attr; pre-marker = exists=false)"
+    func: system.file-state
+    args: {"path": "~/.local/share/gogitops/ubuntu-2604-postupgrade.done"}
+    when: "lsb_release -rs 2>/dev/null | grep -q '^26.04'"
+    set_attr: marker_before
+    on_failure: continue
+
   # ═══ Create success marker (only reached if no step aborted) ═══
+  # when: carries the version gate only — the marker-file check became
+  # a typed when_attr on the probe-marker output (single-condition
+  # when_attr can't AND two gates, so the file state moved to when_attr).
   - name: create-marker
     description: "Mark post-upgrade fixes as complete. Future runs skip entirely."
     command: "mkdir -p ~/.local/share/gogitops && date -Iseconds > ~/.local/share/gogitops/ubuntu-2604-postupgrade.done && echo POSTUPGRADE-COMPLETE"
-    when: "lsb_release -rs 2>/dev/null | grep -q '^26.04' && ! test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done"
+    when: "lsb_release -rs 2>/dev/null | grep -q '^26.04'"
+    when_attr: "attr.marker_before.exists == false"
     expect: "POSTUPGRADE-COMPLETE"
     on_failure: abort
 

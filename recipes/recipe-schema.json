@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
-  "description": "Declarative operational procedure. Emitted by `gogitops recipe schema` \u2014 regenerate after agent updates: gogitops recipe schema -repo . -out recipes/recipe-schema.json",
+  "description": "Declarative operational procedure. Emitted by `gogitops recipe schema` — regenerate after agent updates: gogitops recipe schema -repo . -out recipes/recipe-schema.json",
   "properties": {
     "auto_apply": {
       "description": "Daemon convergence (recipes_interval): only recipes with auto_apply: true are applied by the agent's auto-apply loop. Manual recipe run / run-all is unaffected. Default false.",
@@ -12,19 +12,24 @@
       "type": "string"
     },
     "labels": {
-      "description": "Which nodes run this recipe (empty = all). Union of every label in mesh.d/ \u2014 add new labels to mesh.d first.",
+      "description": "Which nodes run this recipe (empty = all). Union of every label in mesh.d/ — add new labels to mesh.d first.",
       "items": {
         "enum": [
+          "admin",
           "compute",
           "docker-host",
           "gnome-desktop",
           "gpu",
           "hermes-host",
           "image-gen",
+          "internal-dns",
           "laptop",
           "llm-inference",
           "lora-training",
+          "magic-mirror",
+          "nas",
           "primary-compute",
+          "remote-admin",
           "trader-host"
         ],
         "type": "string"
@@ -32,16 +37,16 @@
       "type": "array"
     },
     "name": {
-      "description": "Recipe identifier \u2014 should match the directory and file name.",
+      "description": "Recipe identifier — should match the directory and file name.",
       "type": "string"
     },
     "node_overrides": {
       "additionalProperties": {
         "additionalProperties": false,
-        "description": "Per-node override carried by this recipe \u2014 applies to the named node regardless of this recipe's own label scoping.",
+        "description": "Per-node override carried by this recipe — applies to the named node regardless of this recipe's own label scoping.",
         "properties": {
           "version": {
-            "description": "Agent version pin, e.g. v0.6.8 or latest \u2014 beats versions.yaml for this node.",
+            "description": "Agent version pin, e.g. v0.6.8 or latest — beats versions.yaml for this node.",
             "type": "string"
           }
         },
@@ -52,6 +57,7 @@
         "enum": [
           "framework",
           "friday",
+          "magicmirror",
           "mini"
         ]
       },
@@ -80,15 +86,15 @@
             "type": "string"
           },
           "at": {
-            "description": "Mount step: mount point. Default /mnt/<label> local, /media/<user>/<name> network (Linux); ignored on macOS for network shares).",
+            "description": "Mount step: mount point. Default /mnt/\u003clabel\u003e local, /media/\u003cuser\u003e/\u003cname\u003e network (Linux); ignored on macOS for network shares).",
             "type": "string"
           },
           "attr_prefix": {
-            "description": "Store regex capture groups as attr.<prefix>.1, .2, \u2026",
+            "description": "Store regex capture groups as attr.\u003cprefix\u003e.1, .2, …",
             "type": "string"
           },
           "command": {
-            "description": "Shell command to run. Plain bash \u2014 the agent translates per-OS where possible; prefer built-in step types over long bash.",
+            "description": "Shell command to run. Plain bash — the agent translates per-OS where possible; prefer built-in step types over long bash.",
             "type": "string"
           },
           "credentials": {
@@ -100,7 +106,7 @@
             "type": "string"
           },
           "device": {
-            "description": "Mount step: what to mount \u2014 //server/share (SMB), server:/path (NFS), uuid=\u2026, label=\u2026, or /dev/path (local).",
+            "description": "Mount step: what to mount — //server/share (SMB), server:/path (NFS), uuid=…, label=…, or /dev/path (local).",
             "type": "string"
           },
           "expect": {
@@ -122,9 +128,20 @@
           "func": {
             "description": "Native function step: run a stdlib function in-process (typed, no shell). See `gogitops functions`.",
             "enum": [
+              "net.github-asset",
+              "net.http-check",
+              "net.lan-ip",
               "net.port-check",
               "storage.disk-free",
-              "system.info"
+              "system.apt-install",
+              "system.file-state",
+              "system.flatpak",
+              "system.gnome-keyring",
+              "system.info",
+              "system.login-trigger",
+              "system.rc-export",
+              "system.rc-line",
+              "system.which"
             ],
             "type": "string"
           },
@@ -132,15 +149,21 @@
             "description": "Step is skipped if the node has ANY of these labels.",
             "items": {
               "enum": [
+                "admin",
                 "compute",
                 "docker-host",
+                "gnome-desktop",
                 "gpu",
                 "hermes-host",
                 "image-gen",
+                "internal-dns",
                 "laptop",
                 "llm-inference",
                 "lora-training",
+                "magic-mirror",
+                "nas",
                 "primary-compute",
+                "remote-admin",
                 "trader-host"
               ],
               "type": "string"
@@ -151,15 +174,21 @@
             "description": "Node must have ALL of these labels for this step to run.",
             "items": {
               "enum": [
+                "admin",
                 "compute",
                 "docker-host",
+                "gnome-desktop",
                 "gpu",
                 "hermes-host",
                 "image-gen",
+                "internal-dns",
                 "laptop",
                 "llm-inference",
                 "lora-training",
+                "magic-mirror",
+                "nas",
                 "primary-compute",
+                "remote-admin",
                 "trader-host"
               ],
               "type": "string"
@@ -167,7 +196,7 @@
             "type": "array"
           },
           "mount": {
-            "description": "Built-in mount step: volume name (network shares \u2014 default path component + macOS /Volumes name), or local device label.",
+            "description": "Built-in mount step: volume name (network shares — default path component + macOS /Volumes name), or local device label.",
             "type": "string"
           },
           "name": {
@@ -204,7 +233,7 @@
             "type": "string"
           },
           "package": {
-            "description": "Built-in package step: install this package \u2014 agent picks apt/dnf/apk/brew per OS. Idempotent.",
+            "description": "Built-in package step: install this package — agent picks apt/dnf/apk/brew per OS. Idempotent.",
             "type": "string"
           },
           "parse": {
@@ -215,7 +244,7 @@
             "type": "string"
           },
           "pattern": {
-            "description": "Regex for parse: \u2014 capture groups become {{1}}, {{2}}, \u2026 usable in later steps.",
+            "description": "Regex for parse: — capture groups become {{1}}, {{2}}, … usable in later steps.",
             "type": "string"
           },
           "retries": {
@@ -227,11 +256,11 @@
             "type": "string"
           },
           "schedule": {
-            "description": "Built-in schedule step: '5m', 'hourly', or a cron expression \u2014 agent installs an idempotent cron/launchd entry. Pair with command: or script:.",
+            "description": "Built-in schedule step: '5m', 'hourly', or a cron expression — agent installs an idempotent cron/launchd entry. Pair with command: or script:.",
             "type": "string"
           },
           "script": {
-            "description": "Script filename \u2014 recipe-local scripts/ is primary, recipes/scripts/ is the shared fallback.",
+            "description": "Script filename — recipe-local scripts/ is primary, recipes/scripts/ is the shared fallback.",
             "type": "string"
           },
           "script_args": {
@@ -248,11 +277,11 @@
             "type": "string"
           },
           "set_attr": {
-            "description": "Store stdout as attribute attr.<name> \u2014 readable by later steps, the API, and the dashboard.",
+            "description": "Store stdout as attribute attr.\u003cname\u003e — readable by later steps, the API, and the dashboard.",
             "type": "string"
           },
           "sources": {
-            "description": "Package name variants per source, e.g. [\"pkg:curl\", \"brew:curl\"] \u2014 first matching source wins.",
+            "description": "Package name variants per source, e.g. [\"pkg:curl\", \"brew:curl\"] — first matching source wins.",
             "items": {
               "type": "string"
             },
@@ -260,7 +289,7 @@
           },
           "tags": {
             "additionalProperties": false,
-            "description": "Built-in tag step: add/remove labels on THIS node's own nodes/<hostname>.yaml (idempotent, comment-preserving; submits via the node/<hostname> branch \u2014 CI opens the self-sync PR).",
+            "description": "Built-in tag step: add/remove labels on THIS node's own nodes/\u003chostname\u003e.yaml (idempotent, comment-preserving; submits via the node/\u003chostname\u003e branch — CI opens the self-sync PR).",
             "properties": {
               "add": {
                 "description": "Labels to add to this node.",
@@ -280,11 +309,11 @@
             "type": "object"
           },
           "when": {
-            "description": "Shell test \u2014 step only runs when this command exits 0. Re-evaluated every run, use to detect capabilities.",
+            "description": "Shell test — step only runs when this command exits 0. Re-evaluated every run, use to detect capabilities.",
             "type": "string"
           },
           "when_attr": {
-            "description": "Only run if this attribute condition is true (attr.<name> [== != contains] value).",
+            "description": "Only run if this attribute condition is true (attr.\u003cname\u003e [== != contains] value).",
             "type": "string"
           }
         },

@@ -1,6 +1,6 @@
 name: packet
-description: "Install Packet (io.github.nozwock.Packet) from Flathub on Linux admin nodes. System flatpak where passwordless sudo exists (Friday); user-level flatpak elsewhere (Framework laptop — silent, no root needed). Darwin nodes no-op: Flathub is Linux-only."
-version: "1.1.1"   # 1.1.1: re-run under engine v0.7.21 — the 1.1.0 run raced the binary self-update (recipe ran on v0.7.20, 2s before the update) so attrs never persisted
+description: "Install Packet (io.github.nozwock.Packet) from Flathub on Linux admin nodes. System flatpak where passwordless sudo exists (Friday); user-level flatpak elsewhere (Framework laptop — silent, no root needed). Darwin nodes no-op: Flathub is Linux-only. v1.2.0 (fleet function-library scan, Oct 18 '26): the sudo-mode/pkexec + flathub-channel lattice (6 shell steps, `sudo -n true` in every when:) → typed system.apt-install (flatpak bootstrap) + system.flatpak (channel resolve + remote-add + install); require=true keeps verify-packet the only aborter."
+version: "1.2.0"
 auto_apply: true
 labels: [admin]
 
@@ -18,57 +18,38 @@ steps:
     on_failure: continue
 
   # ── Ensure flatpak itself exists (Ubuntu desktops don't ship it) ────────
-  - name: ensure-flatpak-sudo
-    description: "Install flatpak via apt where passwordless sudo exists"
+  # Typed: idempotent, resolves the privilege mode itself (sudo -n /
+  # pkexec / result), verifies via the flatpak binary afterwards.
+  # retries: 2 preserves the old sudo channel's retries; on the rare
+  # pkexec branch a declined dialog re-prompts once (the old pkexec step
+  # had none — accepted trade of merging the two channels into one step).
+  - name: ensure-flatpak
+    description: "Install flatpak via apt — sudo mode resolved in-process (no sudo -n true probes in when: guards)"
+    func: system.apt-install
+    args: {"packages": "flatpak", "verify": "flatpak"}
     os: linux
-    command: "sudo -n apt-get install -y flatpak"
-    when: "sudo -n true 2>/dev/null && ! command -v flatpak >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1"
+    when: "! command -v flatpak >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1"
     on_failure: continue
     retries: 2
     retry_delay: 5s
 
-  - name: ensure-flatpak-pkexec
-    description: "Install flatpak via pkexec (password dialog pops on the node's screen) when there is no passwordless sudo"
+  # ── Install Packet (typed channel resolution) ──────────────────────────
+  # system.flatpak picks the channel: system when passwordless sudo +
+  # not installed (Friday), user otherwise (laptop); flathub remote
+  # ensured per channel; already-installed short-circuits. The `when:`
+  # guard preserves the original "only touch flatpak when the binary
+  # exists" behavior — no-flatpak is a result the step reports, not a
+  # crash. require=true turns a failed install into an error so the
+  # step retries and verify-packet stays the single abort authority.
+  - name: install-packet
+    description: "Install Packet from Flathub (channel auto-resolved: system with passwordless sudo, user without)"
+    func: system.flatpak
+    args: {"app": "io.github.nozwock.Packet", "require": "true"}
     os: linux
-    command: "pkexec apt-get install -y flatpak"
-    when: "! sudo -n true 2>/dev/null && ! command -v flatpak >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1 && command -v pkexec >/dev/null 2>&1"
-    on_failure: continue
-
-  # ── System channel (passwordless sudo — Friday's pattern) ──────────────
-  - name: ensure-flathub-system
-    description: "Add the flathub remote (system) if missing"
-    os: linux
-    command: "sudo -n flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
-    when: "sudo -n true 2>/dev/null && command -v flatpak >/dev/null 2>&1 && ! flatpak remotes 2>/dev/null | grep -q flathub"
-    on_failure: continue
-
-  - name: install-packet-system
-    description: "Install Packet system-wide via flatpak (passwordless sudo channel)"
-    os: linux
-    command: "sudo -n flatpak install -y --noninteractive flathub io.github.nozwock.Packet"
-    when: "sudo -n true 2>/dev/null && command -v flatpak >/dev/null 2>&1 && ! flatpak list --app 2>/dev/null | grep -q io.github.nozwock.Packet"
+    when: "command -v flatpak >/dev/null 2>&1"
     on_failure: continue
     retries: 2
     retry_delay: 5s
-
-  # ── User channel (no passwordless sudo — the laptop) ───────────────────
-  # Chosen over pkexec for the app itself: user-level flatpak needs no root,
-  # no dialogs, and is the standard channel for desktop apps.
-  - name: ensure-flathub-user
-    description: "Add the flathub remote (user) if missing"
-    os: linux
-    command: "flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
-    when: "! sudo -n true 2>/dev/null && command -v flatpak >/dev/null 2>&1 && ! flatpak --user remotes 2>/dev/null | grep -q flathub"
-    on_failure: continue
-
-  - name: install-packet-user
-    description: "Install Packet per-user via flatpak — no root needed (laptop channel)"
-    os: linux
-    command: "flatpak --user install -y --noninteractive flathub io.github.nozwock.Packet"
-    when: "! sudo -n true 2>/dev/null && command -v flatpak >/dev/null 2>&1 && ! flatpak list --app 2>/dev/null | grep -q io.github.nozwock.Packet"
-    on_failure: continue
-    retries: 2
-    retry_delay: 10s
 
   # ── Verify + report ────────────────────────────────────────────────────
   - name: detect-packet-after
