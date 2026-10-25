@@ -4,8 +4,9 @@ description: >
   Regression selftest for the native function library. Exercises every
   stdlib func: step — typed outputs, {{func.*}} var passing, port-check
   up/down semantics, and the reserved-namespace rules. Run via:
-  gogitops test run test-funcs (or recipe run test-funcs).
-version: 1.2.0
+  gogitops recipe run test-funcs (the test-module runner has no func:
+  support yet — func steps need the recipe runner).
+version: 1.3.0
 test_module: true
 
 steps:
@@ -136,4 +137,36 @@ steps:
     description: disarm + remove the throwaway unit
     command: systemctl --user disable --now gogitops-functest-trigger.service 2>/dev/null; rm -f ~/.config/systemd/user/gogitops-functest-trigger.service; systemctl --user daemon-reload 2>/dev/null; true
     when: "command -v systemctl >/dev/null 2>&1 && [ -d /run/user/$(id -u) ]"
+    on_failure: continue
+
+  # ── v1.3.0 additions: file-state, apt-install, flatpak ────────────────
+  # gnome-keyring has NO live selftest — arming it disables/masks ssh-agent
+  # services on the node (destructive). Unit tests cover it (stdlib_gnome_test.go).
+
+  - name: file-state-os-release
+    description: typed file probe — /etc/os-release on Linux nodes, version= carries the VERSION_ID
+    func: system.file-state
+    args: {"path": "/etc/os-release", "version": "true"}
+    expect: exists=true
+    on_failure: continue
+
+  - name: file-state-missing
+    description: missing file is a result (exists=false), never an error
+    func: system.file-state
+    args: {"path": "~/.cache/gogitops/definitely-not-a-real-file-xyz"}
+    expect: exists=false
+
+  - name: apt-install-converged
+    description: bash is installed on every apt node — bare token skips, privilege path never touched
+    func: system.apt-install
+    args: {"packages": "bash", "verify": "bash"}
+    when: "command -v apt-get >/dev/null 2>&1 && command -v dpkg >/dev/null 2>&1"
+    expect: mode=converged
+
+  - name: flatpak-state
+    description: channel probe on nodes already running Packet — asserts the typed result without installing anything
+    func: system.flatpak
+    args: {"app": "io.github.nozwock.Packet"}
+    when: "command -v flatpak >/dev/null 2>&1 && (flatpak list --app 2>/dev/null | grep -q io.github.nozwock.Packet || flatpak --user list --app 2>/dev/null | grep -q io.github.nozwock.Packet)"
+    expect: channel=already
     on_failure: continue

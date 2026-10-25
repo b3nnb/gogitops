@@ -251,12 +251,12 @@ func TestGithubAssetTable(t *testing.T) {
 	t.Cleanup(func() { githubAPIBase = old })
 
 	tests := []struct {
-		name     string
-		args     map[string]any
-		wantFnd  bool
-		wantURL  string
-		wantTag  string
-		wantErr  bool
+		name    string
+		args    map[string]any
+		wantFnd bool
+		wantURL string
+		wantTag string
+		wantErr bool
 	}{
 		{
 			name:    "latest release, matching asset (real syncthing naming)",

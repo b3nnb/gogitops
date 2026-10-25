@@ -41,6 +41,10 @@ steps:
 | `system.rc-line` | Idempotent rc-file line append: `file=`, `marker=`, `line=` (printf-style `\n`) — replaces the grep-`||`-printf quoting dances |
 | `system.rc-export` | Upsert `export VAR="value"` in an rc file: rewrites existing export lines in place, appends when missing (`file=`, `var=`, `value=`, `comment=`) — replaces escaped `sed -i` upserts |
 | `system.login-trigger` | Run a command at every login: oneshot systemd user unit (Linux) / RunAtLoad LaunchAgent (macOS), written + armed (`name=`, `command=`) — replaces hand-printed unit/plist scaffolds |
+| `system.file-state` | File/URL state typed: `exists`, `matched`, `size`, `dir`, `exec`, `version=` (`path=`, `contains=`, `version=true`) — replaces curl\|grep probes |
+| `system.apt-install` | Idempotent apt with sudo-mode resolution: skips installed tokens, ordered alternates (`packages=chromium,chromium-browser`, `verify=`), verify probe — replaces the sudo\|\|pkexec install dances |
+| `system.flatpak` | Idempotent flathub install with auto channel resolution (`app=`, `require=`) — replaces the sudo -n/channel when-guard lattice |
+| `system.gnome-keyring` | GCR standardization: enable gcr socket, disable+mask gpg-agent-ssh + ssh-agent, SSH_AUTH_SOCK rc upserts (`rcfiles=`, `verify=`) |
 
 Args containing commas (like `candidates=a,b`) must use the JSON args form: `args: {"name": "brew", "candidates": "/opt/homebrew/bin/brew,/usr/local/bin/brew"}`.
 

@@ -1,6 +1,6 @@
 name: magic-mirror-kiosk
-description: "Pi kiosk client for the NAS MagicMirror server — Chromium fullscreen at http://10.2.0.103:8090, converts the first-boot local MM2 install into a thin client. Scope: nodes labeled magic-mirror (the mirror Pi)."
-version: "1.0.0"
+description: "Pi kiosk client for the NAS MagicMirror server — Chromium fullscreen at http://10.2.0.103:8090, converts the first-boot local MM2 install into a thin client. Scope: nodes labeled magic-mirror (the mirror Pi). v1.1.0 (fleet function-library scan, Oct 18 '26): the chromium||chromium-browser install dance → typed system.apt-install ordered alternates (first apt-resolvable wins, verify passes when either binary resolves)."
+version: "1.1.0"
 auto_apply: true
 labels: [magic-mirror]
 
@@ -16,9 +16,10 @@ labels: [magic-mirror]
 
 steps:
   - name: install-chromium
-    description: "Chromium present or installed (name differs across RPi OS releases)"
-    command: 'if command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1; then echo "already-present"; exit 0; fi; sudo apt-get update -qq >/dev/null 2>&1; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq chromium >/dev/null 2>&1 || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq chromium-browser >/dev/null 2>&1; if command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1; then echo "installed"; else echo "missing: no chromium package available"; exit 1; fi'
-    expect_regex: "(already-present|installed)"
+    description: "Chromium present or installed (name differs across RPi OS releases — ordered alternates, first apt-resolvable wins)"
+    func: system.apt-install
+    args: {"packages": "chromium,chromium-browser", "verify": "chromium,chromium-browser"}
+    expect_regex: "installed=true|mode=converged"
     on_failure: abort
 
   - name: disable-local-magicmirror

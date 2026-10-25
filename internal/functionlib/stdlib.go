@@ -319,10 +319,10 @@ func which(ctx Context, args map[string]any) (map[string]any, error) {
 	// PATH first — mirrors `command -v` in the same process env.
 	if p, err := exec.LookPath(name); err == nil {
 		return map[string]any{
-			"found": true,
-			"path":  p,
+			"found":  true,
+			"path":   p,
 			"source": "path",
-			"math":  fmt.Sprintf("LookPath(%s) hit; %d candidates untried", name, len(list)),
+			"math":   fmt.Sprintf("LookPath(%s) hit; %d candidates untried", name, len(list)),
 		}, nil
 	}
 	// Then explicit candidates, in order — the launchd/cron PATH gap that
@@ -331,10 +331,10 @@ func which(ctx Context, args map[string]any) (map[string]any, error) {
 		full := expandTilde(c)
 		if isExecutableFile(full) {
 			return map[string]any{
-				"found": true,
-				"path":  full,
+				"found":  true,
+				"path":   full,
 				"source": fmt.Sprintf("candidate:%d", i+1),
-				"math":  fmt.Sprintf("LookPath(%s) miss; candidate %d hit: %s", name, i+1, full),
+				"math":   fmt.Sprintf("LookPath(%s) miss; candidate %d hit: %s", name, i+1, full),
 			}, nil
 		}
 	}

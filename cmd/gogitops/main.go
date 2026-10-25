@@ -1329,6 +1329,13 @@ func scanRepoAttrs(repoDir string) []AttrDef {
 		for _, s := range r.Steps {
 			if s.SetAttr != "" {
 				add(AttrDef{Name: s.SetAttr, Kind: "set_attr", Source: r.Name, File: rel, Step: s.Name})
+				// func: steps have typed, static output keys — catalog
+				// <attr>.<key> so when_attr can reference them verbatim.
+				if s.Func != "" {
+					for _, key := range funcAttrCatalog[s.Func] {
+						add(AttrDef{Name: s.SetAttr + "." + key, Kind: "func-output", Source: r.Name, File: rel, Step: s.Name})
+					}
+				}
 			}
 			if s.AttrPrefix != "" {
 				add(AttrDef{Name: s.AttrPrefix + ".*", Kind: "attr_prefix", Source: r.Name, File: rel, Step: s.Name})
@@ -1519,7 +1526,7 @@ func cmdUpdate(args []string) {
 		}
 		tgt, src := agent.ResolveVersion(pins, host, labels)
 		if ov, ok := agent.LoadRecipeVersionOverride(resolved, host); ok {
-				tgt, src = agent.NormalizePinValue(ov.Version), "recipe:"+ov.Recipe
+			tgt, src = agent.NormalizePinValue(ov.Version), "recipe:"+ov.Recipe
 		}
 		fmt.Printf("  this node (%s): %s via %s\n", host, tgt, src)
 	}
@@ -1936,6 +1943,28 @@ func funcNames() []string {
 		out = append(out, f.Name)
 	}
 	return out
+}
+
+// funcAttrCatalog catalogs the static output keys of every stdlib
+// function (set.<name>.<key>). The attr verifier consults this so a
+// when_attr like `attr.marker_before.exists` — referencing the typed
+// output of a func: step that wrote set_attr marker_before — is known
+// without a live store value on this machine.
+var funcAttrCatalog = map[string][]string{
+	"storage.disk-free":    {"total_gb", "used_gb", "free_gb", "used_pct", "path"},
+	"net.port-check":       {"up", "latency_ms", "error"},
+	"net.http-check":       {"up", "status", "latency_ms", "matched", "error"},
+	"net.github-asset":     {"found", "url", "tag", "error"},
+	"net.lan-ip":           {"found", "ip", "source", "error"},
+	"system.info":          {"hostname", "os", "arch", "error"},
+	"system.which":         {"found", "path", "source", "error"},
+	"system.file-state":    {"exists", "matched", "status", "size", "dir", "exec", "version", "error"},
+	"system.apt-install":   {"installed", "skipped", "mode", "verify", "error"},
+	"system.flatpak":       {"channel", "installed", "error"},
+	"system.gnome-keyring": {"sock", "enabled", "masked", "rc_lines", "error"},
+	"system.rc-line":       {"state", "path", "marker", "error"},
+	"system.rc-export":     {"state", "path", "var", "error"},
+	"system.login-trigger": {"state", "path", "name", "label", "error"},
 }
 
 // cmdFunctions prints the native function library: name, description,
@@ -2672,9 +2701,9 @@ func recipeRun(args []string, all *runAllCtx) {
 			if showDetail {
 				if lastLine != "" {
 					fmt.Printf("     \033[38;5;240m%s\033[0m  \033[38;5;46m✓\033[0m\n", lastLine)
-			} else {
+				} else {
 					fmt.Printf("     \033[38;5;46m✓\033[0m\n")
-			}
+				}
 			}
 			passed++
 		} else {
