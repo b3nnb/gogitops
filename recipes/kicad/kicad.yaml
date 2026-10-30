@@ -1,0 +1,32 @@
+name: kicad
+description: "Install KiCad EDA — schematic capture, PCB layout, Gerber export, 3D STEP export. Includes kicad-cli for headless exports. Targets gnome-desktop and laptop nodes (GUI needed for interactive use; CLI works headless over SSH)."
+version: "1.0.0"
+labels: [gnome-desktop, laptop]
+
+steps:
+  - name: install-kicad
+    description: "Install KiCad + kicad-cli via apt"
+    os: linux
+    command: "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y kicad"
+    expect: "Setting up kicad"
+    on_failure: abort
+
+  - name: verify-kicad
+    description: "Verify kicad-cli is on PATH and reports a version"
+    os: linux
+    command: "kicad-cli version"
+    expect_regex: "[0-9]+\\.[0-9]+"
+    on_failure: abort
+
+  - name: kicad-symbols
+    description: "Ensure KiCad symbol/footprint libraries are installed"
+    os: linux
+    command: "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y kicad-symbols kicad-footprints kicad-packages3d"
+    on_failure: continue
+
+  - name: verify-libraries
+    description: "Check KiCad library directories exist"
+    os: linux
+    command: "ls /usr/share/kicad/symbols/ >/dev/null 2>&1 && ls /usr/share/kicad/footprints/ >/dev/null 2>&1 && echo 'libraries OK'"
+    expect: "libraries OK"
+    on_failure: continue
