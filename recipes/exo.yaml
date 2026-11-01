@@ -1,6 +1,6 @@
 name: exo
-description: "Install + run exo (exo-explore/exo) as a USER systemd service with Restart=always — the fleet-canonical deployment shape. Installs the official binary to ~/.exo/bin, wires the user unit, enables on boot."
-version: "1.0.0"
+description: "Install + run exo (exo-explore/exo) as a USER systemd service with Restart=always — the fleet-canonical deployment shape. Installs the official binary to ~/.exo/bin, wires the user unit, enables on boot. v1.1.0 (fleet function-library scan, Nov 1 '26): the printf unit scaffold + enable + is-active trio → one typed system.user-unit step (overwrite=true keeps the re-write-per-run behavior; active=true is the abort gate the is-active step was)."
+version: "1.1.0"
 auto_apply: false
 labels: [exo]
 
@@ -36,21 +36,16 @@ steps:
     command: "sudo loginctl enable-linger $USER"
     on_failure: continue
 
-  # ── 3. User systemd unit ──
-  - name: write-exo-unit
-    description: "Write ~/.config/systemd/user/exo.service with Restart=always"
-    command: "mkdir -p ~/.config/systemd/user && printf '%s\\n' '[Unit]' 'Description=exo — distributed LLM runtime' 'After=network-online.target' '' '[Service]' 'ExecStart=%h/.exo/bin/exo' 'Restart=always' 'RestartSec=5' 'Environment=HOME=%h' '' '[Install]' 'WantedBy=default.target' > ~/.config/systemd/user/exo.service"
-    on_failure: abort
-
-  - name: enable-exo
-    description: "Enable + start the exo user unit"
-    command: "systemctl --user daemon-reload && systemctl --user enable --now exo"
-    on_failure: abort
-
-  # ── 4. Verify ──
-  - name: check-exo-active
-    description: "Confirm the unit is active"
-    command: "systemctl --user is-active exo"
+  # ── 3. User systemd unit (typed — v1.1.0) ──
+  # One system.user-unit step writes the unit (overwrite=true = same
+  # write-every-run behavior as the printf scaffold), daemon-reloads,
+  # enable --now's it, and reports active= — the three steps this replaces
+  # each aborted on failure, and so does the typed step.
+  - name: write-arm-exo-unit
+    description: "Write ~/.config/systemd/user/exo.service (Restart=always) + daemon-reload + enable --now + confirm active"
+    func: system.user-unit
+    args: '{"name": "exo", "description": "exo — distributed LLM runtime", "after": "network-online.target", "exec": "%h/.exo/bin/exo", "restart": "always", "restart_sec": "5", "environment": "HOME=%h", "overwrite": "true"}'
+    expect: active=true
     on_failure: abort
 
   - name: done

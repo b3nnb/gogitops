@@ -136,11 +136,15 @@
               "system.apt-install",
               "system.file-state",
               "system.flatpak",
+              "system.git-extract",
               "system.gnome-keyring",
               "system.info",
               "system.login-trigger",
               "system.rc-export",
               "system.rc-line",
+              "system.unit-repoint",
+              "system.unit-restart",
+              "system.user-unit",
               "system.which"
             ],
             "type": "string"
