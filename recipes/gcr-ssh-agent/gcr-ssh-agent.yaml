@@ -1,6 +1,6 @@
 name: gcr-ssh-agent
-description: "Standardize SSH agent to GCR (gnome-keyring successor) on GNOME desktop nodes. Disables gpg-agent SSH socket hijack, enables gcr-ssh-agent, points .bashrc at GCR socket. v1.2.0: the SSH_AUTH_SOCK rc upserts → typed system.rc-export."
-version: "1.2.0"
+description: "Standardize SSH agent to GCR (gnome-keyring successor) on GNOME desktop nodes. Disables gpg-agent SSH socket hijack, enables gcr-ssh-agent, points .bashrc at GCR socket. v1.2.0: the SSH_AUTH_SOCK rc upserts → typed system.rc-export. v1.3.0: the three systemctl steps + .bashrc upsert → one typed system.gnome-keyring step (unit outcomes are outputs, not swallowed stderr)."
+version: "1.3.0"
 labels:
   - gnome-desktop
 auto_apply: true
@@ -19,31 +19,18 @@ steps:
     command: "test -x /usr/libexec/gcr-ssh-agent || test -x /usr/lib/gcr-ssh-agent"
     on_failure: abort
 
-  # --- Enable gcr-ssh-agent socket ---
-  - name: enable-gcr-socket
-    description: "Enable and start gcr-ssh-agent user socket"
-    command: "systemctl --user enable --now gcr-ssh-agent.socket 2>/dev/null && echo GCR-SOCKET-ENABLED || echo GCR-SOCKET-ALREADY-ENABLED"
-    on_failure: continue
-
-  # --- Disable AND mask gpg-agent SSH socket (the hijacker) ---
-  - name: disable-gpg-ssh-socket
-    description: "Disable and mask gpg-agent SSH emulation socket so it stops hijacking SSH_AUTH_SOCK on session start"
-    command: "systemctl --user disable --now gpg-agent-ssh.socket 2>/dev/null; systemctl --user mask gpg-agent-ssh.socket 2>/dev/null && echo GPG-SSH-MASKED || echo GPG-SSH-ALREADY-MASKED"
-    on_failure: continue
-
-  # --- Disable systemd ssh-agent (empty, redundant) ---
-  - name: disable-systemd-ssh-agent
-    description: "Disable systemd bare ssh-agent service (no identities, redundant with GCR)"
-    command: "systemctl --user disable --now ssh-agent.service 2>/dev/null && echo SYSTEMD-SSH-DISABLED || echo SYSTEMD-SSH-ALREADY-DISABLED"
-    on_failure: continue
-
-  # --- Point SSH_AUTH_SOCK at GCR (typed upsert — v1.2.0: the
-  #     quadruple-escaped sed was the most corruption-prone command in the
-  #     fleet; the function owns the update-or-append logic now) ---
-  - name: set-bashrc-gcr-socket
-    description: "Point SSH_AUTH_SOCK in .bashrc to GCR socket path (upsert: rewrites an existing export line in place, appends when missing)"
-    func: system.rc-export
-    args: 'file=~/.bashrc, var=SSH_AUTH_SOCK, value=/run/user/{{1}}/gcr/ssh, comment=GCR ssh-agent (modern GNOME)'
+  # --- Standardize the agent stack (typed — v1.3.0) ---
+  # One system.gnome-keyring call does what four steps did: enable+start
+  # gcr-ssh-agent.socket, disable+mask gpg-agent-ssh.socket, disable the
+  # empty ssh-agent.service, and upsert SSH_AUTH_SOCK in .bashrc. Unit
+  # outcomes land as typed outputs (enabled/masked/rc_lines) instead of
+  # being swallowed by 2>/dev/null; rc_lines>=1 keeps .bashrc as the
+  # abort authority it always was.
+  - name: standardize-gcr
+    description: "Enable gcr-ssh-agent socket, disable+mask the gpg-agent SSH hijacker, retire ssh-agent.service, upsert SSH_AUTH_SOCK in .bashrc"
+    func: system.gnome-keyring
+    args: 'rcfiles=~/.bashrc'
+    expect_regex: "rc_lines=[1-9]"
     on_failure: abort
 
   # --- Also set in .profile (for non-interactive shells) ---
