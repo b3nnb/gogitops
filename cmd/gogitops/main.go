@@ -1965,6 +1965,10 @@ var funcAttrCatalog = map[string][]string{
 	"system.rc-line":       {"state", "path", "marker", "error"},
 	"system.rc-export":     {"state", "path", "var", "error"},
 	"system.login-trigger": {"state", "path", "name", "label", "error"},
+	"system.unit-restart":  {"restarted", "scope", "error"},
+	"system.unit-repoint":  {"found", "patched", "names", "reloaded", "enabled", "error"},
+	"system.user-unit":     {"state", "path", "name", "enabled", "active", "error"},
+	"system.git-extract":   {"size", "content", "dest", "error"},
 }
 
 // cmdFunctions prints the native function library: name, description,

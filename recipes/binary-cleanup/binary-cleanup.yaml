@@ -1,6 +1,6 @@
 name: binary-cleanup
-description: "Converge every gogitops binary to the ONE canonical user-mode path (~/.local/bin/gogitops): migrate daemons running from deviant paths (unit repoint + restart), de-symlink, remove shadow copies (root-owned /usr/local/bin needs sudo/pkexec), then verify PATH resolves to exactly one binary whose version matches the daemon. Never deletes the binary a running daemon uses before the daemon is migrated off it. v1.1.2: verify resolves PATH via a LOGIN shell (bash -lc) — non-interactive runners (ssh one-shots, recipe runners) lack ~/.local/bin in PATH and false-failed path-ok (found on framework, Sep 30 '26); v1.1.1: atomic mv-swap + copy-failure abort + verify WARNs fail"
-version: "1.1.0"
+description: "Converge every gogitops binary to the ONE canonical user-mode path (~/.local/bin/gogitops): migrate daemons running from deviant paths (unit repoint + restart), de-symlink, remove shadow copies (root-owned /usr/local/bin needs sudo/pkexec), then verify PATH resolves to exactly one binary whose version matches the daemon. Never deletes the binary a running daemon uses before the daemon is migrated off it. v1.1.2: verify resolves PATH via a LOGIN shell (bash -lc) — non-interactive runners (ssh one-shots, recipe runners) lack ~/.local/bin in PATH and false-failed path-ok (found on framework, Sep 30 '26); v1.1.1: atomic mv-swap + copy-failure abort + verify WARNs fail; v1.2.0: the unit repoint + restart halves of the migrate step → typed system.unit-repoint + system.unit-restart (gated on a successful copy via when_attr; repoint defaults now cover the three known fleet deviants)"
+version: "1.2.0"
 labels: []   # any user-mode agent node
 
 steps:
@@ -8,9 +8,25 @@ steps:
     description: "Enumerate gogitops binaries + identify the running daemon's binary (user unit, system unit, or live process)"
     command: 'BINS=$(ls /usr/local/bin/gogitops $HOME/bin/gogitops $HOME/.local/bin/gogitops 2>/dev/null); echo "binaries-found:"; echo "$BINS" | sed "s|^|  |"; D=""; for U in gogitops gogitops-daemon; do E=$(systemctl --user show $U -p ExecStart 2>/dev/null); [ -n "$E" ] && D=$(echo "$E" | grep -oP "path=\\K[^ ;]+"); [ -n "$D" ] && break; done; if [ -z "$D" ]; then E=$(systemctl show gogitops-daemon -p ExecStart 2>/dev/null); [ -n "$E" ] && D=$(echo "$E" | grep -oP "path=\\K[^ ;]+"); fi; if [ -z "$D" ]; then D=$(pgrep -af "gogitops daemon" 2>/dev/null | head -1 | grep -oP "^\\S+(/gogitops\\S*)" || pgrep -af "gogitops daemon" 2>/dev/null | head -1 | awk "{print \\$1}"); fi; echo "daemon-binary=$D"; echo "$D" > /tmp/gogitops-cleanup-daemon'
 
-  - name: migrate-daemon-binary
-    description: "If the daemon runs from anywhere but ~/.local/bin/gogitops: copy it there (real file, never a symlink), repoint unit ExecStart, restart — the old path stays untouched until step 4"
-    command: 'D=$(cat /tmp/gogitops-cleanup-daemon); C=$HOME/.local/bin/gogitops; if [ -z "$D" ]; then echo WARN-no-daemon-detected; exit 0; fi; if [ "$D" = "$C" ]; then echo daemon-already-canonical; exit 0; fi; mkdir -p $HOME/.local/bin; [ -L "$C" ] && rm "$C"; cp "$D" "$C.new" && chmod +x "$C.new" && mv "$C.new" "$C" && echo "swapped $D -> $C (atomic)" || { echo "WARN copy to canonical path failed — NOT repointing unit (a stale canonical binary must never become the daemon)"; exit 1; }; if command -v systemctl >/dev/null 2>&1 && [ -d $HOME/.config/systemd/user ]; then for U in gogitops gogitops-daemon; do F=$HOME/.config/systemd/user/$U.service; [ -f "$F" ] && sed -i "s|$D|$C|g" "$F"; done; systemctl --user daemon-reload; for U in gogitops gogitops-daemon; do systemctl --user is-active $U >/dev/null 2>&1 && { systemctl --user restart $U && echo "restarted-user-$U"; break; }; done; else echo "note: no user systemd (macOS hand-started daemon) — next manual start should use $C"; fi'
+  - name: migrate-copy
+    description: "If the daemon runs from anywhere but ~/.local/bin/gogitops: copy it there (real file, never a symlink) — the ONLY shell step left in the migration; a failed copy aborts BEFORE any unit is repointed (a stale canonical binary must never become the daemon)"
+    command: 'D=$(cat /tmp/gogitops-cleanup-daemon); C=$HOME/.local/bin/gogitops; if [ -z "$D" ]; then echo state=no-daemon; exit 0; fi; if [ "$D" = "$C" ]; then echo state=already-canonical; exit 0; fi; mkdir -p $HOME/.local/bin; [ -L "$C" ] && rm "$C"; if cp "$D" "$C.new" && chmod +x "$C.new" && mv "$C.new" "$C"; then echo "state=swapped from=$D"; else echo state=copy-failed; exit 1; fi'
+    parse: regex
+    pattern: 'from=(\S+)'
+    set_attr: migrate_state
+
+  - name: repoint-units
+    description: "Rewrite the detected daemon path in the user unit files + daemon-reload (typed system.unit-repoint; skipped unless a copy actually happened)"
+    func: system.unit-repoint
+    args: '{"units": "gogitops,gogitops-daemon", "from": "{{1}}", "to": "~/.local/bin/gogitops"}'
+    when_attr: "attr.migrate_state contains state=swapped"
+
+  - name: restart-daemon
+    description: "Restart the unit that was running from the old path (typed system.unit-restart, user scope)"
+    func: system.unit-restart
+    args: '{"user_units": "gogitops,gogitops-daemon"}'
+    when_attr: "attr.migrate_state contains state=swapped"
+    on_failure: continue
 
   - name: wait-for-daemon
     description: "Wait for the (possibly just-restarted) agent to answer on localhost"

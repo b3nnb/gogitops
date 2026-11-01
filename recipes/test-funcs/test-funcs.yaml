@@ -6,7 +6,7 @@ description: >
   up/down semantics, and the reserved-namespace rules. Run via:
   gogitops recipe run test-funcs (the test-module runner has no func:
   support yet — func steps need the recipe runner).
-version: 1.3.0
+version: 1.4.0
 test_module: true
 
 steps:
@@ -169,4 +169,98 @@ steps:
     args: {"app": "io.github.nozwock.Packet"}
     when: "command -v flatpak >/dev/null 2>&1 && (flatpak list --app 2>/dev/null | grep -q io.github.nozwock.Packet || flatpak --user list --app 2>/dev/null | grep -q io.github.nozwock.Packet)"
     expect: channel=already
+    on_failure: continue
+
+  # ── v1.4.0 additions: unit-restart, unit-repoint, user-unit, git-extract ──
+
+  - name: unit-restart-nothing-active
+    description: system.unit-restart on fake units — scope=none is a result, nothing restarted
+    func: system.unit-restart
+    args: {"user_units": "gogitops-functest-fake-unit", "system_units": "gogitops-functest-fake-unit"}
+    expect: scope=none
+    on_failure: continue
+
+  - name: unit-fixture-write
+    description: stage a throwaway user unit carrying a deviant binary path (rewritten every run — hermetic)
+    command: 'mkdir -p $HOME/.config/systemd/user && printf "[Unit]\nDescription=gogitops functest\n[Service]\nExecStart=/usr/local/bin/gogitops-functest-old daemon\n[Install]\nWantedBy=default.target\n" > $HOME/.config/systemd/user/gogitops-functest-unit.service && echo staged'
+    expect: staged
+    on_failure: continue
+
+  - name: unit-repoint
+    description: system.unit-repoint swaps the deviant path inside the throwaway unit
+    func: system.unit-repoint
+    args: {"units": "gogitops-functest-unit", "from": "/usr/local/bin/gogitops-functest-old", "to": "/tmp/gogitops-functest-new-path"}
+    expect: patched=1
+    on_failure: continue
+
+  - name: unit-repoint-verify
+    description: byte-truth — the ExecStart line now carries the new path
+    command: 'grep -q "ExecStart=/tmp/gogitops-functest-new-path daemon" $HOME/.config/systemd/user/gogitops-functest-unit.service && echo repoint-ok'
+    expect: repoint-ok
+    on_failure: continue
+
+  - name: unit-repoint-second-run
+    description: second run is a no-op (from= no longer matches) — patched=0, no churn
+    func: system.unit-repoint
+    args: {"units": "gogitops-functest-unit", "from": "/usr/local/bin/gogitops-functest-old", "to": "/tmp/gogitops-functest-new-path"}
+    expect: patched=0
+    on_failure: continue
+
+  - name: unit-fixture-cleanup
+    command: 'rm -f $HOME/.config/systemd/user/gogitops-functest-unit.service; systemctl --user daemon-reload 2>/dev/null; true'
+    on_failure: continue
+
+  - name: user-unit-preclean
+    command: 'rm -f $HOME/.config/systemd/user/gogitops-functest-svc.service'
+    on_failure: continue
+
+  - name: user-unit-write
+    description: system.user-unit writes a throwaway unit (enable=false — nothing armed)
+    func: system.user-unit
+    args: {"name": "gogitops-functest-svc", "description": "fleet selftest service", "exec": "/bin/true", "enable": "false"}
+    when: "command -v systemctl >/dev/null 2>&1"
+    expect: state=written
+    on_failure: continue
+
+  - name: user-unit-keep
+    description: re-run keeps the existing unit (overwrite=false) — convergence never clobbers
+    func: system.user-unit
+    args: {"name": "gogitops-functest-svc", "description": "fleet selftest service", "exec": "/bin/true", "enable": "false"}
+    when: "command -v systemctl >/dev/null 2>&1"
+    expect: state=kept
+    on_failure: continue
+
+  - name: user-unit-cleanup
+    command: 'rm -f $HOME/.config/systemd/user/gogitops-functest-svc.service; systemctl --user daemon-reload 2>/dev/null; true'
+    on_failure: continue
+
+  - name: git-extract-content
+    description: content-only extract off the local checkout HEAD (the VERSION-file shape)
+    func: system.git-extract
+    args: {"repo": "{{repo}}", "ref": "HEAD", "path": "versions.yaml"}
+    expect_regex: "content=global:"
+    on_failure: continue
+
+  - name: git-extract-dest
+    description: dest extract with exec bit + min_bytes guard on a small real file
+    func: system.git-extract
+    args: {"repo": "{{repo}}", "ref": "HEAD", "path": "versions.yaml", "dest": "/tmp/gogitops-functest-extract", "min_bytes": "10", "exec": "true"}
+    expect: dest=/tmp/gogitops-functest-extract
+    on_failure: continue
+
+  - name: git-extract-dest-verify
+    command: 'test -x /tmp/gogitops-functest-extract && echo extract-ok'
+    expect: extract-ok
+    on_failure: continue
+
+  - name: git-extract-cleanup
+    command: 'rm -f /tmp/gogitops-functest-extract'
+    on_failure: continue
+
+  - name: git-extract-missing
+    description: missing path on a real ref is an error — installer parity (exit 1, message visible)
+    func: system.git-extract
+    args: {"repo": "{{repo}}", "ref": "HEAD", "path": "definitely/not/a/real/file-xyz"}
+    expect_regex: "not readable"
+    expect_exit: 1
     on_failure: continue

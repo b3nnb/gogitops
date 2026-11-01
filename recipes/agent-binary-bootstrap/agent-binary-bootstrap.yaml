@@ -1,6 +1,6 @@
 name: agent-binary-bootstrap
-description: "One-time rescue for agents stranded on an old binary at a non-writable path (/usr/local/bin — v0.7.22 wednesday, BCR-73): fetch the latest release from the git binaries branch, install it to ~/.local/bin/gogitops, repoint the launcher unit, and restart the daemon. No-op once /v1/health reports hardware specs (v0.7.29+). Never touches nodes that already report specs. v1.0.2: skip-check → typed system.file-state (same endpoint/pattern as wait-and-verify; a down check still passes — convergence records ok either way, exactly like the old curl|grep that exited 0 both ways)"
-version: "1.0.2"
+description: "One-time rescue for agents stranded on an old binary at a non-writable path (/usr/local/bin — v0.7.22 wednesday, BCR-73): fetch the latest release from the git binaries branch, install it to ~/.local/bin/gogitops, repoint the launcher unit, and restart the daemon. No-op once /v1/health reports hardware specs (v0.7.29+). Never touches nodes that already report specs. v1.0.2: skip-check → typed system.file-state (same endpoint/pattern as wait-and-verify; a down check still passes — convergence records ok either way, exactly like the old curl|grep that exited 0 both ways). v1.1.0: the fetch/install/repoint/restart shell → typed system.git-extract (binaries branch, atomic dest swap, ≥500KB guard, arch from {{arch}}), system.unit-repoint, system.unit-restart (user→passwordless-sudo dance); the API-restart fallback stays shell, gated on scope=none."
+version: "1.1.0"
 labels: [new-node]   # only wednesday carries this tag
 auto_apply: true
 
@@ -10,18 +10,36 @@ steps:
     func: system.file-state
     args: {"path": "http://127.0.0.1:7780/v1/health", "contains": "\"hardware\"", "timeout": "5s"}
 
+  - name: read-binaries-version
+    description: "Read binaries/VERSION off the fetched binaries branch (content-only extract — the old `git show origin/binaries:VERSION | tr -d \\n`)"
+    func: system.git-extract
+    args: '{"repo": "~/.config/gogitops", "ref": "origin/binaries", "path": "VERSION"}'
+    set_attr: binaries_version
+    on_failure: abort
+
   - name: fetch-latest-binary
-    description: "Pull the latest linux binary for this arch off the git binaries branch into ~/.local/bin"
-    command: 'R="$HOME/.config/gogitops"; cd "$R" || { echo "no repo dir"; exit 1; }; git fetch -q origin binaries || { echo "fetch binaries failed"; exit 1; }; V=$(git show origin/binaries:VERSION | tr -d "\n"); A=$(uname -m | sed -e "s/x86_64/amd64/" -e "s/aarch64/arm64/"); mkdir -p "$HOME/.local/bin"; git show "origin/binaries:bin/gogitops-linux-$A" > "$HOME/.local/bin/.gogitops-bootstrap" || { echo "binary extract failed"; exit 1; }; [ $(wc -c < "$HOME/.local/bin/.gogitops-bootstrap") -lt 500000 ] && { echo "extracted binary too small"; exit 1; }; chmod +x "$HOME/.local/bin/.gogitops-bootstrap"; mv -f "$HOME/.local/bin/.gogitops-bootstrap" "$HOME/.local/bin/gogitops"; echo "installed $V -> ~/.local/bin/gogitops"'
+    description: "Pull the latest linux binary for this arch off the binaries branch into ~/.local/bin/gogitops — atomic temp+rename, ≥500KB guard, exec bit (the old git-show/wc-chmod-mv blob)"
+    func: system.git-extract
+    args: '{"repo": "~/.config/gogitops", "ref": "origin/binaries", "path": "bin/gogitops-linux-{{arch}}", "dest": "~/.local/bin/gogitops", "min_bytes": "500000", "exec": "true"}'
+    on_failure: abort
 
   - name: repoint-launcher
     description: "Point every user-level gogitops unit ExecStart at ~/.local/bin/gogitops (root-owned paths need sudo and are left alone — recipe re-verifies via the running daemon instead)"
-    command: 'C="$HOME/.local/bin/gogitops"; for U in gogitops gogitops-daemon; do F="$HOME/.config/systemd/user/$U.service"; if [ -f "$F" ]; then sed -i "s|/usr/local/bin/gogitops|$C|g" "$F" || true; sed -i "s|$HOME/Documents/code/GoGitOps/bin/gogitops|$C|g" "$F" || true; echo "repointed $F"; fi; done; systemctl --user daemon-reload 2>/dev/null; echo launcher-repoint-done'
+    func: system.unit-repoint
+    args: '{"units": "gogitops,gogitops-daemon", "from": "/usr/local/bin/gogitops,~/Documents/code/GoGitOps/bin/gogitops", "to": "~/.local/bin/gogitops"}'
     on_failure: continue
 
   - name: restart-daemon
-    description: "Restart whichever gogitops daemon unit is active (user first, then system via sudo if passwordless); if no unit owns it, exec-restart via the API restart endpoint keeps the process lineage"
-    command: 'for U in gogitops gogitops-daemon; do if systemctl --user is-active $U >/dev/null 2>&1; then systemctl --user restart $U && { echo "restarted-user-$U"; exit 0; }; fi; done; if systemctl is-active gogitops.service >/dev/null 2>&1 || systemctl is-active gogitops-daemon.service >/dev/null 2>&1; then sudo -n systemctl restart gogitops.service 2>/dev/null || sudo -n systemctl restart gogitops-daemon.service 2>/dev/null || true; echo "system-unit-restart-attempted"; exit 0; fi; curl -s -m 5 -X POST http://127.0.0.1:7780/v1/restart >/dev/null 2>&1 || true; echo "api-restart-requested"'
+    description: "Restart whichever gogitops daemon unit is active (user first, then system via passwordless sudo); scope=none (hand-started daemon) gates the API-restart fallback"
+    func: system.unit-restart
+    args: '{"user_units": "gogitops,gogitops-daemon", "system_units": "gogitops,gogitops-daemon"}'
+    set_attr: daemon_restart
+    on_failure: continue
+
+  - name: api-restart-fallback
+    description: "No unit owns the daemon — exec-restart via the agent's own API restart endpoint keeps the process lineage"
+    when_attr: "attr.daemon_restart contains scope=none"
+    command: 'curl -s -m 5 -X POST http://127.0.0.1:7780/v1/restart >/dev/null 2>&1 || true; echo api-restart-requested'
     on_failure: continue
 
   - name: wait-and-verify
