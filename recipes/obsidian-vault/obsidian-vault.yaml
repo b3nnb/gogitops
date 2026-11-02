@@ -120,7 +120,7 @@ steps:
   - name: register-vault
     description: "Register the vault in this node's Obsidian config (idempotent; auto-detects flatpak/mac/native) — pre-configures first launch on remote nodes, self-heals Friday's registration"
     script: register_vault.py
-    script_lang: python
+    script_lang: python3
     labels_required: [admin]
     # ABORT (not continue): a skipped/deferred/failed registration must NOT count
     # as converged or the daemon never retries it — that's exactly how framework

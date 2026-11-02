@@ -44,7 +44,7 @@ steps:
   # --- Verify GCR socket exists and responds ---
   - name: verify-gcr-socket
     description: "Confirm GCR socket is live and has keys"
-    command: "GCR=/run/user/{{1}}/gcr/ssh; test -S "$GCR" && SSH_AUTH_SOCK=$GCR ssh-add -l 2>/dev/null | head -1 && echo GCR-VERIFIED"
+    command: 'GCR=/run/user/{{1}}/gcr/ssh; test -S "$GCR" && SSH_AUTH_SOCK=$GCR ssh-add -l 2>/dev/null | head -1 && echo GCR-VERIFIED'
     expect: "GCR-VERIFIED"
     on_failure: abort
 
