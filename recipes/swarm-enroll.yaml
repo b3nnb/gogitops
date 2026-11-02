@@ -1,24 +1,72 @@
 name: swarm-enroll
-description: "Enroll this node as a Docker Swarm worker, joining the NAS (10.2.0.103) as manager. Requires Docker installed (new-node recipe). Gets join token from the NAS manager via SSH, then joins the swarm."
-version: "1.0.0"
-labels: [docker-host]
+description: "Enroll this node as a Docker Swarm worker, joining the NAS (10.2.0.103) as manager. Installs Docker if not present (apt on Linux, OrbStack on macOS). Gets join token from the NAS manager via SSH, then joins the swarm."
+version: "1.1.0"
+labels: [docker-host, swarm-worker]
 
 steps:
-  # ── 1. Verify Docker is installed and running ──
+  # ── 1. Detect platform ──
+  - name: detect-platform
+    description: "Detect OS type for Docker install method"
+    command: "uname -s"
+    parse: regex
+    pattern: "(.+)"
+
+  # ── 2a. Linux: Install Docker if not present ──
+  - name: linux-install-docker
+    description: "Install Docker CE on Linux if not already installed"
+    command: |
+      if ! command -v docker &>/dev/null; then
+        echo "Docker not found — installing..."
+        sudo install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo tee /etc/apt/keyrings/docker.asc > /dev/null
+        sudo chmod a+r /etc/apt/keyrings/docker.asc
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        sudo apt-get update -qq
+        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        sudo usermod -aG docker $USER
+        echo "Docker installed — may need to re-login for group changes"
+      else
+        echo "Docker already installed: $(docker --version)"
+      fi
+    on_failure: abort
+    condition: "{{.detect-platform}} == Linux"
+
+  # ── 2b. macOS: Install OrbStack if not present ──
+  - name: macos-install-orbstack
+    description: "Install OrbStack (Docker for macOS) if not already installed"
+    command: |
+      if ! command -v docker &>/dev/null; then
+        echo "Docker not found — installing OrbStack..."
+        brew install --cask orbstack
+        echo "OrbStack installed — launch it from Applications to start the Docker daemon"
+      else
+        echo "Docker already available: $(docker --version)"
+      fi
+    on_failure: abort
+    condition: "{{.detect-platform}} == Darwin"
+
+  # ── 3. Verify Docker is running ──
   - name: verify-docker
     description: "Confirm Docker daemon is running"
     command: "docker info --format '{{.ServerVersion}}'"
     on_failure: abort
 
-  # ── 2. Check if already in a swarm ──
+  # ── 4. Check if already in a swarm ──
   - name: check-swarm
     description: "Check if node is already part of a swarm"
     command: "docker info --format '{{.Swarm.LocalNodeState}}'"
     parse: regex
     pattern: "(.+)"
 
-  # ── 3. Get the swarm join token from the NAS manager ──
-  # The NAS (10.2.0.103) is the swarm manager. We SSH in and get the worker token.
+  # ── 5. Skip if already joined ──
+  - name: already-joined
+    description: "Skip swarm join if already active"
+    command: "echo 'Already in swarm — skipping join'"
+    condition: "{{.check-swarm}} == active"
+    on_failure: continue
+
+  # ── 6. Get the swarm join token from the NAS manager ──
+  # The NAS (10.2.0.103) is the swarm manager. SSH in and get the worker token.
   # Uses the fleet SSH key for the NAS.
   - name: get-join-token
     description: "Fetch the worker join token from the NAS swarm manager"
@@ -26,15 +74,17 @@ steps:
     parse: regex
     pattern: "([A-Z0-9a-z-]+)"
     on_failure: abort
+    condition: "{{.check-swarm}} != active"
 
-  # ── 4. Join the swarm as a worker ──
+  # ── 7. Join the swarm as a worker ──
   - name: join-swarm
     description: "Join the Docker Swarm as a worker node"
     command: "docker swarm join --token {{.get-join-token}} 10.2.0.103:2377"
     on_failure: abort
+    condition: "{{.check-swarm}} != active"
 
-  # ── 5. Verify swarm membership ──
+  # ── 8. Verify swarm membership ──
   - name: verify-joined
     description: "Confirm node is now a swarm worker"
-    command: "docker info --format '{{.Swarm.LocalNodeState}}'"
+    command: "docker info --format 'Swarm: {{.Swarm.LocalNodeState}}'"
     on_failure: abort
