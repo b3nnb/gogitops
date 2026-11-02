@@ -1,6 +1,6 @@
 name: dashboard-pull-setup
-description: "Make this node's agent pull-able by the fleet dashboard/beacon (Friday :7781): bind all interfaces, register the beacon URL, fix hand-rolled units that hardcode -bind 127.0.0.1, open ufw to the dashboard node, restart, verify. macOS note: daemon is hand-started — flags apply at next start. v1.1.0: beacon verification → typed net.http-check; v1.2.0: pull verify → typed net.lan-ip (route toward the beacon) + net.http-check retry"
-version: "1.2.0"
+description: "Make this node's agent pull-able by the fleet dashboard/beacon (Friday :7781): bind all interfaces, register the beacon URL, fix hand-rolled units that hardcode -bind 127.0.0.1, open ufw to the dashboard node, restart, verify. macOS note: daemon is hand-started — flags apply at next start. v1.1.0: beacon verification → typed net.http-check; v1.2.0: pull verify → typed net.lan-ip (route toward the beacon) + net.http-check retry; v1.3.0: the restart dance (user units → system unit via passwordless sudo) → typed system.unit-restart"
+version: "1.3.0"
 labels: []
 
 steps:
@@ -21,9 +21,10 @@ steps:
     on_failure: continue
 
   - name: restart-agent
-    description: "MANUAL RUNS ONLY — the daemon convergence loop sets GOGITOPS_AUTO_APPLY=1 for its children, and a restart spawned from inside a convergence run kills the daemon mid-recipe: the recipe records failed forever and every cycle restarts the agent again (framework ~60s restart-loop, Sep 30 '26). A skipped restart just means a rewritten unit applies on the next manual run or daemon restart."
+    description: "MANUAL RUNS ONLY — the daemon convergence loop sets GOGITOPS_AUTO_APPLY=1 for its children, and a restart spawned from inside a convergence run kills the daemon mid-recipe: the recipe records failed forever and every cycle restarts the agent again (framework ~60s restart-loop, Sep 30 '26). A skipped restart just means a rewritten unit applies on the next manual run or daemon restart. Typed: user units first, then the system gogitops-daemon via passwordless sudo."
     when: '[ -z "$GOGITOPS_AUTO_APPLY" ]'
-    command: 'for U in gogitops gogitops-daemon; do if systemctl --user is-active $U >/dev/null 2>&1; then systemctl --user restart $U && echo restarted-user-$U; exit 0; fi; done; if systemctl is-active gogitops-daemon >/dev/null 2>&1; then sudo -n systemctl restart gogitops-daemon && echo restarted-system; else echo WARN-no-unit-restarted; fi'
+    func: system.unit-restart
+    args: '{"user_units": "gogitops,gogitops-daemon", "system_units": "gogitops-daemon"}'
     os: linux
     on_failure: continue
 

@@ -45,6 +45,10 @@ steps:
 | `system.apt-install` | Idempotent apt with sudo-mode resolution: skips installed tokens, ordered alternates (`packages=chromium,chromium-browser`, `verify=`), verify probe — replaces the sudo\|\|pkexec install dances |
 | `system.flatpak` | Idempotent flathub install with auto channel resolution (`app=`, `require=`) — replaces the sudo -n/channel when-guard lattice |
 | `system.gnome-keyring` | GCR standardization: enable gcr socket, disable+mask gpg-agent-ssh + ssh-agent, SSH_AUTH_SOCK rc upserts (`rcfiles=`, `verify=`) |
+| `system.unit-restart` | Restart whichever unit is actually active — user scope first, then system via passwordless sudo (`user_units=`, `system_units=`); nothing active is `scope=none`, a result to gate fallbacks on |
+| `system.unit-repoint` | Swap deviant binary paths inside user unit files + daemon-reload (`units=`, `from=`, `to=`, `enable=`) — the /usr/local/bin→~/.local/bin convergences, typed |
+| `system.user-unit` | Write + arm a long-running systemd user unit (`name=`, `exec=`, `after=`, `restart=`, …) — daemon-reload + enable --now, `active=` in outputs; overwrite=false never clobbers a hand-edited unit |
+| `system.git-extract` | Extract one file from a git ref of a local checkout (`ref=`, `path=`, `dest=`, `min_bytes=`, `exec=`, `fetch=require\|best-effort`) — the binaries-branch installer dance, typed |
 
 Args containing commas (like `candidates=a,b`) must use the JSON args form: `args: {"name": "brew", "candidates": "/opt/homebrew/bin/brew,/usr/local/bin/brew"}`.
 

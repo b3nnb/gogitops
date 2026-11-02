@@ -1,6 +1,6 @@
 name: ubuntu-2604-postupgrade
-description: "Post-upgrade repair for Ubuntu 26.04 Resolute. Fixes PEP 668 pip break-system-packages, docker group membership, gogitops daemon service re-enable + binary path, syncthing user service. Only runs on 26.04. Only runs once — creates a marker file on full success so re-runs skip."
-version: "1.1.0"
+description: "Post-upgrade repair for Ubuntu 26.04 Resolute. Fixes PEP 668 pip break-system-packages, docker group membership, gogitops daemon service re-enable + binary path, syncthing user service. Only runs on 26.04. Only runs once — creates a marker file on full success so re-runs skip. v1.2.0 (fleet function-library scan, Nov 1 '26): fix-gogitops-daemon's blind ExecStart line-rewrite → typed system.unit-repoint (known deviant paths swap, extra ExecStart args preserved, enable stays)."
+version: "1.2.0"
 labels: []
 auto_apply: true
 
@@ -47,9 +47,15 @@ steps:
     on_failure: continue
 
   # ═══ gogitops daemon: re-enable + fix binary path ═══
+  # Typed (v1.2.0): the blind `sed ExecStart=.*` line-rewrite becomes
+  # system.unit-repoint — known deviant path substrings (source tree,
+  # /usr/local/bin, ~/bin) swap to the canonical ~/.local/bin path, keeping
+  # any extra ExecStart args a hand-rolled unit carried; enable=true
+  # re-enables the unit like the old `systemctl --user enable` tail did.
   - name: fix-gogitops-daemon
-    description: "Re-enable gogitops daemon user service. Point ExecStart at ~/.local/bin/gogitops (not source tree)."
-    command: "UNIT=~/.config/systemd/user/gogitops-daemon.service; if [ -f \"$UNIT\" ]; then if ! grep -q '.local/bin/gogitops' \"$UNIT\"; then sed -i 's|ExecStart=.*|ExecStart='$HOME/.local/bin/gogitops' daemon|' \"$UNIT\" && echo UNIT-PATH-FIXED; fi; systemctl --user daemon-reload; systemctl --user enable gogitops-daemon.service 2>/dev/null && echo GOGITOPS-ENABLED || echo GOGITOPS-ALREADY-ENABLED; else echo GOGITOPS-NO-UNIT; fi"
+    description: "Point the gogitops-daemon user unit's ExecStart at ~/.local/bin/gogitops (not source tree / stale installs) + re-enable (typed system.unit-repoint)"
+    func: system.unit-repoint
+    args: '{"units": "gogitops-daemon", "from": "~/Documents/code/GoGitOps/bin/gogitops,/usr/local/bin/gogitops,~/bin/gogitops", "to": "~/.local/bin/gogitops", "enable": "true"}'
     when: "lsb_release -rs 2>/dev/null | grep -q '^26.04' && ! test -f ~/.local/share/gogitops/ubuntu-2604-postupgrade.done"
     on_failure: continue
 

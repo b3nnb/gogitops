@@ -1,13 +1,17 @@
 name: setup-nenv
 description: "Install + configure the nenv CLI to reach the fleet NetEnv server with a live bearer token"
-version: "1.4.0"
+version: "1.5.0"
 auto_apply: true
 labels: []
 
-# v1.4.0: platform detection (system.info) + CLI path resolution (system.which)
-#          moved to typed stdlib funcs — os/arch arrive normalized (x86_64→amd64,
-#          aarch64→arm64) and the command -v||~/.local/bin prologue is one
-#          {{func.path}} instead of 4 copies of fragile shell.
+# v1.5.0 (fleet function-library scan, Nov 1 '26): install-nenv-cli's
+# git-fetch/show/chmod/verify blob → typed system.git-extract (best-effort
+# fetch like the original || true, atomic dest, exec bit) + a standalone
+# verify-nenv-binary step gated on the install output. v1.4.0: platform
+# detection (system.info) + CLI path resolution (system.which)
+# moved to typed stdlib funcs — os/arch arrive normalized (x86_64→amd64,
+# aarch64→arm64) and the command -v||~/.local/bin prologue is one
+# {{func.path}} instead of 4 copies of fragile shell.
 #
 # Full node-side nenv convergence, no manual steps:
 #   1. resolve-nenv      — typed CLI lookup (PATH, then ~/.local/bin/nenv)
@@ -37,9 +41,17 @@ steps:
     on_failure: continue
 
   - name: install-nenv-cli
-    description: "Install the nenv CLI from the fleet binaries branch (skips when present)"
-    command: 'NENV_BIN="{{func.path}}"; if [ -n "$NENV_BIN" ]; then echo "already-present"; exit 0; fi; git -C {{repo}} fetch -q origin binaries 2>/dev/null || true; git -C {{repo}} show "origin/binaries:bin/nenv-{{func.os}}-{{func.arch}}" > "$HOME/.local/bin/nenv" 2>/dev/null || { echo "missing: nenv-{{func.os}}-{{func.arch}} not found on the binaries branch"; exit 1; }; chmod 755 "$HOME/.local/bin/nenv"; "$HOME/.local/bin/nenv" --help >/dev/null 2>&1 || { echo "broken: nenv binary will not run on this platform"; exit 1; }; echo "installed: nenv-{{func.os}}-{{func.arch}}"'
-    expect_regex: "(already-present|installed: nenv-)"
+    description: "Install the nenv CLI from the fleet binaries branch (skips when present) — typed system.git-extract: best-effort fetch (the old `|| true`), atomic dest swap, exec bit; a fresh install that will not run is caught by verify-nenv-binary"
+    func: system.git-extract
+    args: '{"repo": "{{repo}}", "ref": "origin/binaries", "path": "bin/nenv-{{func.os}}-{{func.arch}}", "dest": "~/.local/bin/nenv", "exec": "true", "fetch": "best-effort"}'
+    when: 'test -z "{{func.path}}"'
+    set_attr: nenv_install
+    on_failure: abort
+
+  - name: verify-nenv-binary
+    description: "A fresh install must actually run — a binary that will not exec on this platform fails the recipe (the original in-step check, now its own step)"
+    command: '"$HOME/.local/bin/nenv" --help >/dev/null 2>&1'
+    when_attr: "attr.nenv_install contains dest="
     on_failure: abort
 
   - name: write-nenv-config

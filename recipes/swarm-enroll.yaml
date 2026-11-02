@@ -1,0 +1,48 @@
+name: swarm-enroll
+description: "Enroll this node as a Docker Swarm worker, joining the NAS (10.2.0.103) as manager. Requires Docker installed (run setup-docker first). Gets join token from the NAS manager via SSH, then joins the swarm. Idempotent — skips if already active."
+version: "2.0.0"
+labels: [swarm-worker]
+
+steps:
+  # ── 1. Verify Docker is installed ──
+  - name: verify-docker
+    description: "Confirm Docker is installed and running"
+    command: "docker info --format 'Docker {{.ServerVersion}}'"
+    on_failure: abort
+
+  # ── 2. Check if already in a swarm ──
+  - name: check-swarm
+    description: "Check if node is already part of a swarm"
+    command: "docker info --format '{{.Swarm.LocalNodeState}}'"
+    parse: regex
+    pattern: "(.+)"
+
+  # ── 3. Skip if already joined ──
+  - name: already-joined
+    description: "Skip swarm join if already active"
+    command: "echo 'Already in swarm — skipping join'"
+    condition: "{{.check-swarm}} == active"
+    on_failure: continue
+
+  # ── 4. Get the swarm join token from the NAS manager ──
+  # The NAS (10.2.0.103) is the swarm manager. SSH in and get the worker token.
+  - name: get-join-token
+    description: "Fetch the worker join token from the NAS swarm manager"
+    command: "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=5 -i ~/.ssh/id_hermes_nas Benn@10.2.0.103 '/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker swarm join-token worker -q 2>/dev/null'"
+    parse: regex
+    pattern: "([A-Z0-9a-z-]+)"
+    on_failure: abort
+    condition: "{{.check-swarm}} != active"
+
+  # ── 5. Join the swarm as a worker ──
+  - name: join-swarm
+    description: "Join the Docker Swarm as a worker node"
+    command: "docker swarm join --token {{.get-join-token}} 10.2.0.103:2377"
+    on_failure: abort
+    condition: "{{.check-swarm}} != active"
+
+  # ── 6. Verify swarm membership ──
+  - name: verify-joined
+    description: "Confirm node is now a swarm worker"
+    command: "docker info --format 'Swarm: {{.Swarm.LocalNodeState}} ({{.Swarm.Nodes}} nodes)'"
+    on_failure: abort
