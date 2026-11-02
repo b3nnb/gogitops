@@ -1,0 +1,53 @@
+name: setup-docker
+description: "Install Docker + Compose on any node. Detects platform: apt on Linux, OrbStack on macOS. Idempotent — skips if Docker is already installed and running."
+version: "1.0.0"
+labels: [docker-host]
+
+steps:
+  # ── 1. Detect platform ──
+  - name: detect-platform
+    description: "Detect OS type for Docker install method"
+    command: "uname -s"
+    parse: regex
+    pattern: "(.+)"
+
+  # ── 2a. Linux: Install Docker CE if not present ──
+  - name: linux-install-docker
+    description: "Install Docker CE on Linux if not already installed"
+    command: |
+      if command -v docker &>/dev/null && docker info &>/dev/null; then
+        echo "Docker already running: $(docker --version)"
+      else
+        echo "Installing Docker CE..."
+        sudo install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo tee /etc/apt/keyrings/docker.asc > /dev/null
+        sudo chmod a+r /etc/apt/keyrings/docker.asc
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        sudo apt-get update -qq
+        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        sudo usermod -aG docker $USER
+        sudo systemctl enable --now docker
+        echo "Docker installed and enabled"
+      fi
+    on_failure: abort
+    condition: "{{.detect-platform}} == Linux"
+
+  # ── 2b. macOS: Install OrbStack if not present ──
+  - name: macos-install-orbstack
+    description: "Install OrbStack (Docker for macOS) if not already installed"
+    command: |
+      if command -v docker &>/dev/null && docker info &>/dev/null; then
+        echo "Docker already running: $(docker --version)"
+      else
+        echo "Installing OrbStack..."
+        brew install --cask orbstack
+        echo "OrbStack installed — launch from Applications to start the Docker daemon"
+      fi
+    on_failure: abort
+    condition: "{{.detect-platform}} == Darwin"
+
+  # ── 3. Verify Docker is running ──
+  - name: verify-docker
+    description: "Confirm Docker daemon is running"
+    command: "docker info --format 'Docker {{.ServerVersion}} on {{.OperatingSystem}}'"
+    on_failure: abort
