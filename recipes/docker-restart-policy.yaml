@@ -1,0 +1,55 @@
+name: docker-restart-policy
+description: "Ensure all running Docker containers have restart: unless-stopped. Prevents containers from staying down after Docker daemon restarts or host reboots. Run after deploying new containers or as a periodic audit."
+version: "1.0.0"
+labels: [docker-host]
+
+steps:
+  # ── 1. Audit containers with no restart policy ──
+  - name: audit-restart-policies
+    description: "Find all containers missing restart: unless-stopped"
+    command: |
+      MISSING=$(docker ps -a --format '{{.Names}}' | while read name; do
+        policy=$(docker inspect "$name" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['HostConfig']['RestartPolicy']['Name'])" 2>/dev/null)
+        if [ "$policy" = "no" ] || [ -z "$policy" ]; then
+          echo "$name"
+        fi
+      done)
+      if [ -n "$MISSING" ]; then
+        echo "Containers missing restart policy:"
+        echo "$MISSING"
+      else
+        echo "All containers have restart policies."
+      fi
+    on_failure: continue
+
+  # ── 2. Fix: set unless-stopped on all containers ──
+  - name: fix-restart-policies
+    description: "Set restart: unless-stopped on all containers missing it"
+    command: |
+      FIXED=0
+      docker ps -a --format '{{.Names}}' | while read name; do
+        policy=$(docker inspect "$name" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['HostConfig']['RestartPolicy']['Name'])" 2>/dev/null)
+        if [ "$policy" = "no" ] || [ -z "$policy" ]; then
+          docker update --restart unless-stopped "$name" 2>/dev/null && echo "Fixed: $name" && FIXED=$((FIXED+1))
+        fi
+      done
+      echo "Fixed $FIXED containers."
+    on_failure: continue
+
+  # ── 3. Verify all containers have a policy ──
+  - name: verify-policies
+    description: "Confirm all containers now have restart: unless-stopped"
+    command: |
+      BAD=$(docker ps -a --format '{{.Names}}' | while read name; do
+        policy=$(docker inspect "$name" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['HostConfig']['RestartPolicy']['Name'])" 2>/dev/null)
+        if [ "$policy" = "no" ] || [ -z "$policy" ]; then
+          echo "$name"
+        fi
+      done)
+      if [ -n "$BAD" ]; then
+        echo "WARNING: still missing restart policy: $BAD"
+        exit 1
+      else
+        echo "All containers have restart policies. ✓"
+      fi
+    on_failure: continue
