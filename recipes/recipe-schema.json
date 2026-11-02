@@ -18,6 +18,7 @@
           "admin",
           "compute",
           "docker-host",
+          "swarm-worker",
           "gnome-desktop",
           "gpu",
           "hermes-host",
