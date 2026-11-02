@@ -1542,5 +1542,32 @@ The attribute map persists across all steps within a single `recipe run` invocat
 - Step 5 can `when_attr: "attr.os_type == alpine"` to conditionally execute
 - Step 10 can `assert: "Service is healthy"` and the result is available to later steps
 
-Attributes are **not** persisted between separate recipe runs. Each `recipe run` starts with a fresh attribute map.
+### The Device Attribute Store (cross-run persistence)
+
+Each run does **not** start fresh — it hydrates the device attribute store
+first: `~/.cache/gogitops/attrs.json`, plain keys, jq-friendly, one store
+**per node** (decentralized: values stay on the node that produced them).
+Store keys gain the `attr.` prefix in-run; the store keeps plain names
+(`tests.pass`, `docker_version`).
+
+Writers — all MERGE, never replace:
+
+- Test modules (`test run`, `test run-all`, the agent's periodic suite):
+  module attrs + `tests.*` suite summaries
+- **Recipe runs (v0.7.21+)** — `persistRecipeAttrs` merges every explicitly
+  set attr (`set_attr`, `attr_prefix` captures, `assert.<step>.status`
+  verdicts) into the store on every exit path, including aborts.
+  Dry-runs write nothing.
+- `attrs verify`: `recipe.<name>.valid` validation verdicts
+
+Read-only hydration: only attrs **set** during a run persist back —
+merely-read attrs never leak in.
+
+The effect: a `set_attr: os_type` in step 1 is not just visible to step 5 of
+the same run — the next run (and any other recipe or test on the node)
+hydrates it. `when_attr` can gate on state recorded days ago by a different
+recipe. Cross-node state remains tags' job; attributes are local facts.
+
+Served at `GET /v1/attrs` on every agent; the dashboard drill-down has an
+ATTRIBUTES panel (list + copyable YAML view).
 

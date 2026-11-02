@@ -14,7 +14,7 @@ steps:
   - name: install-blender-thumbnailer
     description: "Standalone blender-thumbnailer binary to /usr/local/bin + /usr/share/thumbnailers/blender.thumbnailer registration (.blend grid icons)"
     script: blender-thumb.sh
-    on_failure: warn
+    on_failure: continue
 
   - name: activate
     description: "Restart Nautilus so sushi and the new thumbnailers register (file windows are unaffected long-term)"

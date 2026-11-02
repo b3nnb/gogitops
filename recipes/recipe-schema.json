@@ -31,7 +31,10 @@
           "nas",
           "primary-compute",
           "remote-admin",
-          "trader-host"
+          "trader-host",
+          "exo",
+          "new-node",
+          "iso-install"
         ],
         "type": "string"
       },

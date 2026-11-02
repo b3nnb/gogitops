@@ -15,7 +15,7 @@ steps:
 
   # ── Linux: touch the mountpoint at every login so the lazy automount is
   #    already mounted when the desktop session starts (no root, idempotent)
-  - name: login-mount-trigger
+  - name: login-mount-trigger-linux
     os: linux
     description: "User unit: trigger the MiddleEarth automount at login (Files sidebar shows the share immediately)"
     func: system.login-trigger
@@ -23,7 +23,7 @@ steps:
 
   # ── macOS: LaunchAgent mounts the share at login (mount_smbfs auth from
   #    Keychain — store the NAS password in Keychain once; Finder-visible)
-  - name: login-mount-trigger
+  - name: login-mount-trigger-darwin
     os: darwin
     description: "LaunchAgent: mount /Volumes/MiddleEarth at login via mount_smbfs (idempotent)"
     func: system.login-trigger

@@ -90,7 +90,7 @@ steps:
     on_failure: continue
 
   - name: rc-line-verify
-    description: byte-truth — exactly ONE export line landed across both runs (expect: alone cannot fail an exit-0 step)
+    description: "byte-truth — exactly ONE export line landed across both runs (expect: alone cannot fail an exit-0 step)"
     command: 'test "$(grep -c GOGITOPS_FUNCTEST /tmp/gogitops-functest-rc)" = "1" && echo rc-line-ok'
     on_failure: continue
 
