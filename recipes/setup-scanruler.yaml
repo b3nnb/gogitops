@@ -22,32 +22,14 @@ steps:
   # ── 3. Install Node.js 22+ if missing (Linux) ──
   - name: linux-install-node
     description: "Install Node.js 22 LTS on Linux if not present or too old"
-    command: |
-      NODE_VER=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1)
-      if [ -n "$NODE_VER" ] && [ "$NODE_VER" -ge 22 ] 2>/dev/null; then
-        echo "Node.js already at $(node --version) — skipping"
-      else
-        echo "Installing Node.js 22 LTS via NodeSource..."
-        curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-        sudo apt-get install -y nodejs
-        echo "Node.js installed: $(node --version)"
-      fi
+    command: "if [ -z \"$(node --version 2>/dev/null)\" ]; then curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs; else echo \"Node.js $(node --version) present\"; fi"
     on_failure: abort
     condition: "{{.detect-platform}} == Linux"
 
   # ── 3b. Install Node.js 22+ if missing (macOS) ──
   - name: macos-install-node
     description: "Install Node.js 22+ via Homebrew on macOS if not present or too old"
-    command: |
-      NODE_VER=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1)
-      if [ -n "$NODE_VER" ] && [ "$NODE_VER" -ge 22 ] 2>/dev/null; then
-        echo "Node.js already at $(node --version) — skipping"
-      else
-        echo "Installing Node.js 22 via Homebrew..."
-        brew install node@22
-        brew link --overwrite node@22
-        echo "Node.js installed: $(node --version)"
-      fi
+    command: "if [ -z \"$(node --version 2>/dev/null)\" ]; then brew install node@22; else echo \"Node.js $(node --version) present\"; fi"
     on_failure: abort
     condition: "{{.detect-platform}} == Darwin"
 
