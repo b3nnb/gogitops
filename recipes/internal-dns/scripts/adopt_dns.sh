@@ -15,7 +15,7 @@
 # wrongly report "already adopted" and never migrate .103 -> .105.
 
 DNS1=10.2.0.105
-DNS2=1.1.1.1
+DNS2=10.200.0.4
 
 # ── idempotency probe: what resolver is CONFIGURED? ──
 if [ "$(uname)" = "Darwin" ]; then
