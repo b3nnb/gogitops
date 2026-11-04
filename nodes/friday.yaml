@@ -69,7 +69,7 @@ services:
   port: 11434
 - name: godawg-trader-api
   type: tcp
-  port: 8091
+  port: 8002
 disk:
 - mount: /
   warn_pct: 85
