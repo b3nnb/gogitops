@@ -48,7 +48,7 @@ steps:
   # ── 6. Add scanruler MCP server to Hermes config ──
   - name: add-scanruler-mcp
     description: "Add scanruler-mcp to Hermes config.yaml mcp_servers if not already present"
-    command: "python3 scripts/add-mcp-config.py"
+    command: "python3 recipes/setup-scanruler/scripts/add-mcp-config.py"
     on_failure: abort
 
   # ── 7. Verify config was updated ──
