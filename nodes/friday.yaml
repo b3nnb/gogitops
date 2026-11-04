@@ -16,6 +16,8 @@ labels:
 - stack:curation
 - stack:netenv
 - stack:qdrant
+- scanruler
+- mcp-server
 - admin
 services:
 - name: hermes-gateway

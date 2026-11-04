@@ -1,0 +1,123 @@
+name: setup-scanruler
+description: "Install ScanRuler MCP server (scanruler-mcp) for AI-driven 3D scan reverse engineering. Requires Node.js 22+ and a browser. Idempotent — skips if already configured."
+version: "1.0.0"
+labels: [scanruler, mcp-server]
+
+steps:
+  # ── 1. Detect platform ──
+  - name: detect-platform
+    description: "Detect OS type"
+    command: "uname -s"
+    parse: regex
+    pattern: "(.+)"
+
+  # ── 2. Check Node.js version (need 22+) ──
+  - name: check-node
+    description: "Check if Node.js 22+ is installed"
+    command: |
+      if command -v node &>/dev/null; then
+        NODE_VER=$(node --version | sed 's/v//' | cut -d. -f1)
+        if [ "$NODE_VER" -ge 22 ] 2>/dev/null; then
+          echo "Node.js $(node --version) — OK"
+        else
+          echo "Node.js $(node --version) — need 22+"
+        fi
+      else
+        echo "Node.js not found — need 22+"
+      fi
+    parse: regex
+    pattern: "(.+)"
+
+  # ── 3. Install Node.js 22+ if missing (Linux) ──
+  - name: linux-install-node
+    description: "Install Node.js 22 LTS on Linux if not present or too old"
+    command: |
+      if command -v node &>/dev/null; then
+        NODE_VER=$(node --version | sed 's/v//' | cut -d. -f1)
+        if [ "$NODE_VER" -ge 22 ] 2>/dev/null; then
+          echo "Node.js already at $(node --version) — skipping"
+          exit 0
+        fi
+      fi
+      echo "Installing Node.js 22 LTS via NodeSource..."
+      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+      sudo apt-get install -y nodejs
+      echo "Node.js installed: $(node --version)"
+    on_failure: abort
+    condition: "{{.detect-platform}} == Linux"
+
+  # ── 3b. Install Node.js 22+ if missing (macOS) ──
+  - name: macos-install-node
+    description: "Install Node.js 22+ via Homebrew on macOS if not present or too old"
+    command: |
+      if command -v node &>/dev/null; then
+        NODE_VER=$(node --version | sed 's/v//' | cut -d. -f1)
+        if [ "$NODE_VER" -ge 22 ] 2>/dev/null; then
+          echo "Node.js already at $(node --version) — skipping"
+          exit 0
+        fi
+      fi
+      echo "Installing Node.js 22 via Homebrew..."
+      brew install node@22
+      brew link --overwrite node@22
+      echo "Node.js installed: $(node --version)"
+    on_failure: abort
+    condition: "{{.detect-platform}} == Darwin"
+
+  # ── 4. Verify npx is available ──
+  - name: verify-npx
+    description: "Confirm npx is available for running scanruler-mcp"
+    command: "npx --version"
+    on_failure: abort
+
+  # ── 5. Pre-fetch scanruler-mcp package (warm the npx cache) ──
+  - name: prefetch-scanruler
+    description: "Pre-fetch scanruler-mcp package so first use is instant"
+    command: "npm cache add scanruler-mcp@latest 2>/dev/null || npx -y scanruler-mcp@latest --version 2>/dev/null || echo 'Will fetch on first use'"
+    on_failure: continue
+
+  # ── 6. Add scanruler MCP server to Hermes config ──
+  - name: add-scanruler-mcp
+    description: "Add scanruler-mcp to Hermes config.yaml mcp_servers if not already present"
+    command: |
+      CONFIG="$HOME/.hermes/config.yaml"
+      if grep -q 'scanruler' "$CONFIG" 2>/dev/null; then
+        echo "scanruler MCP server already in config — skipping"
+      else
+        # Add scanruler under mcp_servers using Python for safe YAML insertion
+        python3 -c "
+      import yaml, pathlib, sys
+      p = pathlib.Path('$CONFIG')
+      cfg = yaml.safe_load(p.read_text())
+      if 'mcp_servers' not in cfg or cfg['mcp_servers'] is None:
+          cfg['mcp_servers'] = {}
+      cfg['mcp_servers']['scanruler'] = {
+          'command': 'npx',
+          'args': ['-y', 'scanruler-mcp@latest'],
+      }
+      p.write_text(yaml.dump(cfg, default_flow_style=False, sort_keys=False))
+      print('scanruler MCP server added to config')
+      "
+      fi
+    on_failure: abort
+
+  # ── 7. Verify config was updated ──
+  - name: verify-config
+    description: "Confirm scanruler is in the Hermes config"
+    command: "grep -c 'scanruler' $HOME/.hermes/config.yaml"
+    parse: regex
+    pattern: "(\\d+)"
+    on_failure: abort
+
+  # ── 8. Print next steps ──
+  - name: next-steps
+    description: "Print usage instructions"
+    command: |
+      echo "✅ ScanRuler MCP server installed"
+      echo ""
+      echo "To use: restart Hermes Agent, then open scanruler.com in a browser"
+      echo "and say 'Connect to ScanRuler' to pair the agent with the browser tab."
+      echo "Then ask the agent to measure or reverse engineer a 3D scan."
+      echo ""
+      echo "Requires: Chrome, Edge, or Firefox with the scanruler.com tab open."
+    on_failure: continue
