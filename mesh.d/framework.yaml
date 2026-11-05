@@ -1,9 +1,12 @@
 peers:
     - hostname: framework
-      nebula_ip: "10.200.0.6"
-      lan_ip: 10.0.0.229
-      port: 7780
       machine_id: 7dcbe091437645ea8c1bb356fe62e74f
+      nebula_ip: 10.200.0.6
+      lan_ip: 192.168.122.1
+      port: 7780
+      macs:
+        - 34:c8:d6:b3:00:f0
+        - 9c:65:eb:6f:38:d5
       labels:
         - internal-dns
         - compute
